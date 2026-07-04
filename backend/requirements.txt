@@ -1,0 +1,1 @@
+tastytrade>=13,<14  # broker SDK — contract tests (TC-STP-13) and later the live adapter
