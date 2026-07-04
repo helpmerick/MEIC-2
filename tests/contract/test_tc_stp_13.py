@@ -69,16 +69,37 @@ def _env() -> dict[str, str]:
     return env
 
 
+def _jwt_issuer(token: str) -> str | None:
+    """Local-only JWT payload decode (no network, no signature verification) —
+    used solely to refuse non-cert tokens before any request is made."""
+    import base64
+
+    try:
+        seg = token.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
+        return payload.get("iss")
+    except Exception:
+        return None
+
+
 @pytest.fixture(scope="module")
 def creds() -> tuple[str, str, str | None]:
     env = _env()
     secret, refresh = env.get("TT_CERT_PROVIDER_SECRET"), env.get("TT_CERT_REFRESH_TOKEN")
-    if not (secret and refresh):
+    if not (secret and refresh) or "REPLACE_ME" in (secret, refresh):
         pytest.fail(
-            "STP-05a GATE: no cert credentials found. Create .env at the repo root with "
+            "STP-05a GATE: no cert credentials found. Fill .env at the repo root with "
             "TT_CERT_PROVIDER_SECRET and TT_CERT_REFRESH_TOKEN from a CERT-environment "
             "OAuth app (developer.tastytrade.com -> cert). Build MUST NOT proceed past "
             "this gate without the sandbox verification. (TC-STP-13)"
+        )
+    issuer = _jwt_issuer(refresh)
+    if issuer is None or "cert" not in issuer:
+        pytest.fail(
+            f"STP-05a GATE: refresh token issuer is {issuer!r} — NOT a cert-environment "
+            "token (cert issuer contains 'cert'; production is api.tastytrade.com). "
+            "PRODUCTION CREDENTIALS ARE REFUSED before any network call. Revoke the "
+            "pasted grant, rotate the app secret, and supply CERT credentials. (TC-STP-13)"
         )
     return secret, refresh, env.get("TT_CERT_ACCOUNT")
 
