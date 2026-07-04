@@ -25,5 +25,4 @@ Feature: TC-NFR-04
 
   Scenario: Decision moment - give up safely
     Given demand-reconnect and fetcher both fail
-    Then the entry skips "data_unavailable", a LEX ladder freezes with its limit still working,
-         TPF/DCY pause, an informational alert fires, and everything resumes on heal
+    Then the entry skips "data_unavailable", a LEX ladder freezes with its limit still working, TPF/DCY pause, an informational alert fires, and everything resumes on heal

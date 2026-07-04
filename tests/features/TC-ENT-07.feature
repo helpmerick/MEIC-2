@@ -22,8 +22,7 @@ Feature: TC-ENT-07
     Given the operator armed 6 entries on Monday
     When Tuesday's market opens with no operator action
     Then the day self-initializes (calendar, reconcile, warm-up)
-    And all 6 entries fire at their times on Tuesday, and every trading day after,
-        until the operator disarms
+    And all 6 entries fire at their times on Tuesday, and every trading day after, until the operator disarms
 
   Scenario: Disarmed state equally persists
     Given the operator disarmed on Monday afternoon
@@ -44,8 +43,7 @@ Feature: TC-ENT-07
     And the dashboard states which gate is blocking
 
   Scenario: The full persistent-state inventory survives Docker recovery (REC-07)
-    Given ARMED = on, Stop Trading = on, Confirm Live = on, trading_mode = paper,
-          a standing 6-entry schedule, an armed TPF floor, and a paper cash ledger
+    Given ARMED = on, Stop Trading = on, Confirm Live = on, trading_mode = paper, a standing 6-entry schedule, an armed TPF floor, and a paper cash ledger
     When the container dies and recovers
     Then every item is restored exactly as it was
     And entries remain blocked (Stop Trading is on) until the operator resumes
