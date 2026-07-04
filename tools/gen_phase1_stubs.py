@@ -167,7 +167,8 @@ def main() -> int:
     (PROSE_OUT / "test_prose_tc_stubs.py").write_text(emit_prose_module(prose), encoding="utf-8")
 
     print(
-        f"generated {len(features)} BDD stub modules ({step_count} unique step defs, "
+        f"generated {len(features) - len(handwritten)} BDD stub modules "
+        f"({step_count} unique step defs, "
         f"{len(blocked_tcs)} blocked: {', '.join(blocked_tcs) or 'none'}) "
         f"and {len(prose)} prose TC stubs"
     )
