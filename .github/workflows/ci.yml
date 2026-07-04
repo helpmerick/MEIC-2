@@ -1,0 +1,23 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: 1 — spec lock (the contract is intact)
+        run: python scripts/verify_spec_lock.py
+      - name: 2 — regenerate features from the spec
+        run: python scripts/extract_features.py
+      - name: 3 — traceability (every rule covered, every TC implemented)
+        run: python scripts/check_traceability.py
+      - name: 4 — install and test
+        run: |
+          pip install -r requirements-dev.txt
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+          pytest -q -m "not contract"

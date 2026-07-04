@@ -1,0 +1,108 @@
+# MEIC Trading Bot — Specification
+
+Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX 0DTE via the tastytrade API. Python backend, React/TypeScript frontend, domain-driven design.
+
+## Documents
+
+| Doc | Contents | ID prefixes |
+|---|---|---|
+| [01-strategy-rules.md](01-strategy-rules.md) | All business rules: day lifecycle, entries, strikes, orders, stops, long exit, EOD, risk, data, recovery, P&L | DAY, ENT, STK, ORD, STP, LEX, EOD, RSK, DAT, REC, PNL |
+| [02-edge-cases.md](02-edge-cases.md) | Required behaviour for every failure/boundary scenario | EC-* |
+| [03-use-cases.md](03-use-cases.md) | Operator workflows and UI requirements | UC-*, UI-* |
+| [04-test-cases.md](04-test-cases.md) | Gherkin acceptance tests + traceability matrix | TC-* |
+| [05-architecture-ddd.md](05-architecture-ddd.md) | Bounded contexts, aggregates, events, ports/adapters, build order | — |
+| [06-configuration.md](06-configuration.md) | Every parameter: type, range, default, effectivity | — |
+| [07-user-flow.mermaid](07-user-flow.mermaid) | Operator journey: compose → arm → warm-up → fire → protected | — |
+| [08-decision-tree.mermaid](08-decision-tree.mermaid) | Full decision tree: every gate, skip reason, and lifecycle path | — |
+
+## Core design decisions (rationale recorded, do not silently change)
+
+1. **Stops rest at the broker on the short legs only** (STP-01/05/06) so protection survives bot/network/machine failure. Longs carry no stops. Say "broker-resting", not "exchange-resting"; the trigger source (last trade vs NBBO) MUST be verified before any other build work (STP-05a) — build halts if single-leg option stops are unsupported or last-trade-only.
+2. **Stop trigger is configurable via `stop_basis`** (STP-02): `total_credit` (default) = `stop_loss_pct` × total condor credit as an absolute price level; `per_side` = short fill + side net credit × `stop_loss_pct`. Default pct 95%, UI-selectable 95→300% in 5% steps.
+3. **Stop-market, not stop-limit** (STP-03): a bounded, occasional slippage cost is preferred over the unbounded tail risk of an unfilled stop-limit in a gap while unattended.
+4. **After a short stops, its long is always sold via a dynamic reprice ladder** priced off the live chain — mid → walk toward bid → marketable limit at bid — never a fixed markup, never a raw market order, never below max(bid, intrinsic) (LEX-*).
+5. **The condor is entered as one 4-leg complex order** (ORD-01), worked as a reprice ladder from mid with a credit floor (ORD-02/03). Individual spreads or single-side entries are prohibited.
+6. **Missed entries are skipped, never executed late** (ENT-02).
+7. **Event-sourced core, broker is truth for positions, log is truth for intent** (REC-01/02).
+8. **Paper and live are structurally separate wirings**, not a flag (EC-RSK-04).
+9. **Daily order-count rail** (RSK-08): stay under Cboe's 390/day professional-customer threshold; exit-side orders are never blocked by the cap.
+
+## Instructions to the coding AI
+
+1. These documents are the contract. Implement rules by ID; reference IDs in code comments and test names.
+2. Follow the build order in doc 05 §10. Domain first, against doc 04's unit tests; adapters last.
+3. Every rule and edge-case ID must be covered by a passing test (doc 04 matrix). Add the traceability CI check before writing feature code.
+4. Anything ambiguous or discovered-to-be-wrong about the tastytrade API (multi-leg order shapes, stop persistence semantics — STP-05, tick rules — STK-08, fee schedule — PNL-01): verify against the sandbox, then **propose a spec amendment — do not improvise**. The operator maintains these documents.
+5. No trading logic in the frontend; no I/O in the domain layer.
+6. Default everything from doc 06; nothing from doc 06 may be hardcoded.
+
+## Status
+
+- Version: 1.36 — 2026-07-04
+- v1.36 changes: Paper-mode fill simulation specced (SIM-01→06, TC-SIM-01→05, doc 01 §12): SimulatedBroker adapter + real production market data; trade-through fill model (touch never fills); simulated stops fill at trigger + slippage ticks; cash ledger ($100k default) + SPX spread margin model + real-close settlement; identical event/calibration/reconcile pipelines, PAPER-stamped; honesty surface for what paper cannot prove (queue, partials, stop independence). Cert sandbox restricted to contract tests. UC-10 and doc 05 adapter notes updated.
+- Version: 1.35 — 2026-07-04
+- v1.35 changes: REC-07 persistent-state inventory — one definitive list of everything durable (arm state, Stop Trading, Confirm Live, trading_mode, standing schedule, config version, TPF floors, event log, OWN ledger/SUSPENDED states, paper cash ledger), all restored exactly on any boot incl. Docker recovery; safe defaults on fresh install only; extending the list is a spec amendment. TC-ENT-07 Docker scenario broadened to the full inventory.
+- Version: 1.34 — 2026-07-04
+- v1.34 changes (Ash's rule): **Confirm Live** added as the third persistent trade-enabling state (ENT-01b, UI-21). Entries fire iff ARMED ∧ Stop Trading OFF ∧ Confirm Live ON. All three states individually durable and restored exactly on any restart including Docker recovery; safe defaults on fresh install only. Uniform across paper and live (paper exercises the same gate logic). Dashboard names the blocking state when idle.
+- Version: 1.33 — 2026-07-04
+- v1.33 changes (Ash's rule): ARM/DISARM is now **persistent, durable state** — no daily reset (supersedes v1.28's boots-DISARMED-daily). Composed entries form a standing daily schedule; armed persists indefinitely across days AND across process/Docker restarts (state restored from the durable store on boot); disarmed equally persists. Each trading day self-initializes while armed (calendar, reconcile, warm-up). Mid-day restart: missed windows skip, remaining entries fire. ENT-01/01a, UC-02, TC-ENT-07 updated.
+- Version: 1.32 — 2026-07-04
+- v1.32 changes (Ash's decision): **daily max loss REMOVED entirely** (RSK-02 tombstone — must not be built; EC-RSK-01 removed; `daily_max_loss`/`daily_loss_also_flatten`/`risk_eval_seconds` deleted and rejected as unknown config keys; `daily_loss` initiator gone; TC-RSK-02 is now an absence test). Risk model: broker-resting stops per position + operator-composed entry count + Stop Trading / Flatten controls. Accepted consequence, documented in the tombstone: cascade days run the full composed schedule unless the operator intervenes. **RSK-04 (max day risk) KEPT** — it gates entry stacking and the collision rules' widened-wing veto.
+- Version: 1.31 — 2026-07-01
+- v1.31 changes (final ratification): rows 8/9/10 approved as-is (contracts_per_entry pre-fill 1; daily_loss_also_flatten false; nle_haircut_pct 30). Per-entry OWN-06 state renamed "frozen" → **SUSPENDED** everywhere (last echo of freeze terminology removed; LEX's mechanical "freeze repricing" wording retained as unrelated). **All spec defaults and behaviors are now fully operator-ratified.**
+- Version: 1.30 — 2026-07-01
+- v1.30 changes (rows 6+7 ratified): third stop basis `short_premium` added and made DEFAULT (Rob's formula: trigger = short fill × (1 + stop_loss_pct); put $3.00 → $5.85, call $2.60 → $5.07 at 95%). Uses only the stopped leg's own fill — per_side's allocation caveat doesn't apply; loosest of the three bases (bigger per-stop loss, fewer noise stops); coherent with the gross-premium side floor (min_short_premium). stop_loss_pct pre-fill confirmed 95%. Single-leg resting-stop speed rationale was already core design; STP-05a sandbox verification gate unchanged. Also: TC-STK-07 (chain-integrity suite) restored — the v1.27 TC-STK-06 rewrite had accidentally swallowed it; caught by the traceability checker.
+- Version: 1.29 — 2026-07-01
+- v1.29 changes (rows 2–5 ratified): wing_width 50 confirmed; target_premium is operator-set per entry/side in the UI; side floor re-based (Ash): `min_side_credit` → `min_short_premium` — $1.00 floor on each SHORT's gross premium, wings NOT factored; total floor stays $2.00 NET with longs factored and is the abort gate (STK-05/06, STK-02a, ORD-03, TC-STK-02/03 updated). Accepted consequence, explicit in tests: a thin-net side trades when the total floor passes.
+- Version: 1.28 — 2026-07-01
+- v1.28 changes (row 1 ratified — Ash's rule): NO default entry schedule. Entries are composed in the UI each session (count, times, per-entry params); explicit ARM/DISARM state (ENT-01/01a, TC-ENT-07): bot starts DISARMED, arming requires ≥1 entry + pre-flight, disarm stops future entries without touching positions. Entry fires iff ARMED ∧ ¬StopTrading ∧ gates.
+- Version: 1.27 — 2026-07-01
+- v1.27 changes (row 11 ratified — Ash's collision rules): STK-09 rewritten. Same type STACKS (short-on-short, long-on-long allowed); opposite type BLOCKS (short blocked by longs, long blocked by shorts), including in-flight working orders for opposite-type checks only. Short budget: 3 strikes total then abort. Long budget: 5 solo shifts (spread widens; RSK-04 gates the widened worst case) then abort. TC-STK-06 rewritten; `max_long_shifts` added.
+- Version: 1.26 — 2026-07-01
+- v1.26 changes: combined "Stop Trading & Flatten" button added (RSK-01b, UI-20, TC-FLT-03) — one press, typed FLATTEN confirm, executes Stop Trading first (entries blocked before the first close) then Flatten All; structurally just the two existing controls invoked together. Global controls are now exactly three: Stop Trading / Flatten all / Stop Trading & Flatten.
+- Version: 1.25 — 2026-07-01
+- v1.25 changes (Ash's control model): Stop Trading and Flatten All are now fully ORTHOGONAL (RSK-01/01a restructured). Stop Trading = persistent toggle, blocks new entries only, everything else continues. Flatten All = one-shot close of the book, does NOT block future entries — next scheduled entry fires unless Stop Trading is also on (dialog checkbox, default unchecked). `kill_switch_mode` config removed; `daily_loss_action` → `daily_loss_also_flatten` (daily loss always stops trading, optionally also flattens); `kill_switch` CLS initiator removed. UC-05, EC-RSK-01/02/03, TC-RSK-01/02, TC-FLT-01, RiskGate updated.
+- Version: 1.24 — 2026-07-01
+- v1.24 changes: kill-switch mode `freeze` renamed to `stop_trading` throughout the spec (Ash's naming — clearer intent: it stops trading, it doesn't freeze existing management). Enum values, rule prose, tests and config updated; per-entry OWN-06 "frozen" state and mechanical LEX "freeze repricing" language are distinct concepts and unchanged.
+- Version: 1.23 — 2026-07-01
+- v1.23 changes (revisited debate, decay defaults ratified): trigger = ASK ≤ threshold (confirmed); cutoff default moved 15:45 → 15:55 (Ash: minimize late re-inflation tail); decay watcher now RUNS under kill-switch stop-trading mode (Ash: stop-trading blocks new risk, buyback removes risk) with a suspension rule — one failed stop re-placement while in stop-trading mode suspends the watcher until reset. DCY-01, TC-DCY-03, config updated.
+- Version: 1.22 — 2026-07-01
+- v1.22 changes (revisited debate, feed-failure design finalized): NFR-04 rewritten — persistent generation-guarded single-writer QuoteHub; decision moments run demand-reconnect (skip backoff) then a scoped read-only one-shot fetcher (never writes shared state) then safe give-up (skip/freeze/pause + informational alert). Fully automatic, no operator prompts. DXLink facts recorded: keepalive-based (no max lifetime), ~24 h quote token; old system's failures were cold-connect handshake hangs, not long-lived drops. Sandbox items: uptime observation, keepalive interval, token boundary.
+- Version: 1.21 — 2026-07-01
+- v1.21 changes (revisited debate): operator-override principle made absolute (OWN-09/10 revised). After ANY manual position intervention the bot takes zero order actions — it no longer auto-cancels leftover stops (full external close) and never resizes oversized stops (partial reduction). It stands down, freezes, and raises alerts that spell out each remaining order's consequence, with one-click operator-initiated Cancel/Resize actions. All cleanup is the operator's, by explicit decision. Clarified boundary (CLS-01/05, TC-CLS-04): bot-commanded closes (Close trade / Flatten all / TPF / EOD) always do full cleanup — stops cancelled AND all live legs closed, nothing orphaned; zero-touch applies only to interventions made directly at the broker.
+- Version: 1.20 — 2026-07-01
+- v1.20 changes (Bug Record cross-cutting note): P&L two-figure discipline (PNL-03 amended, PNL-04 added, TC-PNL-03) — intraday decisions run on bot-computed deterministic P&L; broker transaction history is authoritative for the permanent record, reconciled at EOD with divergence flags feeding fee-model corrections. This completes the Bug Record walkthrough: all 25 items dispositioned.
+- Version: 1.19 — 2026-07-01
+- v1.19 changes (Bug Record item 23): NFR-06 panel security — localhost-default bind, Origin rejection on mutating routes + WebSocket, token optional locally but structurally required for any non-localhost bind; VPN is the sanctioned remote-access path.
+- Version: 1.18 — 2026-07-01
+- v1.18 changes (Bug Record items 21/25): NFR-05 — BOM-tolerant reads for disk files, plus startup integrity hashing: any file changed outside the bot's own writes blocks arming until operator confirmation. Pre-live host open item: identify and exclude the file-mangling process.
+- Version: 1.17 — 2026-07-01
+- v1.17 changes (Bug Record items 4, 17–20): binding runtime NFRs (doc 05 §7a, TC-NFR-01→04) — off-loop serialized broker calls; session health loop (1-min probe / 5-min proactive refresh, market hours only, keeps the account stream alive for stop-fill events); explicit timeouts on all HTTP + hard-capped warm-up; persistent QuoteHub (one DXLink connection all day, shared marks, health pill) with degraded-mode fresh-connection fallback. Note: no monolithic 24/7 watchdog exists in this design — event-driven, day-scoped loops only.
+- Version: 1.16 — 2026-07-01
+- v1.16 changes (Bug Record item 16): single-entry Close trade (and Cancel entry) fires instantly with no confirmation dialog — failures toast; the entry card is the permanent preview; double-clicks are idempotent. Flatten-all deliberately retains the typed FLATTEN confirm (day-wide blast radius). UC-14/UI-16/TC-CLS-02 updated.
+- Version: 1.15 — 2026-07-01
+- v1.15 changes (Bug Record items 7+8): external-close handling (OWN-09/10/11, TC-OWN-07→10, REC-04 revised). Guarded detection (seen_open + grace + double-confirm + order-stream precedence); stand down and cancel own leftover stops; resize stop on partial reduction. **Operator-override principle (Ash):** anything the operator cancels at the broker is never re-placed automatically — `USER_UNPROTECTED` alert + one-click Re-protect instead; auto re-placement reserved for bot-side failures only.
+- Version: 1.14 — 2026-07-01
+- v1.14 changes (Bug Record items 5 pt.1/pt.2): Decay buyback (DCY-01→04, TC-DCY-01→04) — shorts bought back at ask ≤ $0.05 (2 valid evals), routed through CloseEntry short-only (initiator `decay`), re-inflation guard re-places the stop if unfilled/ask rises, leftover long left to expire (SIDE_CLOSED_DECAY), cutoff 15:45, blocked in stop-trading/manual/frozen states (later revised: runs under stop-trading, v1.23). Cancel-failure taxonomy (ORD-08, TC-ORD-06) — every failed cancel classified filled/terminal/transient; terminal never retries.
+- Version: 1.13 — 2026-07-01
+- v1.13 changes (Bug Record walkthrough, item 1): chain-integrity protection (STK-10/11, TC-STK-07) — completeness gate (≥90% of ±150pt ATM band marked, per type), adjacency guard (next-closer strike marked and above ceiling), and retry-within-window before `incomplete_chain` skip; missing wings retry instead of skipping immediately. Addresses old system's wrong-strike-on-holey-chain incident.
+- Version: 1.12 — 2026-07-01
+- v1.12 changes: Position ownership boundary (OWN-01→08, TC-OWN-01→06, UI-19; EC-API-04 rewritten). Broker nets by symbol and order IDs identify orders not lots, so the guarantees are: bot never transacts beyond its own fill-derived ledger (structural quantity cap), and it freezes + alerts on ledger mismatch. Unmatched positions are FOREIGN — quarantined, never touched, even naked shorts (alert-only). Shared symbols: constrain + warn, keep managing at ledger quantities. Ledger shortfall: freeze entry, write down, require acknowledgment. No account-level close-all endpoints, ever.
+- Version: 1.11 — 2026-07-01
+- v1.11 changes: Manual rebate markup (STP-02b, TC-STP-14, UI-18): operator-set dollar amount (default $0.00) added to stop triggers to pre-credit expected long recovery while NLE calibration accumulates. Operator-owned constant — NLE-04's ban on model-driven trigger adjustment stands. UI must disclose the worst-case increase; calibration records store the markup in force.
+- Version: 1.10 — 2026-07-01
+- v1.10 changes: Strike collision avoidance (STK-09, TC-STK-06): occupied strikes (existing positions OR in-flight orders, long or short — SPX options net at account level) force the colliding side one strike further OTM, wing following, max 2 shifts per side (configurable), third shift ⇒ skip `strike_collision`. Sides shift independently; credit gates re-run on shifted strikes.
+- Version: 1.9 — 2026-07-01
+- v1.9 changes: Pre-entry session warm-up (ENT-08, TC-ENT-06): at T−60s before each entry, validate/renew the tastytrade token, verify account-stream heartbeat, and confirm DXLink chain subscriptions are ticking — so the entry window is never spent on auth or cold connections. Warm-up never delays the entry; unresolved failures alert at T−10s and the ENT-03 gate skips as normal.
+- Version: 1.8 — 2026-07-01
+- v1.8 changes: Flatten-all control added (RSK-01a, UC-15, UI-17, TC-FLT-01/02) — always flattens regardless of `kill_switch_mode`, routes every close through CLS (initiator `manual_flatten`), blocks entries until reset, persists across restart. Operator close controls are exactly two: Close trade (one entry) and Flatten all (everything).
+- Version: 1.7 — 2026-07-01
+- v1.7 changes: Canonical close procedure extracted (CLS-01→04, section 6a): one `CloseEntry(entry_id, initiator)` service is the only close path — UI "Close trade" button (UC-14/UI-16), TPF trigger, kill-switch flatten, daily-loss flatten, and EOD close all route through it, differing only in recorded initiator. TC-CLS-01 asserts manual and TPF closes produce identical broker request sequences. Pre-fill entries: "close" = cancel (CLS-03).
+- Version: 1.6 — 2026-07-01
+- v1.6 changes: Take-profit floor added (TPF-01→09, EC-TPF-01→05, TC-TPF-01→08, UC-13, UI-15) — operator-set per-entry profit floor as % of net credit, levels {5..90 step 5} selectable only ≥5 points below current profit; bot-monitored (explicitly NOT broker-resting, UI must warn); close cancels stops first, then closes via ladder; no auto-trailing; survives restart. Selector validation is two-layer: UI recomputes enabled levels continuously from live profit while open; backend re-validates with its own mark at arm time and rejects (never clamps).
+- v1.5 changes: `target_premium_tolerance` added (default $0.10): selection ceiling = target + tolerance, so a $3.10 short qualifies at a $3.00 target but $3.11 does not.
+- v1.4 changes: `target_premium` semantics hardened to a **ceiling** (STK-02): select the richest strike at or below the ceiling walking OTM; a richer strike is never selected even when numerically closer. No qualifying strike ⇒ skip `no_valid_strikes`.
+- v1.3 changes: `strike_method` default is now `premium`, and `target_premium` is explicitly defined as the **short-leg mid target, not net spread credit** (STK-02/02a, UI-14). Net credit floats with wing cost; STK-05/06/ORD-03 gates and all stop/P&L math use actual **net** fill credits. Entries hitting the short target but netting below the floors are skipped by design.
+- v1.2 changes: Net-loss estimation section added (NLE-01→07, TC-NLE-01→07, UI-13) — chain-implied per-side net-loss estimate, informational only, structurally isolated from trigger math; calibration logging of every stop event for empirical tuning of `stop_loss_pct`. Rationale: single-leg stops cap short-leg loss deterministically while the long rebate is path-dependent; the pct dial (95–300%) is the mechanism for targeting net loss, informed by the estimate and calibrated by realized data. Automatic trigger adjustment is explicitly deferred (NLE-07).
+- v1.1 changes: `stop_basis` config (total_credit | per_side, STP-02); single-side entries removed (STK-05, EC-ENT-03); ORD-01 hardened to one 4-leg order only; STP-05a trigger-source verification gate added (TC-STP-13, build-blocking); daily order cap RSK-08; per-entry config overrides; leg-price allocation caveat documented.
+- Open items to verify during implementation, in priority order: (1) single-leg SPXW stop support + trigger reference price (STP-05a — blocking), (2) stop-order persistence independent of session (STP-05, UC-12 drill), (3) complex-order per-leg fill price allocation behaviour (STP-02 per_side), (4) sandbox/cert fill realism limits, (5) SPXW symbology/chain retrieval via the SDK, (6) current SPX fee schedule.

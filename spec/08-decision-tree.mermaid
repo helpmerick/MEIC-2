@@ -1,0 +1,106 @@
+flowchart TD
+    T0["Entry time T fires while ARMED"] --> G1{"Confirm Live ON AND<br/>Stop Trading off AND<br/>no Flatten executing?"}
+    G1 -->|no| SKIP1["SKIP: blocked"]
+    G1 -->|yes| G2{"Within 120s window?<br/>ENT-02"}
+    G2 -->|no| SKIP2["SKIP: missed_window<br/>never fires late"]
+    G2 -->|yes| G3{"Market open, no halt,<br/>session valid, buying power ok,<br/>order cap ok, RSK-04 ok?"}
+    G3 -->|no| SKIP3["SKIP: reason logged"]
+    G3 -->|yes| FEED1{"Quote feed healthy?<br/>NFR-04"}
+
+    FEED1 -->|sick| FD1["Demand-reconnect, max 2s<br/>skips the backoff queue"]
+    FD1 -->|failed| FD2["One-shot fetcher<br/>read-only, never writes marks"]
+    FD2 -->|failed| SKIP4["SKIP: data_unavailable"]
+
+    FEED1 -->|healthy| CHAIN{"Chain integrity STK-10:<br/>at least 90% of ATM band marked?"}
+    FD1 -->|healed| CHAIN
+    FD2 -->|data ok| CHAIN
+
+    CHAIN -->|no| CH1["Retry every 5s<br/>within entry window"]
+    CH1 -->|window expires| SKIP5["SKIP: incomplete_chain"]
+    CHAIN -->|yes| SEL["Premium walk per side STK-02:<br/>first strike at or under<br/>target + 0.10 ceiling, walking OTM"]
+    CH1 -->|healed| SEL
+
+    SEL --> ADJ{"Adjacency guard STK-11:<br/>next-closer strike marked<br/>and above ceiling?"}
+    ADJ -->|no| CH1
+    ADJ -->|yes| COLS{"Short strike occupied by a LONG<br/>or opposite in-flight order?<br/>STK-09"}
+    COLS -->|yes| CS1["Shift short 1 strike OTM<br/>wing follows, width kept"]
+    CS1 --> CS2{"Shift count 2 or less?"}
+    CS2 -->|yes| COLS
+    CS2 -->|3rd needed| SKIP6["SKIP: strike_collision"]
+
+    COLS -->|no| COLW{"Wing strike occupied by a SHORT<br/>or opposite in-flight order?"}
+    COLW -->|yes| CW1["Shift LONG alone 1 strike OTM<br/>spread widens, RSK-04 re-check"]
+    CW1 --> CW2{"Long shifts 5 or less<br/>AND RSK-04 passes?"}
+    CW2 -->|yes| COLW
+    CW2 -->|no| SKIP6
+
+    COLW -->|no| CRED{"Credit gates:<br/>each short 1.00 gross or more STK-05,<br/>total NET 2.00 or more STK-06"}
+    CRED -->|no| SKIP7["SKIP: insufficient_credit"]
+    CRED -->|yes| ORD["Submit ONE 4-leg order<br/>limit at mid net credit<br/>idempotency key ORD-01/04"]
+
+    ORD --> OF{"Filled?"}
+    OF -->|no after 20s| OR1["Reprice 1 tick down"]
+    OR1 --> OR2{"5 attempts or fewer AND<br/>still above 2.00 net floor?"}
+    OR2 -->|yes| OF
+    OR2 -->|no| OC["Cancel and confirm"]
+    OC --> OP{"Partial fill found?"}
+    OP -->|none| SKIP8["SKIP: unfilled_at_floor"]
+    OP -->|balanced condors| STOPS["Place 2 stop-markets, TIF Day<br/>trigger = short fill x 1.95 + markup<br/>short_premium basis default"]
+    OP -->|unbalanced anomaly| OFIX["Complete legs within 15s<br/>else flatten legs, critical alert"]
+    OF -->|yes| STOPS
+
+    STOPS --> SC{"Both stops confirmed<br/>working at broker?"}
+    SC -->|no, retries exhausted| UNP["UNPROTECTED: flatten side<br/>critical alert STP-04"]
+    SC -->|yes| PROT["PROTECTED<br/>resting at broker, bot-independent"]
+
+    PROT --> LC{"What happens next?"}
+
+    LC -->|short stop FILLS| LEX1["SIDE_STOPPED<br/>slippage recorded"]
+    LEX1 --> LEX2{"Long quote valid?<br/>fresh, uncrossed, sane spread"}
+    LEX2 -->|yes| LEX3["Sell long: limit at mid,<br/>reprice toward bid 15s x4,<br/>floor = max of bid and intrinsic"]
+    LEX2 -->|no| LEX4["Fallback: marketable<br/>limit at bid"]
+    LEX3 -->|filled| SCLOSED["SIDE_CLOSED<br/>calibration record NLE-06"]
+    LEX3 -->|ladder exhausted| LEX4
+    LEX4 -->|filled| SCLOSED
+    LEX4 -->|30s unfilled| LEX5["Alert, retry loop<br/>until fill or expiry"]
+    LEX5 --> SCLOSED
+
+    LC -->|ask at or under 0.05<br/>x2 evals, before 15:55| DCY1["Decay buyback DCY:<br/>cancel stop, ORD-08 taxonomy"]
+    DCY1 -->|cancel says FILLED| LEX1
+    DCY1 -->|cancelled ok| DCY2["Limit buy at trigger"]
+    DCY2 -->|filled| DCY3["SIDE_CLOSED_DECAY<br/>long left to expire"]
+    DCY2 -->|30s or ask rises| DCY4["Cancel buyback,<br/>RE-PLACE stop"]
+    DCY4 --> PROT
+
+    LC -->|TPF: profit falls to floor<br/>x2 valid evals| CLS0["CANONICAL CLOSE CLS-01<br/>step 1: cancel stops, confirm<br/>step 2: close all live legs via ladder"]
+    LC -->|operator clicks Close trade<br/>instant, no dialog| CLS0
+    LC -->|Flatten All or Stop+Flatten<br/>typed FLATTEN| CLS0
+    CLS0 -->|stop fills mid-cancel| LEX1
+    CLS0 --> CLOSED["ENTRY CLOSED<br/>initiator recorded"]
+
+    LC -->|operator intervenes<br/>AT THE BROKER| OWN1{"What did they do?"}
+    OWN1 -->|cancelled the bot's stop| OWN2["USER_UNPROTECTED<br/>never re-placed; alert with<br/>one-click Re-protect OWN-11"]
+    OWN1 -->|closed whole position| OWN3["CLOSED_EXTERNAL: stand down,<br/>leftover stop NOT cancelled,<br/>alert with one-click Cancel OWN-09"]
+    OWN1 -->|closed part of it| OWN4["SUSPENDED: zero order actions,<br/>over-buy chain alert with one-click<br/>Resize or Cancel OWN-10"]
+
+    LC -->|16:00 untouched| EOD1["Cash settle EOD-01<br/>sides EXPIRED<br/>verify zero working orders"]
+
+    EOD1 --> RPT["Day report and broker P&L<br/>reconcile PNL-04"]
+    SCLOSED --> RPT
+    DCY3 --> RPT
+    CLOSED --> RPT
+
+    style PROT fill:#c8e6c9
+    style UNP fill:#ffcdd2
+    style OWN2 fill:#ffcdd2
+    style OWN3 fill:#ffe0b2
+    style OWN4 fill:#ffe0b2
+    style SKIP1 fill:#ffe0b2
+    style SKIP2 fill:#ffe0b2
+    style SKIP3 fill:#ffe0b2
+    style SKIP4 fill:#ffe0b2
+    style SKIP5 fill:#ffe0b2
+    style SKIP6 fill:#ffe0b2
+    style SKIP7 fill:#ffe0b2
+    style SKIP8 fill:#ffe0b2
+    style RPT fill:#bbdefb

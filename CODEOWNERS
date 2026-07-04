@@ -1,0 +1,8 @@
+# Only the operator may approve changes to the contract and its guards.
+/spec/              @astro8893
+/spec.lock.json     @astro8893
+/scripts/           @astro8893
+/.github/           @astro8893
+/CLAUDE.md          @astro8893
+/CODEOWNERS         @astro8893
+/tests/features/    @astro8893

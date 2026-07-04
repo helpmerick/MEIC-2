@@ -1,0 +1,49 @@
+flowchart TD
+    A["Boot: process start, crash recovery,<br/>or Docker container recovery"] --> A1["RESTORE full persistent inventory REC-07:<br/>armed/disarmed, Stop Trading, Confirm Live,<br/>paper/live mode, standing schedule, config,<br/>TPF floors, ledgers, event log"]
+    A1 --> B["Startup reconcile vs broker<br/>REC-02, OWN-02"]
+    B --> C{"Account matches<br/>the bot's books?"}
+    C -->|FOREIGN position found| C1["Quarantine, never touch<br/>critical banner OWN-03, UI-19"]
+    C -->|clean, crash orphans adopted| D["Operator opens dashboard<br/>UI-05: DISARMED badge, paper/live,<br/>health pills"]
+    C1 --> D
+    D --> D1{"Restored state?"}
+    D1 -->|ARMED: standing schedule active| J
+    D1 -->|DISARMED| E
+
+    D --> E["Compose or edit the standing schedule:<br/>count, times, contracts,<br/>target premium per side, wing width,<br/>stop basis, stop pct, rebate markup<br/>fires EVERY trading day while armed"]
+    E --> F["Press ARM"]
+    F --> G{"Validation: 1+ entries,<br/>legal times, market day<br/>DAY-01/02"}
+    G -->|fail| E
+    G -->|pass| H{"Pre-flight checklist:<br/>clock drift, session, feed,<br/>config version UC-02"}
+    H -->|an item fails| H1["Checklist shows the red item"]
+    H1 --> E
+    H -->|all pass| I["ARMED, waiting<br/>entries editable until each fires"]
+
+    I --> J["T minus 60s warm-up ENT-08:<br/>token valid or refreshed,<br/>account stream heartbeat,<br/>chain subscription ticking"]
+    J --> K["Entry time T fires"]
+    K --> L{"Gates ENT-03:<br/>armed? confirm-live ON?<br/>stop-trading off?<br/>no flatten executing? window ok?<br/>market open? data fresh? session ok?<br/>buying power? order cap? RSK-04?"}
+    L -->|any gate fails| L1["Entry SKIPPED<br/>reason shown on card UI-06"]
+    L1 --> W{"More entries<br/>composed?"}
+    L -->|pass| M["Strike selection and guards<br/>see diagram 08 for the full tree"]
+    M -->|abort path| L1
+    M -->|strikes locked| N["4-leg condor order:<br/>limit at mid, tick down every 20s,<br/>max 5 times, never below net floor<br/>ORD-01/02/03"]
+    N -->|unfilled at floor| N1["Cancel confirmed<br/>SKIPPED unfilled_at_floor"]
+    N1 --> W
+    N -->|filled balanced| O["Place 2 resting stops,<br/>same processing turn:<br/>trigger = short fill x 1.95 + markup<br/>stop-market, TIF Day STP-01/02/02b"]
+    O --> P{"Both stops confirmed<br/>working at the broker?"}
+    P -->|no after bounded retries| P1["UNPROTECTED: flatten side<br/>critical alert STP-04"]
+    P1 --> W
+    P -->|yes| Q["Entry OPEN and PROTECTED<br/>card shows legs, credits, triggers,<br/>NLE estimate, broker order IDs"]
+    Q --> W
+
+    W -->|yes today| J
+    W -->|no more today| X["Manage to the close:<br/>stop-outs run LEX, TPF floors,<br/>decay buybacks, EOD settlement,<br/>day report with broker P&L reconcile PNL-04"]
+
+    style A fill:#bbdefb
+    style Q fill:#c8e6c9
+    style P1 fill:#ffcdd2
+    style L1 fill:#ffe0b2
+    style N1 fill:#ffe0b2
+    X --> Y["Next trading day self-initializes<br/>while still ARMED: calendar,<br/>reconcile, warm-up - no operator action"]
+    Y --> J
+    style X fill:#bbdefb
+    style A1 fill:#bbdefb
