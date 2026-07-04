@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(spec/**)", "Write(spec/**)",
+      "Edit(spec.lock.json)", "Write(spec.lock.json)",
+      "Edit(scripts/**)", "Write(scripts/**)",
+      "Edit(.github/**)", "Write(.github/**)",
+      "Edit(tests/features/**)", "Write(tests/features/**)",
+      "Edit(CLAUDE.md)", "Write(CLAUDE.md)",
+      "Edit(CODEOWNERS)", "Write(CODEOWNERS)"
+    ]
+  }
+}
