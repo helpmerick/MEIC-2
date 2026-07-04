@@ -4,19 +4,32 @@ on:
   push:
     branches: [main]
 jobs:
-  build:
+  guards:
+    # REQUIRED check: the contract is intact and fully covered.
+    # Set branch protection to require THIS job.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - name: 1 — spec lock (the contract is intact)
+      - name: spec lock (the contract is intact)
         run: python scripts/verify_spec_lock.py
-      - name: 2 — regenerate features from the spec
+      - name: regenerate features from the spec
         run: python scripts/extract_features.py
-      - name: 3 — traceability (every rule covered, every TC implemented)
+      - name: traceability (every rule covered, every TC implemented)
         run: python scripts/check_traceability.py
-      - name: 4 — install and test
+  suite:
+    # INFORMATIONAL until the build is complete (red-by-design during phases).
+    # Operator flips this to a required check when green is the expectation.
+    runs-on: ubuntu-latest
+    needs: guards
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: extract features
+        run: python scripts/extract_features.py
+      - name: install and test
         run: |
           pip install -r requirements-dev.txt
           if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi

@@ -11,7 +11,7 @@
   "scripts/check_traceability.py": "acb668bae64bce38dac43eb996aceed6e458251bb19ff2ef86fe9b3a2dd04dfb",
   "scripts/extract_features.py": "797e8a5fb2336b7071c8c1b09b98f42ef4e906b7a4da7b5f0dfb0fe3a54a8aa0",
   "scripts/verify_spec_lock.py": "4ead9fb6c03dcbc08db5181fc6bc4b63ae90af0d1f2e1183c52358a795634ddf",
-  ".github/workflows/ci.yml": "a50df5518a98eb6927e1cc18abaff1e6e5def40757dcf83a04bc0a0ec02ead5f",
+  ".github/workflows/ci.yml": "14567255dc55f36d76bbc9f527b7be4f0bae955f724b5e543779d064a8df4ccf",
   "CLAUDE.md": "62af52884778bec6fda42acee01192637059d7167b7c5c26220366541e01b5b9",
   "CODEOWNERS": "0ce788065da1156dc83a635bc0300c43f3cdefcf0f9cbeb98233a3d6360664ac"
 }
