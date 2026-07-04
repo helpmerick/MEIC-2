@@ -37,12 +37,21 @@ Scenario: Missed window is never executed late
   And no order for entry 1 is ever submitted
 ```
 
-**TC-ENT-02** — ENT-03 (one scenario per gate: Stop Trading active, Flatten All executing, loss limit, halt, stale data, invalid session, insufficient BP — parametrized)
+**TC-ENT-02** — ENT-03 (one scenario per gate: Stop Trading active, Flatten All executing, halt, stale data, invalid session, insufficient BP — parametrized)
 ```gherkin
 Scenario Outline: Pre-entry gate blocks entry
   Given <gate_condition> is true at 10:30 ET
   Then entry 2 is SKIPPED with reason <reason>
   And no order is submitted
+
+  Examples:
+    | gate_condition            | reason              |
+    | Stop Trading active       | stop_trading        |
+    | a Flatten All executing   | flatten_in_progress |
+    | a market halt             | market_halted       |
+    | market data stale         | data_unavailable    |
+    | broker session invalid    | invalid_session     |
+    | insufficient buying power | insufficient_bp     |
 ```
 
 **TC-ENT-03** — ENT-04/ENT-05: quantity equals contracts_per_entry; a day never exceeds max_entries_per_day fills.
@@ -83,8 +92,7 @@ Scenario: Armed state persists across days (standing schedule)
   Given the operator armed 6 entries on Monday
   When Tuesday's market opens with no operator action
   Then the day self-initializes (calendar, reconcile, warm-up)
-  And all 6 entries fire at their times on Tuesday, and every trading day after,
-      until the operator disarms
+  And all 6 entries fire at their times on Tuesday, and every trading day after, until the operator disarms
 
 Scenario: Disarmed state equally persists
   Given the operator disarmed on Monday afternoon
@@ -105,8 +113,7 @@ Scenario: Confirm Live is the third required state (ENT-01b)
   And the dashboard states which gate is blocking
 
 Scenario: The full persistent-state inventory survives Docker recovery (REC-07)
-  Given ARMED = on, Stop Trading = on, Confirm Live = on, trading_mode = paper,
-        a standing 6-entry schedule, an armed TPF floor, and a paper cash ledger
+  Given ARMED = on, Stop Trading = on, Confirm Live = on, trading_mode = paper, a standing 6-entry schedule, an armed TPF floor, and a paper cash ledger
   When the container dies and recovers
   Then every item is restored exactly as it was
   And entries remain blocked (Stop Trading is on) until the operator resumes
@@ -490,8 +497,7 @@ Also asserted architecturally: `CloseEntry` is the only module with close-order 
 **TC-FLT-01** — RSK-01a/UC-15 flatten all
 ```gherkin
 Scenario: Flatten all with mixed entry states
-  Given entry 1 OPEN (both sides), entry 2 with put side mid-LEX, entry 3 with a WORKING entry order,
-        entry 4 OPEN with an armed TPF floor
+  Given entry 1 OPEN (both sides), entry 2 with put side mid-LEX, entry 3 with a WORKING entry order, entry 4 OPEN with an armed TPF floor
   When the operator confirms Flatten all
   Then entry 3's order is cancelled (CLS-03), no close orders placed for its legs
   And entries 1, 2, 4 close via CloseEntry with initiator "manual_flatten"
@@ -751,8 +757,7 @@ Scenario: Decision moment - fetcher path
 
 Scenario: Decision moment - give up safely
   Given demand-reconnect and fetcher both fail
-  Then the entry skips "data_unavailable", a LEX ladder freezes with its limit still working,
-       TPF/DCY pause, an informational alert fires, and everything resumes on heal
+  Then the entry skips "data_unavailable", a LEX ladder freezes with its limit still working, TPF/DCY pause, an informational alert fires, and everything resumes on heal
 ```
 
 ## Reconciliation & persistence

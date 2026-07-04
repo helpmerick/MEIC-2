@@ -23,7 +23,7 @@ def collect() -> dict:
         elif path.is_dir():
             for f in sorted(path.rglob("*")):
                 if f.is_file():
-                    out[str(f.relative_to(ROOT))] = digest(f)
+                    out[f.relative_to(ROOT).as_posix()] = digest(f)
     return out
 
 def main() -> int:
