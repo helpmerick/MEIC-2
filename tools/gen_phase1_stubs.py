@@ -134,17 +134,26 @@ def main() -> int:
         return 1
     BDD_OUT.mkdir(parents=True, exist_ok=True)
     PROSE_OUT.mkdir(parents=True, exist_ok=True)
+    # Only generated stubs are disposable. A module without the Auto-generated
+    # marker holds hand-written step definitions (real implementations) — never
+    # delete or overwrite those.
     for old in BDD_OUT.glob("test_tc_*.py"):
-        old.unlink()
+        if "Auto-generated" in old.read_text(encoding="utf-8")[:200]:
+            old.unlink()
 
-    blocked_tcs, step_count = [], 0
+    blocked_tcs, handwritten, step_count = [], [], 0
     for f in features:
+        out = BDD_OUT / f"test_{f.stem.lower().replace('-', '_')}.py"
+        if out.exists():
+            handwritten.append(f.stem)
+            continue
         steps, blocked = parse_feature(f)
         if blocked:
             blocked_tcs.append(f.stem)
         step_count += len(steps)
-        out = BDD_OUT / f"test_{f.stem.lower().replace('-', '_')}.py"
         out.write_text(emit_bdd_module(f.stem, steps, blocked), encoding="utf-8")
+    if handwritten:
+        print(f"preserved {len(handwritten)} hand-written modules: {', '.join(handwritten)}")
 
     doc = DOC04.read_text(encoding="utf-8-sig")
     all_tcs = []
