@@ -10,32 +10,12 @@ from pytest_bdd import given, scenarios, then, when
 scenarios("../features/TC-STP-01.feature")
 
 
-@given('stop_basis = short_premium')
+@given('stop_basis = total_credit')
 def _():
     raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
 
 
 @when('the condor fill is confirmed')
-def _():
-    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
-
-
-@then('the put stop trigger = round_to_tick(1.35 * (1 + 0.95))')
-def _():
-    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
-
-
-@then('the call stop trigger = round_to_tick(1.25 * (1 + 0.95))')
-def _():
-    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
-
-
-@then("neither trigger depends on any long leg's allocated fill price")
-def _():
-    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
-
-
-@given('stop_basis = total_credit')
 def _():
     raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
 
@@ -51,6 +31,41 @@ def _():
 
 
 @then('no stop exists on either long leg   # STP-06')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@given('net credit 4.00, both stops at 3.80, longs recover zero')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@then('one side stopped and one side expiring nets +0.20 (small profit, the kept 5%)')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@then('both sides stopped nets -3.60 (about the premium, never more before slippage)')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@given('stop_basis = short_premium')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@then('the put stop trigger = round_to_tick(1.35 * (1 + 0.95))')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@then('the call stop trigger = round_to_tick(1.25 * (1 + 0.95))')
+def _():
+    raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
+
+
+@then("neither trigger depends on any long leg's allocated fill price")
 def _():
     raise NotImplementedError("TC-STP-01: not implemented (Phase 1 red)")
 

@@ -13,8 +13,8 @@ Feature: TC-STP-01
 
   Scenario: Stops placed immediately on fill (short_premium basis, selectable per entry)
     Given stop_basis = short_premium
-    Then the put stop trigger = floor_to_tick(1.35 * (1 + 0.95))   # -> 2.60
-    And the call stop trigger = floor_to_tick(1.25 * (1 + 0.95))   # -> 2.40
+    Then the put stop trigger = round_to_tick(1.35 * (1 + 0.95))
+    And the call stop trigger = round_to_tick(1.25 * (1 + 0.95))
     And neither trigger depends on any long leg's allocated fill price
 
   Scenario: Stops placed immediately on fill (per_side basis)
