@@ -299,19 +299,23 @@ Scenario: Submit timeout does not cause duplicate orders
 
 **TC-STP-01** — STP-01/STP-02
 ```gherkin
-Scenario: Stops placed immediately on fill (short_premium basis - Rob's formula, default)
-  Given stop_basis = short_premium
-  When the condor fill is confirmed
-  Then the put stop trigger = round_to_tick(1.35 * (1 + 0.95))
-  And the call stop trigger = round_to_tick(1.25 * (1 + 0.95))
-  And neither trigger depends on any long leg's allocated fill price
-
-Scenario: Stops placed immediately on fill (total_credit basis)
+Scenario: Stops placed immediately on fill (total_credit basis - THE DEFAULT, Ash's outcome contract)
   Given stop_basis = total_credit
   When the condor fill is confirmed
   Then two buy-to-close stop-market orders (TIF Day) are working within the same processing turn
   And each trigger price = round_to_tick(0.95 * 2.30)
   And no stop exists on either long leg   # STP-06
+
+Scenario: The outcome contract holds (Ash's Way 2, the 400-dollar example)
+  Given net credit 4.00, both stops at 3.80, longs recover zero
+  Then one side stopped and one side expiring nets +0.20 (small profit, the kept 5%)
+  And both sides stopped nets -3.60 (about the premium, never more before slippage)
+
+Scenario: Stops placed immediately on fill (short_premium basis, selectable per entry)
+  Given stop_basis = short_premium
+  Then the put stop trigger = round_to_tick(1.35 * (1 + 0.95))
+  And the call stop trigger = round_to_tick(1.25 * (1 + 0.95))
+  And neither trigger depends on any long leg's allocated fill price
 
 Scenario: Stops placed immediately on fill (per_side basis)
   Given stop_basis = per_side
@@ -377,6 +381,26 @@ Scenario: UI worst-case disclosure
 Scenario: Intraday change is next-entry only
   Given markup changed 0.00 -> 0.50 after entry 1 filled
   Then entry 1's resting stops are unchanged and entry 2 uses 0.50
+```
+
+**TC-STP-15** — STP-02c feasibility guard (v1.38)
+```gherkin
+Scenario: Thin credit is skipped before entry
+  Given estimated net credit 2.00 at 95% (trigger 1.90) and the short put mid is 3.00
+  Then the entry is SKIPPED with reason "infeasible_stop" and no order is submitted
+
+Scenario: Healthy credit passes
+  Given estimated net credit 4.00 (trigger 3.80) vs shorts at 3.00 and 2.00
+  Then triggers clear both fills by the minimum distance and stops are placed
+
+Scenario: Post-fill infeasibility closes instead of placing a suicidal stop
+  Given fills land such that the actual trigger does not clear a short's fill
+  Then no stop is placed for that entry
+  And the entry closes via CLS-01 with initiator "infeasible_stop" and an alert
+
+Scenario: Markup counts toward feasibility
+  Given a rebate markup that lifts the trigger above fill + minimum distance
+  Then the entry is feasible   # STP-02b adds to the trigger before the check
 ```
 
 **TC-STP-13** — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
@@ -794,7 +818,7 @@ Scenario: Decision moment - give up safely
 | DAY-01/02 | TC-EOD-05 | | STP-01/02 | TC-STP-01/02/03 |
 | DAY-03 | TC-RSK-05 | | STP-03 | TC-STP-09 |
 | DAY-04/05 | TC-REC-01, TC-UI-04 | | STP-04 | TC-STP-04 |
-| ENT-01/02 | TC-ENT-01 | | STP-02b / STP-05/05a | TC-STP-14, TC-STP-08/13 |
+| ENT-01/02 | TC-ENT-01 | | STP-02b/02c / STP-05/05a | TC-STP-14/15, TC-STP-08/13 |
 | ENT-03 | TC-ENT-02 | | STP-06 | TC-STP-01 |
 | ENT-04/05 | TC-ENT-03 | | STP-07/08 | TC-STP-06 |
 | ENT-06 | TC-ENT-04 | | STP-09 | TC-EOD-01 |

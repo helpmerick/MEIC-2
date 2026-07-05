@@ -14,11 +14,12 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 | [06-configuration.md](06-configuration.md) | Every parameter: type, range, default, effectivity | — |
 | [07-user-flow.mermaid](07-user-flow.mermaid) | Operator journey: compose → arm → warm-up → fire → protected | — |
 | [08-decision-tree.mermaid](08-decision-tree.mermaid) | Full decision tree: every gate, skip reason, and lifecycle path | — |
+| [09-worked-examples.mermaid](09-worked-examples.mermaid) | Three real condors traced through the credit gates with whipsaw math (2.25 target / 30-wide) | — |
 
 ## Core design decisions (rationale recorded, do not silently change)
 
 1. **Stops rest at the broker on the short legs only** (STP-01/05/06) so protection survives bot/network/machine failure. Longs carry no stops. Say "broker-resting", not "exchange-resting"; the trigger source (last trade vs NBBO) MUST be verified before any other build work (STP-05a) — build halts if single-leg option stops are unsupported or last-trade-only.
-2. **Stop trigger is configurable via `stop_basis`** (STP-02): `total_credit` (default) = `stop_loss_pct` × total condor credit as an absolute price level; `per_side` = short fill + side net credit × `stop_loss_pct`. Default pct 95%, UI-selectable 95→300% in 5% steps.
+2. **Stop trigger default = `total_credit` at 95% (Ash's outcome contract, restored v1.38):** both shorts stop at pct × net credit — one-sided hit nets a small profit (the kept 5% + long recovery), both-sides hit loses ≈ the premium and never more (before slippage); STP-02c feasibility guard skips entries whose trigger can't clear the shorts. `short_premium` (Rob's per-leg formula) and `per_side` remain selectable per entry. Default pct 95%, UI-selectable 95→300% in 5% steps.
 3. **Stop-market, not stop-limit** (STP-03): a bounded, occasional slippage cost is preferred over the unbounded tail risk of an unfilled stop-limit in a gap while unattended.
 4. **After a short stops, its long is always sold via a dynamic reprice ladder** priced off the live chain — mid → walk toward bid → marketable limit at bid — never a fixed markup, never a raw market order, never below max(bid, intrinsic) (LEX-*).
 5. **The condor is entered as one 4-leg complex order** (ORD-01), worked as a reprice ladder from mid with a credit floor (ORD-02/03). Individual spreads or single-side entries are prohibited.
@@ -38,6 +39,10 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.38 — 2026-07-05
+- v1.38 changes (Ash's outcome-contract ratification — 'Way 2'): default `stop_basis` flipped to **total_credit @ 95%** (restores the day-one rule, now ratified with full understanding of alternatives): one-sided hit ⇒ small profit, both-sides ⇒ ≈ the premium, never more; wings cancel from the math. New STP-02c trigger feasibility guard (pre-entry skip `infeasible_stop` + post-fill CLS close, `min_stop_distance_ticks` default 2, new CLS initiator). `short_premium` remains selectable. TC-STP-01 reordered, TC-STP-15 added, diagrams 07/08 updated, 09 rewritten as the ratified $400 example.
+- Version: 1.37 — 2026-07-04
+- v1.37 changes (first build-phase amendment, agent-proposed, operator-ratified): TC-ENT-02 valid Gherkin with canonical reason strings; v1.32 'loss limit' remnant removed; four Gherkin line-joins; verify_spec_lock.py as_posix for cross-OS manifests.
 - Version: 1.36 — 2026-07-04
 - v1.36 changes: Paper-mode fill simulation specced (SIM-01→06, TC-SIM-01→05, doc 01 §12): SimulatedBroker adapter + real production market data; trade-through fill model (touch never fills); simulated stops fill at trigger + slippage ticks; cash ledger ($100k default) + SPX spread margin model + real-close settlement; identical event/calibration/reconcile pipelines, PAPER-stamped; honesty surface for what paper cannot prove (queue, partials, stop independence). Cert sandbox restricted to contract tests. UC-10 and doc 05 adapter notes updated.
 - Version: 1.35 — 2026-07-04

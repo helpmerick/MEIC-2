@@ -34,8 +34,8 @@ flowchart TD
     CW2 -->|yes| COLW
     CW2 -->|no| SKIP6
 
-    COLW -->|no| CRED{"Credit gates:<br/>each short 1.00 gross or more STK-05,<br/>total NET 2.00 or more STK-06"}
-    CRED -->|no| SKIP7["SKIP: insufficient_credit"]
+    COLW -->|no| CRED{"Credit gates:<br/>each short 1.00 gross or more STK-05,<br/>total NET 2.00 or more STK-06,<br/>trigger clears each short by 2 ticks<br/>STP-02c feasibility"}
+    CRED -->|no| SKIP7["SKIP: insufficient_credit<br/>or infeasible_stop"]
     CRED -->|yes| ORD["Submit ONE 4-leg order<br/>limit at mid net credit<br/>idempotency key ORD-01/04"]
 
     ORD --> OF{"Filled?"}
@@ -45,7 +45,7 @@ flowchart TD
     OR2 -->|no| OC["Cancel and confirm"]
     OC --> OP{"Partial fill found?"}
     OP -->|none| SKIP8["SKIP: unfilled_at_floor"]
-    OP -->|balanced condors| STOPS["Place 2 stop-markets, TIF Day<br/>trigger = short fill x 1.95 + markup<br/>short_premium basis default"]
+    OP -->|balanced condors| STOPS["Place 2 stop-markets, TIF Day<br/>both triggers = 95% x net credit + markup<br/>total_credit basis default<br/>post-fill feasibility recheck STP-02c"]
     OP -->|unbalanced anomaly| OFIX["Complete legs within 15s<br/>else flatten legs, critical alert"]
     OF -->|yes| STOPS
 
@@ -90,17 +90,17 @@ flowchart TD
     DCY3 --> RPT
     CLOSED --> RPT
 
-    style PROT fill:#c8e6c9
-    style UNP fill:#ffcdd2
-    style OWN2 fill:#ffcdd2
-    style OWN3 fill:#ffe0b2
-    style OWN4 fill:#ffe0b2
-    style SKIP1 fill:#ffe0b2
-    style SKIP2 fill:#ffe0b2
-    style SKIP3 fill:#ffe0b2
-    style SKIP4 fill:#ffe0b2
-    style SKIP5 fill:#ffe0b2
-    style SKIP6 fill:#ffe0b2
-    style SKIP7 fill:#ffe0b2
-    style SKIP8 fill:#ffe0b2
-    style RPT fill:#bbdefb
+    style PROT fill:#c8e6c9,color:#000000
+    style UNP fill:#ffcdd2,color:#000000
+    style OWN2 fill:#ffcdd2,color:#000000
+    style OWN3 fill:#ffe0b2,color:#000000
+    style OWN4 fill:#ffe0b2,color:#000000
+    style SKIP1 fill:#ffe0b2,color:#000000
+    style SKIP2 fill:#ffe0b2,color:#000000
+    style SKIP3 fill:#ffe0b2,color:#000000
+    style SKIP4 fill:#ffe0b2,color:#000000
+    style SKIP5 fill:#ffe0b2,color:#000000
+    style SKIP6 fill:#ffe0b2,color:#000000
+    style SKIP7 fill:#ffe0b2,color:#000000
+    style SKIP8 fill:#ffe0b2,color:#000000
+    style RPT fill:#bbdefb,color:#000000

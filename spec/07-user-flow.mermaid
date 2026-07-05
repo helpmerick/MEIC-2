@@ -28,7 +28,7 @@ flowchart TD
     M -->|strikes locked| N["4-leg condor order:<br/>limit at mid, tick down every 20s,<br/>max 5 times, never below net floor<br/>ORD-01/02/03"]
     N -->|unfilled at floor| N1["Cancel confirmed<br/>SKIPPED unfilled_at_floor"]
     N1 --> W
-    N -->|filled balanced| O["Place 2 resting stops,<br/>same processing turn:<br/>trigger = short fill x 1.95 + markup<br/>stop-market, TIF Day STP-01/02/02b"]
+    N -->|filled balanced| O["Place 2 resting stops,<br/>same processing turn:<br/>both triggers = 95% x net credit + markup<br/>(total_credit default, STP-02/02b/02c)<br/>stop-market, TIF Day"]
     O --> P{"Both stops confirmed<br/>working at the broker?"}
     P -->|no after bounded retries| P1["UNPROTECTED: flatten side<br/>critical alert STP-04"]
     P1 --> W
@@ -38,12 +38,12 @@ flowchart TD
     W -->|yes today| J
     W -->|no more today| X["Manage to the close:<br/>stop-outs run LEX, TPF floors,<br/>decay buybacks, EOD settlement,<br/>day report with broker P&L reconcile PNL-04"]
 
-    style A fill:#bbdefb
-    style Q fill:#c8e6c9
-    style P1 fill:#ffcdd2
-    style L1 fill:#ffe0b2
-    style N1 fill:#ffe0b2
+    style A fill:#bbdefb,color:#000000
+    style Q fill:#c8e6c9,color:#000000
+    style P1 fill:#ffcdd2,color:#000000
+    style L1 fill:#ffe0b2,color:#000000
+    style N1 fill:#ffe0b2,color:#000000
     X --> Y["Next trading day self-initializes<br/>while still ARMED: calendar,<br/>reconcile, warm-up - no operator action"]
     Y --> J
-    style X fill:#bbdefb
-    style A1 fill:#bbdefb
+    style X fill:#bbdefb,color:#000000
+    style A1 fill:#bbdefb,color:#000000

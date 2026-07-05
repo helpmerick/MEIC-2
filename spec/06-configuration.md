@@ -52,8 +52,9 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | Parameter | Type / Range | Default | Effectivity | Rules |
 |---|---|---|---|---|
 | `stop_loss_pct` | **{95, 100, …, 300} (5% steps, exactly)** | **95** | next-entry (UC-08 to modify existing) | STP-02, UI-04 |
-| `stop_basis` | short_premium \| total_credit \| per_side | short_premium | next-entry | STP-02 — default is Rob's formula: fill × (1 + pct), single-leg, allocation-independent |
+| `stop_basis` | total_credit \| short_premium \| per_side | **total_credit** | next-entry | STP-02 — DEFAULT is Ash's outcome contract (v1.38): trigger = pct × net credit, both shorts; one-side hit ⇒ small profit, both ⇒ ≈ the premium, never more |
 | `stop_rebate_markup` | $0.00–$5.00, step $0.05 | $0.00 | next-entry | STP-02b — added to trigger to pre-credit expected long recovery; UI must show worst-case increase (UI-18) |
+| `min_stop_distance_ticks` | 1–20 | 2 | next-entry | STP-02c — trigger must clear each short's price by this; else skip `infeasible_stop` / close post-fill |
 | `stop_order_type` | stop_market \| stop_limit | stop_market | next-entry | STP-03 |
 | `stop_limit_offset_ticks` | 1–20 (stop_limit only) | 4 | next-entry | STP-03 |
 | `stop_limit_escalation_seconds` | 2–60 | 10 | immediate | STP-03, EC-STP-08 |

@@ -1,0 +1,24 @@
+flowchart TD
+    START["THE RATIFIED CONTRACT (v1.38, default stop_basis = total_credit at 95%)<br/>Example trade: short put 3.00 / long put 0.50 (30-wide)<br/>short call 2.00 / long call 0.50<br/>NET CREDIT 4.00 = +400 banked at entry<br/>BOTH stops at 95% x 4.00 = 3.80<br/>(numbers assume longs recover zero - reality is slightly better)"]
+
+    START --> D1["Day type 1: quiet<br/>nothing reaches 3.80"]
+    D1 --> R1["Everything expires<br/>KEEP +400"]
+
+    START --> D2["Day type 2: one side hit<br/>market falls, put reaches 3.80<br/>call side survives"]
+    D2 --> R2["Banked 4.00, paid 3.80 to exit<br/>= +20 MINIMUM (the kept 5%)<br/>+ whatever the long put sells for<br/>A one-sided hit CANNOT lose money"]
+
+    START --> D3["Day type 3: whipsaw<br/>both sides reach 3.80"]
+    D3 --> R3["Banked 4.00, paid 3.80 + 3.80<br/>= -360 (about the premium)<br/>+ long recoveries reduce it further<br/>NEVER more, before slippage"]
+
+    START --> D4["Edge case: thin credit<br/>net credit only 2.00<br/>trigger would be 1.90,<br/>BELOW the 3.00 short put"]
+    D4 --> R4["STP-02c feasibility guard:<br/>entry SKIPPED infeasible_stop<br/>a stop below the fill is an instant exit,<br/>so the trade is never opened"]
+
+    R2 --> NOTE["The trade-off, accepted:<br/>3.80 sits only 0.80 above the put fill,<br/>so small wobbles stop out more often.<br/>More small green days instead of +400 days.<br/>short_premium basis remains selectable per entry."]
+    R3 --> NOTE
+
+    style R1 fill:#c8e6c9,color:#000000
+    style R2 fill:#c8e6c9,color:#000000
+    style R3 fill:#ffe0b2,color:#000000
+    style R4 fill:#ffe0b2,color:#000000
+    style START fill:#bbdefb,color:#000000
+    style NOTE fill:#bbdefb,color:#000000
