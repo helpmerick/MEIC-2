@@ -68,6 +68,7 @@ class SimulatedBroker:
         fill_through_ticks: int = 1,
         stop_slippage_ticks: int = 3,
         fee_per_leg: Decimal = Decimal("0"),
+        events: list | None = None,
     ) -> None:
         self._ids = itertools.count(1)
         self._orders: dict[str, SimOrder] = {}
@@ -76,12 +77,19 @@ class SimulatedBroker:
         self._through = fill_through_ticks
         self._slippage = stop_slippage_ticks
         self._fee = fee_per_leg
-        self.events: list = []
+        self.events: list = events if events is not None else []  # shared with the pipeline (SIM-05)
+        self._market = None  # provider(intent) -> (natural, mid, is_credit); paper's real feed
+
+    def set_market(self, provider) -> None:
+        """Bind the market snapshot the fill model evaluates against — the REAL
+        DXLink feed in paper mode (SIM-01), a scripted snapshot in tests."""
+        self._market = provider
 
     # --- SIM-02: try to fill a limit order against a market snapshot ----------
     def try_fill_limit(self, order_id: str, *, natural: Decimal, mid: Decimal, is_credit: bool) -> bool:
         o = self._orders[order_id]
-        limit = Decimal(str(o.intent["net_credit" if is_credit else "price"]))
+        raw = o.intent.get("net_credit", o.intent.get("price"))  # entries carry net_credit; legs carry price
+        limit = Decimal(str(raw))
         if o.status != "WORKING":
             return o.status == "FILLED"
         if limit_fills(is_credit=is_credit, limit=limit, natural=natural, mid=mid,
@@ -93,12 +101,20 @@ class SimulatedBroker:
 
     # --- SIM-03: a triggered stop fills at trigger + slippage -----------------
     def try_fill_stop(self, order_id: str, *, mark: Decimal) -> Decimal | None:
+        from meic.domain.events import ShortStopped
+
         o = self._orders[order_id]
         trigger = Decimal(str(o.intent["trigger"]))
         if o.status == "WORKING" and stop_triggered(mark, trigger):
             price = stop_fill_price(trigger, tick=self._tick, slippage_ticks=self._slippage)
             o.status, o.fill_price = "FILLED", price
             self._settle(o, signed=-price, legs=1)  # buy-to-close a short
+            # SIM-05: a paper stop fill emits the SAME event a live fill would,
+            # routing the side into SIDE_STOPPED -> LEX through the normal pipeline.
+            side = "PUT" if "put" in o.intent.get("leg", "").lower() else "CALL"
+            self.events.append(ShortStopped(
+                entry_id=o.intent.get("entry_id", ""), side=side, fill=price,
+                slippage=price - trigger, initiator="resting_stop"))
             return price
         return None
 
@@ -110,7 +126,30 @@ class SimulatedBroker:
     async def submit(self, order: dict) -> str:
         oid = f"SIM-{next(self._ids)}"
         self._orders[oid] = SimOrder(order_id=oid, intent=dict(order), status="WORKING")
+        # A limit order fills immediately iff the current real market trades
+        # through it (SIM-02); stops rest until a mark reaches the trigger.
+        if self._market is not None and order.get("type") in ("limit", "marketable_limit"):
+            snap = self._market(order)
+            if snap is not None:
+                natural, mid, is_credit = snap
+                self.try_fill_limit(oid, natural=natural, mid=mid, is_credit=is_credit)
         return oid
+
+    def tick_marks(self, marks: dict[str, Decimal], *, entry_id: str | None = None) -> list[tuple[str, Decimal]]:
+        """Feed current short marks; fill any resting stop whose trigger is hit
+        (SIM-03). Scope to one entry_id when only one side should move. Returns
+        the (order_id, fill_price) of stops that filled."""
+        filled = []
+        for oid, o in list(self._orders.items()):
+            if o.status == "WORKING" and o.intent.get("type") == "stop_market":
+                if entry_id is not None and o.intent.get("entry_id") != entry_id:
+                    continue
+                leg = o.intent.get("leg", "")
+                if leg in marks:
+                    price = self.try_fill_stop(oid, mark=marks[leg])
+                    if price is not None:
+                        filled.append((oid, price))
+        return filled
 
     async def cancel(self, id) -> dict:
         o = self._orders.get(id)
