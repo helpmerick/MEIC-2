@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.39 — 2026-07-05
+- v1.39 changes (operator-ratified numerics session): STK-02 premium selection replaced with **Ash's probe walk** (nearest-0.05 mid lattice; order T, ±0.05 alternating down-first; max 3 up-probes / 25 down-probes; effective floor max(T−1.25, $1.00); deterministic + logged) — `target_premium_tolerance` retired for `probe_up_max`/`probe_down_max`; STK-11 reworked to probe-match integrity. Stop triggers now round **DOWN to tick** (contract-preserving). Hard-coded vector suites: TC-STK-08 (8 probe-walk vectors incl. the never-select-above-cap case) and TC-STP-16 (7 stop vectors + regression guard asserting 3.80-not-5.85). Markup stance: allowed, consequence pinned in vector 5, default $0.00.
 - Version: 1.38 — 2026-07-05
 - v1.38 changes (Ash's outcome-contract ratification — 'Way 2'): default `stop_basis` flipped to **total_credit @ 95%** (restores the day-one rule, now ratified with full understanding of alternatives): one-sided hit ⇒ small profit, both-sides ⇒ ≈ the premium, never more; wings cancel from the math. New STP-02c trigger feasibility guard (pre-entry skip `infeasible_stop` + post-fill CLS close, `min_stop_distance_ticks` default 2, new CLS initiator). `short_premium` remains selectable. TC-STP-01 reordered, TC-STP-15 added, diagrams 07/08 updated, 09 rewritten as the ratified $400 example.
 - Version: 1.37 — 2026-07-04

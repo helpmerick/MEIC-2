@@ -17,10 +17,10 @@ flowchart TD
 
     CHAIN -->|no| CH1["Retry every 5s<br/>within entry window"]
     CH1 -->|window expires| SKIP5["SKIP: incomplete_chain"]
-    CHAIN -->|yes| SEL["Premium walk per side STK-02:<br/>first strike at or under<br/>target + 0.10 ceiling, walking OTM"]
+    CHAIN -->|yes| SEL["Probe walk per side STK-02 v1.39:<br/>T, T-.05, T+.05, T-.10, T+.10, T-.15, T+.15<br/>then down-only, 25 max, floor max(T-1.25, 1.00)<br/>first rounded-mid match wins"]
     CH1 -->|healed| SEL
 
-    SEL --> ADJ{"Adjacency guard STK-11:<br/>next-closer strike marked<br/>and above ceiling?"}
+    SEL --> ADJ{"Probe-match integrity STK-11:<br/>raw mid within 0.025 of probe,<br/>quote fresh, sequence logged?"}
     ADJ -->|no| CH1
     ADJ -->|yes| COLS{"Short strike occupied by a LONG<br/>or opposite in-flight order?<br/>STK-09"}
     COLS -->|yes| CS1["Shift short 1 strike OTM<br/>wing follows, width kept"]

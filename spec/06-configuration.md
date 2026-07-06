@@ -17,7 +17,8 @@ Single source of truth for every configurable parameter. The backend config sche
 | `max_entries_per_day` | 1–20 | len(entry_times) | next-entry | ENT-05 |
 | `strike_method` | premium \| delta | premium | next-entry | STK-02 |
 | `target_premium` | $0.50–$20.00 | $3.00 | next-entry | STK-02/02a — short-leg mid target; selection ceiling = target + tolerance, never exceeded; NOT net spread credit; net = short − long fluctuates with wing cost |
-| `target_premium_tolerance` | $0.00–$1.00 | $0.10 | next-entry | STK-02 — allowed overshoot above target; richest strike ≤ target+tolerance wins |
+| `probe_up_max` | 0–5 | 3 | next-entry | STK-02 probe walk (v1.39) — max probes above target (cap = T + 0.05×n) |
+| `probe_down_max` | 1–40 | 25 | next-entry | STK-02 — max probes below target; effective floor = max(T−1.25, min_short_premium) |
 | `short_delta_target` | 0.03–0.30 | 0.10 | next-entry | STK-02 |
 | `short_delta_max` | ≥ target, ≤ 0.35 | 0.15 | next-entry | STK-02 |
 | `wing_width` | 10–200 pts, step 5 | 50 | next-entry | STK-03 |

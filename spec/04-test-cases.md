@@ -151,32 +151,15 @@ Scenario: Bot starts inside the warm-up window
 
 **TC-STK-01** — STK-02 delta method: with a scripted chain, the selected short strikes are the closest to 0.10Δ not exceeding 0.15Δ; boundary case at exactly short_delta_max selects the strike.
 
-**TC-STK-02** — STK-02/02a premium method
+**TC-STK-02** — STK-02/02a premium principles (selection mechanics themselves live in TC-STK-08)
 ```gherkin
-Scenario: Small overshoot within tolerance is accepted
-  Given target_premium = 3.00, target_premium_tolerance = 0.10
-  And adjacent put strikes with mids 3.10 and 2.85
-  Then the short put strike is the 3.10 strike   # ceiling = 3.10 inclusive; richest qualifying wins
-  And the long put strike = short - wing_width   # STK-03, regardless of its cost
+Scenario: target_premium reads the SHORT leg only
+  Given the probe walk matches a short strike
+  Then the long wing is placed at wing_width regardless of its own cost  # STK-03
 
-Scenario: Boundary — one tick over the ceiling is rejected
-  Given adjacent put strikes with mids 3.11 and 2.85
-  Then the short put strike is the 2.85 strike   # 3.11 > 3.10 ceiling
-
-Scenario: Ceiling beats proximity
-  Given adjacent put strikes with mids 3.25 and 2.85
-  Then the short put strike is the 2.85 strike   # 3.25 above ceiling even though closer to target
-
-Scenario: No strike at or below the ceiling
-  Given every strike with valid quotes has mid > 3.10
-  Then the entry is SKIPPED with reason "no_valid_strikes"
-
-Scenario: Same short target, expensive wing => net credit gate skips the entry
-  Given target_premium = 3.00 and both shorts fill their premium floor
-  And in the morning the wings cost 1.00 each (total net = 3.90)
-  But at the 12:30 entry the wings cost 2.10 each (total net = 1.90)
-  Then the morning entry proceeds
-  And the 12:30 entry is SKIPPED with reason "insufficient_credit"  # STK-06: total NET < 2.00 aborts
+Scenario: Expensive wing aborts on the total NET floor
+  Given both shorts match their probes and wings cost 2.10 each (total net = 1.90)
+  Then the entry is SKIPPED with reason "insufficient_credit"  # STK-06: total NET < 2.00 aborts
 
 Scenario: A thin side trades when the total floor passes (accepted by design)
   Given the put side nets 0.10 after an expensive wing and the call side nets 2.20
@@ -185,7 +168,7 @@ Scenario: A thin side trades when the total floor passes (accepted by design)
 
 Scenario: Stops and P&L use net fill credit, never target_premium
   Given the condor fills with short put 3.00 and long put 1.00
-  Then per_side stop math uses side net credit 2.00 (not 3.00)
+  Then stop math uses the actual net credit (not 3.00)
   And the day report shows short premium and net credit as separate labelled figures  # UI-14
 ```
 Also: STK-07 missing wing strike ⇒ skip `no_valid_strikes` (EC-ENT-02).
@@ -233,6 +216,50 @@ Scenario: In-flight opposite-type orders count as occupied
 Scenario: Gates re-run on final strikes
   Given the shifted short's premium falls below min_short_premium (or total net < min_total_credit)
   Then the entry is SKIPPED with reason "insufficient_credit"
+```
+
+**TC-STK-08** — STK-02 probe walk, operator-ratified vectors (v1.39; all mids shown are raw, target 3.00 unless stated)
+```gherkin
+Scenario: Vector A - first down-probe matches
+  Given strikes with raw mids 3.20, 2.93, 2.70   # 2.93 rounds to probe price 2.95
+  Then probes run 3.00 (miss), 2.95 (MATCH)
+  And the 2.93 strike is sold
+
+Scenario: Vector B - up-probe within the cap matches
+  Given strikes with raw mids 3.30, 3.05, 2.80
+  Then probes run 3.00, 2.95, 3.05 (MATCH)
+  And the 3.05 strike is sold
+
+Scenario: Vector C - equal distance above the cap is NEVER selected
+  Given strikes with raw mids 3.45, 3.20, 2.80
+  Then all seven probes 3.00 to 3.15 miss
+  And the down-only phase matches 2.80
+  And the 3.20 strike is never selected despite equal distance to target
+
+Scenario: Vector D - full exhaustion skips
+  Given no strike's rounded mid lies between 1.75 and 3.15
+  Then all 3 up-probes and all 25 down-probes miss
+  And the entry is SKIPPED with reason "no_valid_strikes"
+
+Scenario: Vector E - deep walk sells thin but legal premium
+  Given a strike with raw mid 1.80 and nothing nearer the 3.00 target
+  Then the down-only phase matches at probe 1.80 (within the 25-step depth)
+  And the strike is sold   # 1.80 >= the 1.00 hard floor
+
+Scenario: Vector E2 - the 1.00 hard floor beats the walk depth
+  Given target 2.00 and the only match would be at raw mid 0.95
+  Then the effective floor is max(2.00 - 1.25, 1.00) = 1.00
+  And probes below 1.00 are never taken
+  And the entry is SKIPPED with reason "no_valid_strikes"
+
+Scenario: Rounding lattice is nearest-0.05
+  Given a strike with raw mid 2.92
+  Then it answers probe 2.90, not 2.95   # 2.92 rounds down to 2.90
+
+Scenario: Probe order is deterministic and logged
+  Then the exact sequence T, T-0.05, T+0.05, T-0.10, T+0.10, T-0.15, T+0.15,
+       T-0.20, T-0.25 ... is enumerated verbatim
+  And the day report records which probe number matched
 ```
 
 **TC-STK-07** — STK-10/11 chain integrity (Bug #1 regression suite)
@@ -381,6 +408,46 @@ Scenario: UI worst-case disclosure
 Scenario: Intraday change is next-entry only
   Given markup changed 0.00 -> 0.50 after entry 1 filled
   Then entry 1's resting stops are unchanged and entry 2 uses 0.50
+```
+
+**TC-STP-16** — Operator-ratified stop-calculation vectors (v1.39; stop_basis total_credit, markup 0.00 and floor-to-tick rounding unless stated; all values exact to the cent)
+```gherkin
+Scenario: Vector 1 - the canonical 400-dollar contract
+  Given shorts 3.00 + 2.00, wings 0.50 + 0.50, net credit 4.00, pct 95
+  Then both triggers = 3.80 exactly
+  And one side stopped with the other expiring nets +20
+  And both sides stopped nets -360
+
+Scenario: Vector 2 - pct 100 boundary
+  Given the same trade at pct 100
+  Then both triggers = 4.00, one-side nets 0, both-sides nets -400 exactly
+
+Scenario: Vector 3 - floor rounding in the 0.10-tick regime
+  Given net credit 3.60 at pct 95 (raw trigger 3.42)
+  Then the trigger floors to 3.40, never 3.50
+
+Scenario: Vector 4 - floor rounding in the 0.05-tick regime
+  Given net credit 3.10 at pct 95 (raw trigger 2.945)
+  Then the trigger floors to 2.90, never 2.95
+
+Scenario: Vector 5 - markup spends the one-side guarantee (documented consequence)
+  Given vector 1 plus stop_rebate_markup 0.50
+  Then both triggers = 4.30
+  And a one-side hit nets -30 plus long recovery   # the +20 guarantee is traded away by the dial
+  And both sides nets -460
+
+Scenario: Vector 6 - feasibility kill
+  Given shorts 3.00 + 2.00 with wings 1.50 + 1.50 (net credit 2.00, raw trigger 1.90)
+  Then the trigger sits below the 3.00 short and the entry is SKIPPED "infeasible_stop"
+
+Scenario: Vector 7 - feasibility knife-edge
+  Given net credit 3.37 at pct 95 (raw 3.2015, floors to 3.20) vs a 3.00 short
+  Then clearance is exactly 2 ticks and the entry is FEASIBLE   # rule is >=
+
+Scenario: Regression guard - the corrected behavior can never silently return
+  Given vector 1 with stop_basis = total_credit
+  Then the trigger MUST be 3.80 and MUST NOT be 5.85
+  # failure message: "per-leg (short_premium) default has crept back in"
 ```
 
 **TC-STP-15** — STP-02c feasibility guard (v1.38)
@@ -818,7 +885,7 @@ Scenario: Decision moment - give up safely
 | DAY-01/02 | TC-EOD-05 | | STP-01/02 | TC-STP-01/02/03 |
 | DAY-03 | TC-RSK-05 | | STP-03 | TC-STP-09 |
 | DAY-04/05 | TC-REC-01, TC-UI-04 | | STP-04 | TC-STP-04 |
-| ENT-01/02 | TC-ENT-01 | | STP-02b/02c / STP-05/05a | TC-STP-14/15, TC-STP-08/13 |
+| ENT-01/02 | TC-ENT-01 | | STP-02b/02c / STP-05/05a | TC-STP-14/15/16, TC-STP-08/13 |
 | ENT-03 | TC-ENT-02 | | STP-06 | TC-STP-01 |
 | ENT-04/05 | TC-ENT-03 | | STP-07/08 | TC-STP-06 |
 | ENT-06 | TC-ENT-04 | | STP-09 | TC-EOD-01 |
@@ -831,7 +898,7 @@ Scenario: Decision moment - give up safely
 | RSK-01a/01b | TC-FLT-01/02/03 | | UI-17/20 / UC-15 | TC-FLT-01/03 |
 | OWN-01→11 | TC-OWN-01→10 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
-| STK-01→11 | TC-STK-01→07 | | EOD-01→05 | TC-EOD-01→05 |
+| STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
 | PNL-01→04 | TC-PNL-01→03 | | UI-01→12 | TC-UI-01→04 |
