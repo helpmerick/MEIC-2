@@ -53,7 +53,7 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | Parameter | Type / Range | Default | Effectivity | Rules |
 |---|---|---|---|---|
 | `stop_loss_pct` | **{95, 100, …, 300} (5% steps, exactly)** | **95** | next-entry (UC-08 to modify existing) | STP-02, UI-04 |
-| `stop_basis` | total_credit \| short_premium \| per_side | **total_credit** | next-entry | STP-02 — DEFAULT is Ash's outcome contract (v1.38): trigger = pct × net credit, both shorts; one-side hit ⇒ small profit, both ⇒ ≈ the premium, never more |
+| `stop_basis` | total_credit \| short_premium \| ~~per_side~~ | **total_credit** | next-entry | STP-02 — DEFAULT is Ash's outcome contract (v1.38): trigger = pct × net credit, both shorts; one-side hit ⇒ small profit, both ⇒ ≈ the premium, never more. `per_side` GATED (STP-02d, v1.43): rejected `allocation_unverified` until 5 consecutive real fills reconcile + ratified amendment |
 | `stop_rebate_markup` | $0.00–$5.00, step $0.05 | $0.00 | next-entry | STP-02b — added to trigger to pre-credit expected long recovery; UI must show worst-case increase (UI-18) |
 | `min_stop_distance_ticks` | 1–20 | 2 | next-entry | STP-02c — trigger must clear each short's price by this; else skip `infeasible_stop` / close post-fill |
 | `stop_order_type` | stop_market \| stop_limit | stop_market | next-entry | STP-03 |
@@ -163,7 +163,7 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 
 ## Validation rules (backend-enforced, TC-UI-01)
 
-1. `stop_loss_pct` must be a member of {95..300 step 5} — reject anything else, including 94, 96, 300.1. `stop_basis` must be exactly `total_credit` or `per_side`.
+1. `stop_loss_pct` must be a member of {95..300 step 5} — reject anything else, including 94, 96, 300.1. `stop_basis` must be exactly `total_credit` or `short_premium`; `per_side` is rejected with reason `allocation_unverified` while the STP-02d gate is in force (v1.43). (Pre-v1.43 text omitted `short_premium` from the valid set — corrected.)
 2. `short_delta_max ≥ short_delta_target`. (`min_short_premium` and `min_total_credit` have different bases — gross short premium vs total net — so no ordering constraint links them.)
 3. `entry_times` strictly increasing, all within market hours, each ≥ `min_time_before_close` before the (possibly early) close.
 4. `max_day_risk` is mandatory before live mode can be enabled. (`daily_max_loss` no longer exists — RSK-02 removed v1.32; the config loader REJECTS it as an unknown key.)

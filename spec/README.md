@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.43 — 2026-07-06
+- v1.43 changes (operator-ratified, Phase 5 gate ruling): **STP-02d per_side allocation gate** — cert showed per-leg allocations that don't reconcile to net fill (legs summing $0.50 on a $0.05 fill), and per_side stop math consumes exactly that input. Config validation rejects `per_side` (`allocation_unverified`), no runtime toggle; adapter logs a passive allocation-reconciliation record on every real fill in all bases; ungate = 5 consecutive PASSED real-fill records + ratified amendment (FAIL resets the streak). per_side formulas remain in spec and domain — only selection is blocked. TC-STP-18 added, TC-STP-02 amended. Also corrected a stale doc 06 validation line that omitted short_premium from the valid basis set. Phase 5 adapter assumptions (10 items, agent-restated from the Phase 2 cert run) signed off by Ash as the adapter's contract.
 - Version: 1.42 — 2026-07-06
 - v1.42 changes (operator-ratified after floor-vs-round re-debate, agent-proposed narrow diff expanded to full sweep): all 13 `round_to_tick` occurrences in doc 04 corrected to `floor_to_tick` per STP-02 (v1.39) — standard fixture (triggers 2.60/2.40, 2.15, 2.45/2.25), TC-STP-01 (2.15, 2.60/2.40, 2.45/2.25), TC-STP-14 markup scenarios (2.95 not 3.00 — round would cross the $0.10-tick regime; 2.75; 2.65). No rule change: doc 04 brought into line with the already-ratified floor mandate. Ash's ruling: keep floor — exactness of the outcome contract (MUST-pinnable guarantees) at ~zero cost (≤1 tick, often $0).
 - Version: 1.41 — 2026-07-06

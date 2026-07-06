@@ -347,7 +347,7 @@ Scenario: Stops placed immediately on fill (per_side basis)
   And side net credits are computed from the broker's allocated leg fills
 ```
 
-**TC-STP-02** — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas; values outside the pct set or basis set are rejected by config validation (doc 06).
+**TC-STP-02** — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas (per_side formulas stay verified in the domain even while gated); values outside the pct set or basis set are rejected by config validation (doc 06); SELECTING per_side is rejected `allocation_unverified` per STP-02d (v1.43).
 
 **TC-STP-03** — STP-02 intraday change / EC-STP-07: pct changed 95→150 (and basis per_side→total_credit) after entry 1 ⇒ entry 1 stops unchanged, entry 2 uses the new values.
 
@@ -487,6 +487,27 @@ Scenario: Stale marks pause the clock
 
 Scenario: Every escalation is calibration evidence
   Then each watchdog_escalation record stores mark-at-breach, elapsed time, and fill price
+```
+
+**TC-STP-18** — STP-02d per_side allocation gate (v1.43)
+```gherkin
+Scenario: per_side selection is rejected while the gate is in force
+  Given config stop_basis = per_side, globally or on any entry override
+  Then config validation rejects it with reason "allocation_unverified"
+  And total_credit and short_premium remain selectable
+  And no runtime toggle exists that lifts the gate
+
+Scenario: Allocation reconciliation is recorded on every real fill
+  Given a condor fill from the live broker under any stop_basis
+  Then a reconciliation record is logged comparing sum of allocated leg prices to the net fill
+  And the record PASSES only if they agree within one tick and no leg is zero-priced without trading at zero
+  And paper-mode fills never produce reconciliation records
+
+Scenario: Ungate criterion is fixed
+  Given fewer than 5 consecutive PASSED reconciliation records from real fills
+  Then the gate cannot be lifted
+  And a FAILED record resets the consecutive count to zero
+  And lifting the gate requires an operator-ratified spec amendment
 ```
 
 **TC-STP-13** — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
