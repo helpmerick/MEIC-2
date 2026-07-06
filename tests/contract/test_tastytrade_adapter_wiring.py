@@ -98,3 +98,38 @@ async def test_gtc_option_stop_rejected_client_side(adapter, env):
               "legs": [{"symbol": strike.put, "action": "buy_to_open", "qty": 1}]}
     with pytest.raises(ValueError):  # client-side reject, never sent
         await adapter.dry_run(intent)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_order_events_account_stream_receives_status(adapter, env):
+    """order_events wiring: the account stream (AlertStreamer, not DXLink)
+    delivers an order-status event for a real far-OTM Day-TIF stop; cancel it."""
+    import asyncio
+
+    from tastytrade import Session
+    from tastytrade.instruments import NestedOptionChain
+
+    session = Session(env["TT_CERT_PROVIDER_SECRET"], refresh_token=env["TT_CERT_REFRESH_TOKEN"], is_test=True)
+    chain = (await NestedOptionChain.get(session, "SPXW"))[0]
+    exp = next(e for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
+               if e.expiration_date >= date.today())
+    strike = sorted(exp.strikes, key=lambda s: s.strike_price)[0]
+
+    seen: list[dict] = []
+
+    async def listen():
+        async for e in adapter.order_events():
+            seen.append(e)
+            return  # one event is enough to prove the wiring
+
+    task = asyncio.ensure_future(asyncio.wait_for(listen(), timeout=30))
+    await asyncio.sleep(2)  # let the stream connect + subscribe before we place
+
+    intent = {"order_type": "stop_market", "tif": "Day", "stop_trigger": D("0.05"),
+              "legs": [{"symbol": strike.put, "action": "buy_to_open", "qty": 1}]}
+    order_id = await adapter.submit({**intent, "dry_run": False})
+    try:
+        await task
+    finally:
+        await adapter.cancel(order_id)
+    assert seen and seen[0]["type"] == "order_status"

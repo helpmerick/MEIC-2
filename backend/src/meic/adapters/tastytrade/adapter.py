@@ -172,5 +172,20 @@ class TastytradeAdapter:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]
 
-    def order_events(self) -> AsyncIterator[Any]:
-        raise NotImplementedError("account stream (AlertStreamer) — next wiring step")
+    async def order_events(self) -> AsyncIterator[dict[str, Any]]:
+        """Account order-status stream (STP-04/ORD-05/LEX-01). Uses the
+        AlertStreamer (account WebSocket) — NOT DXLink — yielding normalized
+        order-status events. Order state is driven by these events, never
+        assumed (ORD-05)."""
+        from tastytrade import AlertStreamer
+        from tastytrade.order import PlacedOrder
+
+        async with AlertStreamer(self._session) as streamer:
+            await streamer.subscribe_accounts([self._account])
+            async for order in streamer.listen(PlacedOrder):
+                yield {
+                    "type": "order_status",
+                    "order_id": str(getattr(order, "id", "")),
+                    "status": str(order.status).split(".")[-1].lower(),
+                    "raw": order,
+                }
