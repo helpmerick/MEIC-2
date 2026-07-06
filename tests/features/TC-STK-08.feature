@@ -36,6 +36,5 @@ Feature: TC-STK-08
     Then it answers probe 2.90, not 2.95   # 2.92 rounds down to 2.90
 
   Scenario: Probe order is deterministic and logged
-    Then the exact sequence T, T-0.05, T+0.05, T-0.10, T+0.10, T-0.15, T+0.15,
-         T-0.20, T-0.25 ... is enumerated verbatim
+    Then the exact sequence T, T-0.05, T+0.05, T-0.10, T+0.10, T-0.15, T+0.15, T-0.20, T-0.25 ... is enumerated verbatim
     And the day report records which probe number matched

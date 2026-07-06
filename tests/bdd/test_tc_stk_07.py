@@ -79,38 +79,26 @@ def _(world):
     assert world["skip"] == "incomplete_chain"
 
 
-# --- Scenarios 3-4: RETIRED adjacency guard — blocked on proposed amendment ---
+# --- Scenario: probe-match integrity invariant (STK-11, v1.40 wording) -------
 
-_ADJACENCY_STALE = (
-    "TC-STK-07 scenarios 3-4 encode the v1.4 adjacency guard, retired by "
-    "v1.39 STK-11 (probe-match integrity). Spec amendment proposed to the "
-    "operator to rewrite/remove them; frozen until ratified."
-)
-
-
-@given('the completeness gate passes at 90%')
+@given('the probe walk selects a strike')
 def _(world):
-    pass  # context only; the stale adjacency step below blocks the scenario
+    side = ChainSide((D("6000"), D("5950")),
+                     {D("6000"): _mk("2.93"), D("5950"): _mk("0.10")})
+    world["selected"] = select_side(side, **WALK)
+    assert isinstance(world["selected"], Selected)
 
 
-@given("the strike one step closer to the money than the walk's selection has no mark")
-def _():
-    raise NotImplementedError(_ADJACENCY_STALE)
+@then('its raw mid is within 0.025 of the matched probe price')
+def _(world):
+    r = world["selected"]
+    assert abs(r.short_mid - r.probe_price) <= D("0.025")
 
 
-@then('the selection is rejected and treated as a STK-10 failure (retry, then skip)')
-def _():
-    raise NotImplementedError(_ADJACENCY_STALE)
-
-
-@given('the strike one step closer to the money is marked BELOW the ceiling')
-def _():
-    raise NotImplementedError(_ADJACENCY_STALE)
-
-
-@then('the selection is rejected            # the walk should have selected that richer strike')
-def _():
-    raise NotImplementedError(_ADJACENCY_STALE)
+@then('the day report records the matched probe number')
+def _(world):
+    r = world["selected"]
+    assert isinstance(r.probe_number, int) and r.probe_number >= 1  # the log's source field
 
 
 # --- Scenario: missing wing retries ------------------------------------------
