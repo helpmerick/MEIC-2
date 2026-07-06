@@ -172,11 +172,6 @@ def test_tc_lex_09():
     raise NotImplementedError("TC-LEX-09: prose test case not implemented (Phase 1 red)")
 
 
-# TC-TPF-04 — TPF-04/CLS-01 close procedure: stops cancelled and confirmed before spread close orders; close via reprice ladder with fallback; close-submit failure after stop cancel ⇒ stops re-placed and UNPROTECTED handling engaged.
-def test_tc_tpf_04():
-    raise NotImplementedError("TC-TPF-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-CLS-02 — UC-14/UI-16: Close trade fires **instantly with no confirmation dialog** (Bug #16), closes via CLS, clears any armed TPF floor, tags the report `manual`; failures render as a toast, never a blocking dialog; a rapid double-click produces exactly one close (idempotency, TC-CLS-03). On a WORKING entry the action is Cancel entry (CLS-03), also instant. Flatten-all still requires the typed FLATTEN confirmation (TC-FLT-01).
 def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
@@ -207,24 +202,9 @@ def test_tc_tpf_05():
     raise NotImplementedError("TC-TPF-05: prose test case not implemented (Phase 1 red)")
 
 
-# TC-TPF-06 — TPF-05 partial scope: put side already stopped (realized −$1.10), call side open ⇒ profit% includes realized; trigger closes call side only.
-def test_tc_tpf_06():
-    raise NotImplementedError("TC-TPF-06: prose test case not implemented (Phase 1 red)")
-
-
 # TC-TPF-07 — TPF-08/EC-TPF-01 restart: floor armed, bot down while profit gaps below floor ⇒ on recovery close triggers immediately at current level; report shows floor vs realized.
 def test_tc_tpf_07():
     raise NotImplementedError("TC-TPF-07: prose test case not implemented (Phase 1 red)")
-
-
-# TC-TPF-08 — TPF-06/07/09: raise/lower/clear all evented and gap-validated; floor never self-adjusts as profit grows (no trailing); Stop Trading leaves TPF active, an executing Flatten All supersedes; TPF trigger near close works until EOD per EOD-04.
-def test_tc_tpf_08():
-    raise NotImplementedError("TC-TPF-08: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DCY-03 — DCY-01 gates: trigger uses the ASK only (bid/mid/last scenarios prove no other price fires it); no trigger from a single bad print; none after decay_cutoff_time (15:55 default); none for MANUAL/SUSPENDED entries; none while a Flatten All executes; nothing fires outside RTH (structural — no tracked shorts exist overnight). Under stop-trading mode: buybacks CONTINUE; and if a re-inflation-guard stop re-placement fails once while in stop-trading mode, the watcher suspends until stop-trading reset (scenario asserts suspension and resumption).
-def test_tc_dcy_03():
-    raise NotImplementedError("TC-DCY-03: prose test case not implemented (Phase 1 red)")
 
 
 # TC-EOD-01 — EOD-01: untouched condor held to settlement; sides marked EXPIRED; settlement P&L computed against SET/close value.

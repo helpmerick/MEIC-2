@@ -25,6 +25,28 @@ class DecayWatcher:
     decay_confirmation_evals: int = 2
     _count: int = 0
 
+    # --- DCY-01 gates ---------------------------------------------------------
+    def gate_allows(
+        self,
+        *,
+        now_time,
+        cutoff_time,
+        mode: str = "AUTO",             # AUTO | MANUAL | SUSPENDED
+        flatten_in_progress: bool = False,
+        watcher_suspended: bool = False,  # set after a re-inflation re-placement failed under stop-trading
+    ) -> bool:
+        """DCY-01 gate matrix. Note: Stop Trading does NOT block (Ash's rule —
+        buybacks remove risk); RTH is structural (no tracked shorts overnight)."""
+        if now_time >= cutoff_time:            # not after decay_cutoff_time (15:55)
+            return False
+        if mode in ("MANUAL", "SUSPENDED"):    # never for MANUAL/OWN-06 SUSPENDED entries
+            return False
+        if flatten_in_progress:                # never while a Flatten All executes
+            return False
+        if watcher_suspended:                  # a failed re-placement under stop-trading suspends the watcher
+            return False
+        return True
+
     # --- DCY-01 trigger: ASK only, N consecutive valid evals ------------------
     def evaluate(self, *, ask: Decimal, stale: bool = False) -> bool:
         """True when a buyback should fire. Stale/invalid ticks reset the
