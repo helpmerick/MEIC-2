@@ -1,0 +1,63 @@
+{
+  "recorded_at": "2026-07-06T13:35:57.167474+00:00",
+  "observation": {
+    "order": {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Received",
+      "cancellable": true,
+      "editable": true,
+      "edited": false,
+      "updated_at": "1970-01-01 00:00:00+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260706P03000000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "1",
+          "fills": []
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "0.05",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": null,
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": null,
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": null
+    },
+    "warnings": [],
+    "buying_power_effect": {
+      "change_in_margin_requirement": "-1.0",
+      "change_in_buying_power": "-2.77",
+      "current_buying_power": "1000000.0",
+      "new_buying_power": "999998.23",
+      "isolated_order_margin_requirement": "0.0",
+      "is_spread": false,
+      "impact": "2.77",
+      "effect": "Debit"
+    }
+  }
+}

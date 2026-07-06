@@ -1,0 +1,57 @@
+{
+  "recorded_at": "2026-07-06T13:35:58.954807+00:00",
+  "observation": {
+    "order_id": 1193074,
+    "visible_from_new_session": true,
+    "status": "Live",
+    "received_at": "2026-07-06 13:35:57.594000+00:00",
+    "full": {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Live",
+      "cancellable": true,
+      "editable": true,
+      "edited": false,
+      "updated_at": "2026-07-06 13:35:58.104000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260706P03000000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "1",
+          "fills": []
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "0.05",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-06 13:35:57.594000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": null,
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": null,
+      "id": 1193074
+    }
+  }
+}
