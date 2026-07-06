@@ -59,6 +59,16 @@ class EventStore(Protocol):  # SqliteEventStore, InMemoryEventStore
     def streams(self) -> list[str]: ...
 
 
+class StateStore(Protocol):  # SqliteStateStore, InMemoryStateStore
+    """Durable key/value backing the REC-07 persistent-state inventory.
+    Values are opaque strings; typed access lives in
+    application.persistent_state."""
+
+    def get(self, key: str) -> str | None: ...
+    def set(self, key: str, value: str) -> None: ...
+    def all(self) -> dict[str, str]: ...
+
+
 class AlertSink(Protocol):  # UI/webhook/email fan-out (RSK-06)
     # Provisional Phase-1 surface — doc 05 §6 leaves this port unspecified.
     def alert(self, level: str, message: str, **context: Any) -> None: ...

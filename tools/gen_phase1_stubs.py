@@ -163,8 +163,22 @@ def main() -> int:
             all_tcs.append(m.group(1))
             titles[m.group(1)] = (m.group(2) or "").strip()
     feature_ids = {f.stem for f in features}
-    prose = [(tc, titles[tc]) for tc in all_tcs if tc not in feature_ids]
-    (PROSE_OUT / "test_prose_tc_stubs.py").write_text(emit_prose_module(prose), encoding="utf-8")
+    # A prose TC with a hand-written test (def test_tc_xxx anywhere outside the
+    # generated prose stub file) must NOT also get a red stub — the real test
+    # covers it. Scan all test modules except the one we're about to write.
+    hand_impl: set[str] = set()
+    prose_stub_file = PROSE_OUT / "test_prose_tc_stubs.py"
+    for pyf in ROOT.joinpath("tests").rglob("test_*.py"):
+        if pyf == prose_stub_file:
+            continue
+        text = pyf.read_text(encoding="utf-8", errors="ignore")
+        for tc in all_tcs:
+            if f"def {tc.lower().replace('-', '_')}" in text or f"def test_{tc.lower().replace('-', '_')}" in text:
+                hand_impl.add(tc)
+    prose = [(tc, titles[tc]) for tc in all_tcs if tc not in feature_ids and tc not in hand_impl]
+    prose_stub_file.write_text(emit_prose_module(prose), encoding="utf-8")
+    if hand_impl:
+        print(f"skipped {len(hand_impl)} hand-implemented prose TCs: {', '.join(sorted(hand_impl))}")
 
     print(
         f"generated {len(features) - len(handwritten)} BDD stub modules "

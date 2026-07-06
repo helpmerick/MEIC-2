@@ -407,11 +407,6 @@ def test_tc_nfr_06():
     raise NotImplementedError("TC-NFR-06: prose test case not implemented (Phase 1 red)")
 
 
-# TC-REC-01 — REC-01/UI-10: replaying the event log reproduces identical day state and P&L (property test across scripted days).
-def test_tc_rec_01():
-    raise NotImplementedError("TC-REC-01: prose test case not implemented (Phase 1 red)")
-
-
 # TC-REC-02 — REC-02: divergent broker vs internal state ⇒ broker adopted, mismatch logged, RSK-03 gate applied.
 def test_tc_rec_02():
     raise NotImplementedError("TC-REC-02: prose test case not implemented (Phase 1 red)")
