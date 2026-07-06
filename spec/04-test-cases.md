@@ -12,11 +12,11 @@ And entry 1 fills a condor as one 4-leg order, allocated leg fills:
     short put 5990 @ 1.35, long put 5940 @ 0.15   (put side net credit 1.20)
     short call 6060 @ 1.25, long call 6110 @ 0.15 (call side net credit 1.10)
 And total condor credit = 2.30, stop_loss_pct = 95%
-And stop_basis = short_premium => put trigger = round_to_tick(1.35 * 1.95) = 2.65,
-    call trigger = round_to_tick(1.25 * 1.95) = 2.45
-And stop_basis = total_credit => both triggers = round_to_tick(0.95 * 2.30) = 2.20
-And stop_basis = per_side => put trigger = round_to_tick(1.35 + 0.95*1.20) = 2.50,
-    call trigger = round_to_tick(1.25 + 0.95*1.10) = 2.30
+And stop_basis = short_premium => put trigger = floor_to_tick(1.35 * 1.95) = 2.60,
+    call trigger = floor_to_tick(1.25 * 1.95) = 2.40
+And stop_basis = total_credit => both triggers = floor_to_tick(0.95 * 2.30) = 2.15
+And stop_basis = per_side => put trigger = floor_to_tick(1.35 + 0.95*1.20) = 2.45,
+    call trigger = floor_to_tick(1.25 + 0.95*1.10) = 2.25
 ```
 
 ---
@@ -325,7 +325,7 @@ Scenario: Stops placed immediately on fill (total_credit basis - THE DEFAULT, As
   Given stop_basis = total_credit
   When the condor fill is confirmed
   Then two buy-to-close stop-market orders (TIF Day) are working within the same processing turn
-  And each trigger price = round_to_tick(0.95 * 2.30)
+  And each trigger price = floor_to_tick(0.95 * 2.30)   # -> 2.15, not 2.20
   And no stop exists on either long leg   # STP-06
 
 Scenario: The outcome contract holds (Ash's Way 2, the 400-dollar example)
@@ -335,15 +335,15 @@ Scenario: The outcome contract holds (Ash's Way 2, the 400-dollar example)
 
 Scenario: Stops placed immediately on fill (short_premium basis, selectable per entry)
   Given stop_basis = short_premium
-  Then the put stop trigger = round_to_tick(1.35 * (1 + 0.95))
-  And the call stop trigger = round_to_tick(1.25 * (1 + 0.95))
+  Then the put stop trigger = floor_to_tick(1.35 * (1 + 0.95))   # -> 2.60
+  And the call stop trigger = floor_to_tick(1.25 * (1 + 0.95))   # -> 2.40
   And neither trigger depends on any long leg's allocated fill price
 
 Scenario: Stops placed immediately on fill (per_side basis)
   Given stop_basis = per_side
   When the condor fill is confirmed
-  Then the put stop trigger = round_to_tick(1.35 + 0.95 * 1.20)
-  And the call stop trigger = round_to_tick(1.25 + 0.95 * 1.10)
+  Then the put stop trigger = floor_to_tick(1.35 + 0.95 * 1.20)   # -> 2.45
+  And the call stop trigger = floor_to_tick(1.25 + 0.95 * 1.10)   # -> 2.25
   And side net credits are computed from the broker's allocated leg fills
 ```
 
@@ -380,12 +380,12 @@ Scenario: Unconfirmed stop escalates to UNPROTECTED handling
 ```gherkin
 Scenario: Markup raises the trigger in per_side basis
   Given stop_basis = per_side, stop_loss_pct = 95, stop_rebate_markup = 0.50
-  Then the put stop trigger = round_to_tick(1.35 + 0.95*1.20 + 0.50)
-  And the call stop trigger = round_to_tick(1.25 + 0.95*1.10 + 0.50)
+  Then the put stop trigger = floor_to_tick(1.35 + 0.95*1.20 + 0.50)   # raw 2.99 -> 2.95, NOT 3.00 (round would cross the 0.10-tick regime)
+  And the call stop trigger = floor_to_tick(1.25 + 0.95*1.10 + 0.50)   # raw 2.795 -> 2.75
 
 Scenario: Markup raises the trigger in total_credit basis
   Given stop_basis = total_credit and the same markup
-  Then both triggers = round_to_tick(0.95*2.30 + 0.50)
+  Then both triggers = floor_to_tick(0.95*2.30 + 0.50)   # raw 2.685 -> 2.65
 
 Scenario: Default markup of zero changes nothing
   Given stop_rebate_markup = 0.00

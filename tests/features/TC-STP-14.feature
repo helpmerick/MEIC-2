@@ -1,12 +1,12 @@
 Feature: TC-STP-14
   Scenario: Markup raises the trigger in per_side basis
     Given stop_basis = per_side, stop_loss_pct = 95, stop_rebate_markup = 0.50
-    Then the put stop trigger = round_to_tick(1.35 + 0.95*1.20 + 0.50)
-    And the call stop trigger = round_to_tick(1.25 + 0.95*1.10 + 0.50)
+    Then the put stop trigger = floor_to_tick(1.35 + 0.95*1.20 + 0.50)   # raw 2.99 -> 2.95, NOT 3.00 (round would cross the 0.10-tick regime)
+    And the call stop trigger = floor_to_tick(1.25 + 0.95*1.10 + 0.50)   # raw 2.795 -> 2.75
 
   Scenario: Markup raises the trigger in total_credit basis
     Given stop_basis = total_credit and the same markup
-    Then both triggers = round_to_tick(0.95*2.30 + 0.50)
+    Then both triggers = floor_to_tick(0.95*2.30 + 0.50)   # raw 2.685 -> 2.65
 
   Scenario: Default markup of zero changes nothing
     Given stop_rebate_markup = 0.00
