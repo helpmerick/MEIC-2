@@ -1,0 +1,83 @@
+"""DecayWatcher — decay buyback + re-inflation guard (DCY-01..04).
+
+A tracked short whose ASK (only the ask — DCY-01) sits at/below
+decay_buyback_trigger for decay_confirmation_evals consecutive valid
+evaluations is bought back to kill the late re-inflation tail. Routed through
+the canonical close as a SHORT-ONLY close, initiator `decay` (CLS-02 — no
+second close path). Re-inflation guard (DCY-02.3): unfilled past the timeout,
+or the ask rising above the trigger, cancels the buyback and RE-PLACES the
+resting stop — protection restored, near-zero risk (the short was at $0.05).
+The leftover long is left to expire (DCY-03, SIDE_CLOSED_DECAY).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from decimal import Decimal
+
+from meic.domain.events import EntryClosed, ShortStopped
+
+
+@dataclass
+class DecayWatcher:
+    broker: object
+    events: list
+    decay_buyback_trigger: Decimal = Decimal("0.05")
+    decay_confirmation_evals: int = 2
+    _count: int = 0
+
+    # --- DCY-01 trigger: ASK only, N consecutive valid evals ------------------
+    def evaluate(self, *, ask: Decimal, stale: bool = False) -> bool:
+        """True when a buyback should fire. Stale/invalid ticks reset the
+        counter; only the ask can trip it."""
+        if stale:
+            self._count = 0
+            return False
+        if ask <= self.decay_buyback_trigger:
+            self._count += 1
+            if self._count >= self.decay_confirmation_evals:
+                self._count = 0
+                return True
+            return False
+        self._count = 0
+        return False
+
+    # --- DCY-02 procedure (short-only close, initiator decay) ------------------
+    async def buyback(self, *, entry_id: str, side: str, resting_stop_id: str) -> str:
+        """Cancel the short's resting stop (ORD-08 classified), then place a
+        limit buy-to-close at the trigger. If the cancel reveals the stop
+        already FILLED, abort and signal the LEX path."""
+        cancel = await self.broker.cancel(resting_stop_id)
+        if isinstance(cancel, dict) and cancel.get("status") == "FILLED":
+            return "STOP_FILLED_RUN_LEX"  # it was a real stop-out (DCY-02.1)
+
+        order_id = await self.broker.submit({
+            "action": "buy_to_close", "type": "limit", "tif": "Day",
+            "leg": f"short_{side.lower()}", "price": self.decay_buyback_trigger,
+            "entry_id": entry_id, "idempotency_key": f"decay:{entry_id}:{side}"})
+        self._buyback_id = order_id
+        return order_id
+
+    async def complete(self, *, entry_id: str, side: str) -> None:
+        """Buyback filled ⇒ side = SIDE_CLOSED_DECAY (long left to expire,
+        DCY-03), recorded as a `decay` close (CLS-04)."""
+        self.events.append(ShortStopped(
+            entry_id=entry_id, side=side, fill=self.decay_buyback_trigger,
+            slippage=Decimal("0"), initiator="decay"))
+        self.events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
+
+    # --- DCY-02.3 re-inflation guard ------------------------------------------
+    async def reinflation_guard(
+        self, *, entry_id: str, side: str, buyback_id: str, resting_stop_id: str,
+        current_ask: Decimal, unfilled: bool,
+    ) -> str:
+        """If the buyback is unfilled past the timeout OR the ask rose above
+        the trigger: cancel the buyback and RE-PLACE the resting stop. Returns
+        the outcome. The re-placed stop id lets ProtectPosition/STP-04 confirm."""
+        if not unfilled and current_ask <= self.decay_buyback_trigger:
+            return "BUYBACK_STILL_LIVE"
+        await self.broker.cancel(buyback_id)
+        new_stop = await self.broker.submit({
+            "action": "buy_to_close", "type": "stop_market", "tif": "Day",
+            "leg": f"short_{side.lower()}", "entry_id": entry_id, "replaced_from": resting_stop_id,
+            "idempotency_key": f"reprotect:{entry_id}:{side}"})
+        return f"REPROTECTED:{new_stop}"

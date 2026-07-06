@@ -172,11 +172,6 @@ def test_tc_lex_09():
     raise NotImplementedError("TC-LEX-09: prose test case not implemented (Phase 1 red)")
 
 
-# TC-TPF-03 — TPF-01/03 trigger mechanics: floor 20% on $4.00 credit ⇒ close fires when profit marks ≤ $0.80 for tp_confirmation_evals consecutive valid evaluations; a single bad print does not fire; stale marks pause evaluation and reset the counter (EC-TPF-02).
-def test_tc_tpf_03():
-    raise NotImplementedError("TC-TPF-03: prose test case not implemented (Phase 1 red)")
-
-
 # TC-TPF-04 — TPF-04/CLS-01 close procedure: stops cancelled and confirmed before spread close orders; close via reprice ladder with fallback; close-submit failure after stop cancel ⇒ stops re-placed and UNPROTECTED handling engaged.
 def test_tc_tpf_04():
     raise NotImplementedError("TC-TPF-04: prose test case not implemented (Phase 1 red)")
@@ -227,24 +222,9 @@ def test_tc_tpf_08():
     raise NotImplementedError("TC-TPF-08: prose test case not implemented (Phase 1 red)")
 
 
-# TC-DCY-01 — DCY-01/02/03 happy path: short's ask ≤ $0.05 for 2 valid evals ⇒ stop cancelled (confirmed) → limit buy at trigger → fill ⇒ side = SIDE_CLOSED_DECAY, P&L realized, **long retained** and expiring, its strike still occupied for STK-09.
-def test_tc_dcy_01():
-    raise NotImplementedError("TC-DCY-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DCY-02 — DCY-02(3) re-inflation guard: ask jumps to $0.30 before the buyback fills ⇒ buyback cancelled, resting stop re-placed and confirmed; unprotected time ≤ decay_unfilled_timeout_seconds; if the stop had actually FILLED during the window (classified per ORD-08a), the LEX path runs instead.
-def test_tc_dcy_02():
-    raise NotImplementedError("TC-DCY-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-DCY-03 — DCY-01 gates: trigger uses the ASK only (bid/mid/last scenarios prove no other price fires it); no trigger from a single bad print; none after decay_cutoff_time (15:55 default); none for MANUAL/SUSPENDED entries; none while a Flatten All executes; nothing fires outside RTH (structural — no tracked shorts exist overnight). Under stop-trading mode: buybacks CONTINUE; and if a re-inflation-guard stop re-placement fails once while in stop-trading mode, the watcher suspends until stop-trading reset (scenario asserts suspension and resumption).
 def test_tc_dcy_03():
     raise NotImplementedError("TC-DCY-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DCY-04 — DCY-02/CLS-02 architecture: the buyback routes through the canonical close service (short-only scope, initiator `decay`); the no-other-close-path assertion still holds; day report lists the close as `decay`.
-def test_tc_dcy_04():
-    raise NotImplementedError("TC-DCY-04: prose test case not implemented (Phase 1 red)")
 
 
 # TC-EOD-01 — EOD-01: untouched condor held to settlement; sides marked EXPIRED; settlement P&L computed against SET/close value.
