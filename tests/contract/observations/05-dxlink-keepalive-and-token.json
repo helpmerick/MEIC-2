@@ -1,0 +1,15 @@
+{
+  "recorded_at": "2026-07-06T13:36:08.983244+00:00",
+  "observation": {
+    "setup_frames": [
+      "received: {'type': 'SETUP', 'channel': 0, 'version': '1.0-2.8.3', 'keepaliveTimeout': 60, 'acceptKeepaliveTimeout': 60}",
+      "sending keepalive message: {'type': 'KEEPALIVE', 'channel': 0}"
+    ],
+    "token_log_lines": [],
+    "streamer_attrs": {
+      "_auth_token": "dGFzdHksZGVtbywsMTc4MzQzMTM2NywxNzgzMzQ0OTY3LFUwMmY0NzdjNy00MGQyLTRlMTItYTQ1Yy0wNDI4ZTlmZGVkMTA.wgRh49YVqMnROV7WA363vI8lesvHsWnVXOyQeAszU74",
+      "_wss_url": "wss://tasty-demo-dxlink-md-ws.dxfeed.com/delayed"
+    },
+    "note": "spec expectation ~24h quote token (doc 05 NFR-04); session OAuth token separately ~900s per refresh log"
+  }
+}

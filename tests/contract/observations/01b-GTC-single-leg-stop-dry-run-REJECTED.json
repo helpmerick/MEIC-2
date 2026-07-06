@@ -1,0 +1,6 @@
+{
+  "recorded_at": "2026-07-04T14:58:43.412042+00:00",
+  "observation": {
+    "exception": "TastytradeError('tif_no_stop_market_gtc_options: Stop Market Equity Option orders cannot be GTC or GTD\\n')"
+  }
+}
