@@ -32,11 +32,6 @@ def test_tc_stk_05():
     raise NotImplementedError("TC-STK-05: prose test case not implemented (Phase 1 red)")
 
 
-# TC-ORD-03 — ORD-05/EC-ENT-12: cancel/fill race — fill event after cancel sent ⇒ condor treated as OPEN, stops placed.
-def test_tc_ord_03():
-    raise NotImplementedError("TC-ORD-03: prose test case not implemented (Phase 1 red)")
-
-
 # TC-ORD-04 — EC-ENT-06 partial fill: (a) balanced partial — 1 of 2 condors filled at cancel ⇒ filled condor kept and protected (stops placed), quantity recorded; (b) unbalanced-leg anomaly injected via fake broker ⇒ completion attempted for partial_fix_seconds, else filled legs flattened; no unbalanced position remains; critical alert fired.
 def test_tc_ord_04():
     raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
@@ -60,11 +55,6 @@ def test_tc_stp_03():
 # TC-STP-05 — EC-STP-02 crash between fill and stop placement: restart ⇒ REC-04 places stops; assert idempotency (no duplicates if one stop had actually been accepted).
 def test_tc_stp_05():
     raise NotImplementedError("TC-STP-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STP-06 — STP-07/STP-08/EC-STP-04 whipsaw: put side stops, then call side stops; both run LEX independently; both losses in day P&L.
-def test_tc_stp_06():
-    raise NotImplementedError("TC-STP-06: prose test case not implemented (Phase 1 red)")
 
 
 # TC-STP-07 — EC-STP-03: scripted gap fills stop 8 ticks past trigger ⇒ slippage recorded, alert fired at threshold.
@@ -197,21 +187,6 @@ def test_tc_flt_02():
     raise NotImplementedError("TC-FLT-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-TPF-05 — EC-TPF-03 race: short stop fills as its cancel lands ⇒ side routed to SIDE_STOPPED + LEX, other side closed by TPF; no duplicate buy-back (assert order count per leg = 1).
-def test_tc_tpf_05():
-    raise NotImplementedError("TC-TPF-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-TPF-07 — TPF-08/EC-TPF-01 restart: floor armed, bot down while profit gaps below floor ⇒ on recovery close triggers immediately at current level; report shows floor vs realized.
-def test_tc_tpf_07():
-    raise NotImplementedError("TC-TPF-07: prose test case not implemented (Phase 1 red)")
-
-
-# TC-EOD-01 — EOD-01: untouched condor held to settlement; sides marked EXPIRED; settlement P&L computed against SET/close value.
-def test_tc_eod_01():
-    raise NotImplementedError("TC-EOD-01: prose test case not implemented (Phase 1 red)")
-
-
 # TC-EOD-02 — EOD-02: with eod_close_time set, all open sides closed via ladder before the deadline.
 def test_tc_eod_02():
     raise NotImplementedError("TC-EOD-02: prose test case not implemented (Phase 1 red)")
@@ -265,11 +240,6 @@ def test_tc_rsk_08():
 # TC-DAT-01 — DAT-02/EC-DAT-01: silent staleness (connected, no ticks) detected per instrument; decisions blocked.
 def test_tc_dat_01():
     raise NotImplementedError("TC-DAT-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DAT-02 — DAT-03/EC-DAT-02/03: disconnect during entry ⇒ attempt aborted; during LEX ⇒ repricing frozen, limit stays working, resume/fallback on reconnect.
-def test_tc_dat_02():
-    raise NotImplementedError("TC-DAT-02: prose test case not implemented (Phase 1 red)")
 
 
 # TC-DAT-03 — DAT-04/EC-DAT-05/EC-ENT-09: halt blocks entries; no catch-up; ladders re-validate quotes on resume.
