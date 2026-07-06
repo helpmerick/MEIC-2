@@ -53,6 +53,12 @@ class FakeBroker:
     def script_cancel(self, *reactions: Scripted) -> None:
         self._cancel_script.extend(reactions)
 
+    def autofill(self, predicate) -> None:
+        """Orders whose intent satisfies predicate(intent) fill immediately;
+        everything else rests WORKING. Lets a scripted day fill entry orders
+        while stops rest, without counting submits."""
+        self._autofill = predicate
+
     def set_positions(self, positions: list[Any]) -> None:
         """Directly install broker-truth positions (reconcile scenarios)."""
         self._positions = list(positions)
@@ -64,7 +70,12 @@ class FakeBroker:
 
     # ------------------------------------------------------------- BrokerGateway
     async def submit(self, order: Any) -> str:
-        reaction = self._submit_script.pop(0) if self._submit_script else Scripted("work")
+        if self._submit_script:
+            reaction = self._submit_script.pop(0)
+        elif getattr(self, "_autofill", None) is not None and self._autofill(order):
+            reaction = Scripted("fill", payload={"price": order.get("net_credit") if isinstance(order, dict) else None})
+        else:
+            reaction = Scripted("work")
         if reaction.latency_s:
             await asyncio.sleep(reaction.latency_s)
         if reaction.action == "timeout":

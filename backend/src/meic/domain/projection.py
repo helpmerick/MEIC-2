@@ -28,6 +28,7 @@ from .events import (
     CondorProposed,
     DayArmed,
     DayCompleted,
+    EntryClosed,
     EntryCompleted,
     Event,
     EntrySkipped,
@@ -46,8 +47,10 @@ class EntryProjection:
     recoveries: Decimal = Decimal("0")
     fees: Decimal = Decimal("0")
     sides_stopped: tuple[str, ...] = ()
+    stop_initiators: tuple[str, ...] = ()  # resting_stop | watchdog_escalation | decay
     sides_closed: tuple[str, ...] = ()
     sides_expired: tuple[str, ...] = ()
+    close_initiator: str | None = None  # CLS-04: how the entry closed
     completed: bool = False
 
     @property
@@ -95,7 +98,8 @@ def apply(state: DayState, event: Event) -> DayState:
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
             e, stop_fills=e.stop_fills + event.fill, fees=e.fees + event.fee,
-            sides_stopped=e.sides_stopped + (event.side,))))
+            sides_stopped=e.sides_stopped + (event.side,),
+            stop_initiators=e.stop_initiators + (event.initiator,))))
     if isinstance(event, LongSold):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
@@ -106,6 +110,9 @@ def apply(state: DayState, event: Event) -> DayState:
     if isinstance(event, SideExpired):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(e, sides_expired=e.sides_expired + (event.side,))))
+    if isinstance(event, EntryClosed):
+        e = _entry(state, event.entry_id)
+        return replace(state, entries=_put(state, replace(e, close_initiator=event.initiator)))
     if isinstance(event, EntryCompleted):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(e, completed=True)))
@@ -121,3 +128,38 @@ def fold(events: list[Event]) -> DayState:
     for event in events:
         state = apply(state, event)
     return state
+
+
+@dataclass(frozen=True)
+class DayReport:
+    """EOD-05 day report: per-entry credits, stops, recoveries, fees, realized
+    P&L, and every skip with its reason. Projected from the event log — so it
+    is deterministic and replayable (PNL-03)."""
+
+    date: str | None
+    entries_filled: int
+    stops_hit: int
+    lex_recoveries: int
+    decay_closes: int
+    total_credit: Decimal
+    total_fees: Decimal
+    day_pnl: Decimal
+    skips: tuple[tuple[int, str], ...]
+    per_entry_pnl: dict[str, Decimal]
+
+
+def day_report(events: list[Event]) -> DayReport:
+    state = fold(events)
+    entries = state.entries.values()
+    return DayReport(
+        date=state.date,
+        entries_filled=sum(1 for e in entries if e.net_credit != 0),
+        stops_hit=sum(1 for e in entries for i in e.stop_initiators if i != "decay"),
+        lex_recoveries=sum(1 for e in entries if e.recoveries != 0),
+        decay_closes=sum(1 for e in entries if e.close_initiator == "decay"),
+        total_credit=sum((e.net_credit for e in entries), Decimal("0")),
+        total_fees=sum((e.fees for e in entries), Decimal("0")),
+        day_pnl=state.day_pnl,
+        skips=state.skipped,
+        per_entry_pnl={e.entry_id: e.pnl for e in entries},
+    )
