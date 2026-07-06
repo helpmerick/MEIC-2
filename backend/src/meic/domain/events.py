@@ -104,12 +104,47 @@ class CondorFilled(Event):
 
 
 @dataclass(frozen=True)
+class StopPlaced(Event):
+    entry_id: str
+    side: str
+    trigger: Decimal  # STP-01/02: broker-resting buy-to-close stop-market
+
+
+@dataclass(frozen=True)
+class StopConfirmed(Event):
+    entry_id: str
+    side: str  # STP-04: working-order confirmation from broker
+
+
+@dataclass(frozen=True)
+class SideUnprotected(Event):
+    entry_id: str
+    side: str
+    action: str  # STP-04: flatten_side | flatten_condor after retries exhausted
+
+
+@dataclass(frozen=True)
+class WatchdogEscalated(Event):
+    entry_id: str
+    side: str
+    mark_at_breach: Decimal   # calibration evidence (STP-03b / TC-STP-17)
+    elapsed_seconds: Decimal
+    fill_price: Decimal
+
+
+@dataclass(frozen=True)
+class EntryClosedInfeasible(Event):
+    entry_id: str  # STP-02c post-fill: closed via CLS, initiator infeasible_stop
+
+
+@dataclass(frozen=True)
 class ShortStopped(Event):
     entry_id: str
     side: str  # "PUT" | "CALL"
     fill: Decimal  # buy-to-close fill price paid
     slippage: Decimal
     fee: Decimal = Decimal("0")  # buy-to-close fee (PNL-01)
+    initiator: str = "resting_stop"  # resting_stop | watchdog_escalation (STP-03b)
 
 
 @dataclass(frozen=True)

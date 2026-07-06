@@ -8,7 +8,7 @@ rules from the API, don't hardcode"). Tests use SPX's documented structure
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 
 @dataclass(frozen=True)
@@ -39,4 +39,12 @@ class TickTable:
         """Round to the nearest tick (half up). STK-08."""
         tick = self.tick_for(price)
         steps = (price / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return (steps * tick).quantize(tick)
+
+    def floor(self, price: Decimal) -> Decimal:
+        """Round DOWN to the legal tick. STP-02 (v1.39): stop triggers floor to
+        tick — contract-preserving, so a rounding accident can never push the
+        both-sides loss beyond the promise."""
+        tick = self.tick_for(price)
+        steps = (price / tick).quantize(Decimal("1"), rounding=ROUND_FLOOR)
         return (steps * tick).quantize(tick)
