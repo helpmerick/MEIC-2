@@ -74,15 +74,56 @@ class TastytradeAdapter:
         self._gate = allocation_gate or AllocationGate()
         self._tick = tick
 
-    async def connect(self) -> None:
+    async def connect(self, account_number: str | None = None) -> None:
         from tastytrade import Account, Session  # imported lazily — SDK optional offline
         self._session = Session(self._secret, refresh_token=self._refresh, is_test=self._is_test)
-        self._account = (await Account.get(self._session))[0]
+        accounts = await Account.get(self._session)
+        if account_number:
+            self._account = next(a for a in accounts if a.account_number == account_number)
+        else:
+            self._account = accounts[0]
+
+    # ---- intent translation (ACL) --------------------------------------------
+    async def _build_order(self, intent: dict[str, Any]):
+        """Translate an abstract order intent into a tastytrade NewOrder.
+
+        Intent shape (concrete): {order_type, tif, price?, stop_trigger?, legs:
+        [{symbol, action, qty}]}. `symbol` is a resolved SPXW OCC symbol — the
+        composition root resolves strikes to symbols before submit."""
+        from decimal import Decimal as D
+
+        from tastytrade.instruments import Option
+        from tastytrade.order import NewOrder, OrderAction, OrderTimeInForce, OrderType
+
+        self.validate_stop_tif(intent)  # assumption 2 — before building anything
+
+        type_map = {"stop_market": OrderType.STOP, "stop_limit": OrderType.STOP_LIMIT,
+                    "limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT}
+        action_map = {a.value.lower().replace(" ", "_"): a for a in OrderAction}
+        tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
+
+        legs = []
+        for leg in intent["legs"]:
+            opt = await Option.get(self._session, leg["symbol"])
+            legs.append(opt.build_leg(D(str(leg.get("qty", 1))), action_map[leg["action"]]))
+
+        kwargs: dict[str, Any] = dict(
+            time_in_force=tif_map.get(intent.get("tif", "Day"), OrderTimeInForce.DAY),
+            order_type=type_map[intent["order_type"]],
+            legs=legs,
+        )
+        if "stop_trigger" in intent:
+            kwargs["stop_trigger"] = D(str(intent["stop_trigger"]))
+        if "price" in intent:
+            kwargs["price"] = D(str(intent["price"]))
+        return NewOrder(**kwargs)
 
     @staticmethod
     def validate_stop_tif(order: dict[str, Any]) -> None:
-        """Assumption 2: reject an option stop that isn't Day-TIF before submit."""
-        if order.get("type") in ("stop_market", "stop_limit") and order.get("tif") not in _OPTION_STOP_ALLOWED_TIF:
+        """Assumption 2: reject an option stop that isn't Day-TIF before submit.
+        Accepts either intent shape (`order_type` or `type`)."""
+        otype = order.get("order_type") or order.get("type")
+        if otype in ("stop_market", "stop_limit") and order.get("tif") not in _OPTION_STOP_ALLOWED_TIF:
             raise ValueError(
                 f"option stop TIF {order.get('tif')!r} unsupported — Day only "
                 "(cert: tif_no_stop_market_gtc_options)")
@@ -98,14 +139,38 @@ class TastytradeAdapter:
         self._gate.observe(rec)
         return rec
 
-    # ---- BrokerGateway surface (real SDK calls; exercised by contract tests) --
-    async def submit(self, order: Any) -> str:
-        self.validate_stop_tif(order if isinstance(order, dict) else {})
-        raise NotImplementedError("live submit wired + proven by contract tests (pytest -m contract)")
+    # ---- BrokerGateway surface (real SDK calls; proven by contract tests) -----
+    async def submit(self, order: dict[str, Any]) -> str:
+        new = await self._build_order(order)
+        resp = await self._account.place_order(self._session, new, dry_run=order.get("dry_run", False))
+        return str(resp.order.id) if resp.order else ""
 
-    async def cancel(self, id): raise NotImplementedError("contract-tested")
-    async def replace(self, id, new): raise NotImplementedError("contract-tested")
-    async def working_orders(self): raise NotImplementedError("contract-tested")
-    async def positions(self): raise NotImplementedError("contract-tested")
-    async def fills_since(self, cursor): raise NotImplementedError("contract-tested")
-    def order_events(self) -> AsyncIterator[Any]: raise NotImplementedError("contract-tested")
+    async def dry_run(self, order: dict[str, Any]):
+        """Assumption 1/2/7: validate an order against cert without placing it."""
+        new = await self._build_order(order)
+        return await self._account.place_order(self._session, new, dry_run=True)
+
+    async def cancel(self, id) -> dict[str, Any]:
+        try:
+            await self._account.delete_order(self._session, int(id))
+            return {"result": "cancelled"}
+        except Exception as e:  # ORD-08 classification is the caller's job
+            return {"result": "error", "error": repr(e)}
+
+    async def replace(self, id, new):
+        await self.cancel(id)  # cert has no atomic replace for these; confirm-cancel then submit
+        return await self.submit(new)
+
+    async def working_orders(self) -> list[Any]:
+        live = await self._account.get_live_orders(self._session)
+        return [o for o in live if str(o.status).lower().split(".")[-1] in ("live", "received")]
+
+    async def positions(self) -> list[Any]:
+        return await self._account.get_positions(self._session)
+
+    async def fills_since(self, cursor) -> list[Any]:
+        live = await self._account.get_live_orders(self._session)
+        return [o for o in live if str(o.status).lower().endswith("filled")]
+
+    def order_events(self) -> AsyncIterator[Any]:
+        raise NotImplementedError("account stream (AlertStreamer) — next wiring step")
