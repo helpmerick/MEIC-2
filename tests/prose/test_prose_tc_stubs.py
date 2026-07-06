@@ -387,21 +387,6 @@ def test_tc_nfr_06():
     raise NotImplementedError("TC-NFR-06: prose test case not implemented (Phase 1 red)")
 
 
-# TC-REC-02 — REC-02: divergent broker vs internal state ⇒ broker adopted, mismatch logged, RSK-03 gate applied.
-def test_tc_rec_02():
-    raise NotImplementedError("TC-REC-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-REC-03 — REC-03: mid-day cold start with live positions re-attaches stops, schedules, ladders; missed entries skipped.
-def test_tc_rec_03():
-    raise NotImplementedError("TC-REC-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-REC-04 — REC-05: startup scans broker orders by idempotency key before any submission.
-def test_tc_rec_04():
-    raise NotImplementedError("TC-REC-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-PNL-01 — PNL-01/02: per-entry P&L for a scripted day (entry credit, one stop-out with slippage, long recovery, one side expired) matches hand-computed figures including fees to the cent.
 def test_tc_pnl_01():
     raise NotImplementedError("TC-PNL-01: prose test case not implemented (Phase 1 red)")

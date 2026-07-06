@@ -111,6 +111,17 @@ class StopPlaced(Event):
 
 
 @dataclass(frozen=True)
+class StopReplaced(Event):
+    entry_id: str
+    side: str  # REC-04(3): stop re-placed on recovery (trigger recomputed at placement)
+
+
+@dataclass(frozen=True)
+class ReconciliationMismatch(Event):
+    detail: str  # REC-02: broker vs internal disagreement -> RSK-03 gate
+
+
+@dataclass(frozen=True)
 class StopConfirmed(Event):
     entry_id: str
     side: str  # STP-04: working-order confirmation from broker
