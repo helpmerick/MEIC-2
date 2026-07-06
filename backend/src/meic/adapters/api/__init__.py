@@ -1,1 +1,1 @@
-"""Phase 1 placeholder - built in the adapter phase (doc 05 SS10)."""
+"""FastAPI control panel adapter (doc 05 §7, NFR-06)."""

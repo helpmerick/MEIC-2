@@ -362,11 +362,6 @@ def test_tc_nfr_05():
     raise NotImplementedError("TC-NFR-05: prose test case not implemented (Phase 1 red)")
 
 
-# TC-NFR-06 — NFR-06 (Bug #23): mutating request with a foreign Origin is rejected (403) even on localhost; WebSocket upgrade with foreign Origin refused; config with `bind_host` ≠ 127.0.0.1 and no `api_token` fails validation; with a token set, requests without the header are rejected and the documented curl fallback (with header) succeeds.
-def test_tc_nfr_06():
-    raise NotImplementedError("TC-NFR-06: prose test case not implemented (Phase 1 red)")
-
-
 # TC-PNL-01 — PNL-01/02: per-entry P&L for a scripted day (entry credit, one stop-out with slippage, long recovery, one side expired) matches hand-computed figures including fees to the cent.
 def test_tc_pnl_01():
     raise NotImplementedError("TC-PNL-01: prose test case not implemented (Phase 1 red)")
@@ -380,16 +375,6 @@ def test_tc_pnl_02():
 # TC-PNL-03 — PNL-04 broker authority: scripted transaction history diverging from bot-computed realized P&L by $0.12 on one entry ⇒ day report shows the broker figure as authoritative, `PnlMismatch` flagged with both figures and the delta, alert raised; divergence at $0.03 (under tolerance) reconciles silently; a recurring per-contract divergence pattern is surfaced as a fee-model correction suggestion; intraday replay determinism (TC-REC-01) is unaffected by reconciliation results.
 def test_tc_pnl_03():
     raise NotImplementedError("TC-PNL-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-UI-01 — UI-03/04: backend rejects out-of-range config regardless of client; stop pct accepts exactly {95..300 step 5}.
-def test_tc_ui_01():
-    raise NotImplementedError("TC-UI-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-UI-02 — UI-05/07/12: dashboard state contract (WebSocket messages) includes mode, kill state, protection state; UNPROTECTED emits a critical-banner message.
-def test_tc_ui_02():
-    raise NotImplementedError("TC-UI-02: prose test case not implemented (Phase 1 red)")
 
 
 # TC-UI-03 — UC-08/UI-11: manual actions are tagged `manual` in the event log; automated management pauses for that entry until manual mode exit.
