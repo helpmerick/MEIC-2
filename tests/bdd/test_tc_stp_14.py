@@ -15,12 +15,12 @@ def _():
     raise NotImplementedError("TC-STP-14: not implemented (Phase 1 red)")
 
 
-@then('the put stop trigger = round_to_tick(1.35 + 0.95*1.20 + 0.50)')
+@then('the put stop trigger = floor_to_tick(1.35 + 0.95*1.20 + 0.50)   # raw 2.99 -> 2.95, NOT 3.00 (round would cross the 0.10-tick regime)')
 def _():
     raise NotImplementedError("TC-STP-14: not implemented (Phase 1 red)")
 
 
-@then('the call stop trigger = round_to_tick(1.25 + 0.95*1.10 + 0.50)')
+@then('the call stop trigger = floor_to_tick(1.25 + 0.95*1.10 + 0.50)   # raw 2.795 -> 2.75')
 def _():
     raise NotImplementedError("TC-STP-14: not implemented (Phase 1 red)")
 
@@ -30,7 +30,7 @@ def _():
     raise NotImplementedError("TC-STP-14: not implemented (Phase 1 red)")
 
 
-@then('both triggers = round_to_tick(0.95*2.30 + 0.50)')
+@then('both triggers = floor_to_tick(0.95*2.30 + 0.50)   # raw 2.685 -> 2.65')
 def _():
     raise NotImplementedError("TC-STP-14: not implemented (Phase 1 red)")
 
