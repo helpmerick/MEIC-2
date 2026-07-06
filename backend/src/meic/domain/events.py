@@ -168,5 +168,37 @@ class SideExpired(Event):
 
 
 @dataclass(frozen=True)
+class EntryClosed(Event):
+    entry_id: str
+    initiator: str  # CLS-02/04: manual | manual_flatten | take_profit | eod | decay | infeasible_stop
+
+
+@dataclass(frozen=True)
+class LongSaleStarted(Event):
+    entry_id: str
+    side: str
+
+
+@dataclass(frozen=True)
+class LongSaleRepriced(Event):
+    entry_id: str
+    side: str
+    step: int
+    price: Decimal
+
+
+@dataclass(frozen=True)
+class ForeignDetected(Event):
+    symbol: str  # OWN-03: FOREIGN quarantine, alert-only
+
+
+@dataclass(frozen=True)
+class ForeignReduction(Event):
+    symbol: str  # OWN-06: broker shows less than ledger -> SUSPEND + write down
+    from_qty: int
+    to_qty: int
+
+
+@dataclass(frozen=True)
 class EntryCompleted(Event):
     entry_id: str
