@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.40 — 2026-07-05
+- v1.40 changes (agent-proposed, operator-ratified): TC-STK-08 wrapped step line joined (valid Gherkin); TC-STK-07's two retired adjacency-guard scenarios replaced with the STK-11 probe-match integrity invariant — the old scenarios demanded rejection behavior the v1.39 probe walk abolished.
 - Version: 1.39 — 2026-07-05
 - v1.39 changes (operator-ratified numerics session): STK-02 premium selection replaced with **Ash's probe walk** (nearest-0.05 mid lattice; order T, ±0.05 alternating down-first; max 3 up-probes / 25 down-probes; effective floor max(T−1.25, $1.00); deterministic + logged) — `target_premium_tolerance` retired for `probe_up_max`/`probe_down_max`; STK-11 reworked to probe-match integrity. Stop triggers now round **DOWN to tick** (contract-preserving). Hard-coded vector suites: TC-STK-08 (8 probe-walk vectors incl. the never-select-above-cap case) and TC-STP-16 (7 stop vectors + regression guard asserting 3.80-not-5.85). Markup stance: allowed, consequence pinned in vector 5, default $0.00.
 - Version: 1.38 — 2026-07-05

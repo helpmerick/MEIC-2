@@ -257,8 +257,7 @@ Scenario: Rounding lattice is nearest-0.05
   Then it answers probe 2.90, not 2.95   # 2.92 rounds down to 2.90
 
 Scenario: Probe order is deterministic and logged
-  Then the exact sequence T, T-0.05, T+0.05, T-0.10, T+0.10, T-0.15, T+0.15,
-       T-0.20, T-0.25 ... is enumerated verbatim
+  Then the exact sequence T, T-0.05, T+0.05, T-0.10, T+0.10, T-0.15, T+0.15, T-0.20, T-0.25 ... is enumerated verbatim
   And the day report records which probe number matched
 ```
 
@@ -274,14 +273,10 @@ Scenario: Persistent holes skip the entry at window expiry
   Given the chain never reaches chain_completeness_pct within entry_window_seconds
   Then the entry is SKIPPED with reason "incomplete_chain" and no order is submitted
 
-Scenario: Adjacency guard catches a hole at the target premium
-  Given the completeness gate passes at 90%
-  But the strike one step closer to the money than the walk's selection has no mark
-  Then the selection is rejected and treated as a STK-10 failure (retry, then skip)
-
-Scenario: Adjacency guard catches a leapt hole
-  Given the strike one step closer to the money is marked BELOW the ceiling
-  Then the selection is rejected            # the walk should have selected that richer strike
+Scenario: Probe-match integrity invariant (STK-11, v1.39)
+  Given the probe walk selects a strike
+  Then its raw mid is within 0.025 of the matched probe price
+  And the day report records the matched probe number
 
 Scenario: Missing wing retries within the window
   Given the wing strike has no mark at fire time but appears at T+15s
