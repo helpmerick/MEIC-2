@@ -1,11 +1,29 @@
+import { useEffect, useRef } from "react";
 import type { DayReport } from "../types";
-
-// Read-only day report (EOD-05), projected from the event log by the backend.
-// Every figure is bot-computed and deterministic (PNL-03).
 
 function money(v: string) {
   const n = Number(v);
   return (n >= 0 ? "+" : "") + n.toFixed(2);
+}
+
+// flashes when its value changes — cheap "something happened" feedback
+function Stat({ label, value, cls, hero }: { label: string; value: string | number; cls?: string; hero?: boolean }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const prev = useRef(value);
+  useEffect(() => {
+    if (prev.current !== value && ref.current) {
+      ref.current.classList.remove("flash");
+      void ref.current.offsetWidth; // restart animation
+      ref.current.classList.add("flash");
+      prev.current = value;
+    }
+  }, [value]);
+  return (
+    <div className={`stat ${hero ? "hero-stat" : ""}`}>
+      <span className="stat-label">{label}</span>
+      <span ref={ref} className={`stat-val ${cls ?? ""}`}>{value}</span>
+    </div>
+  );
 }
 
 export function DayReportView({ report }: { report: DayReport | null }) {
@@ -19,22 +37,23 @@ export function DayReportView({ report }: { report: DayReport | null }) {
       </div>
 
       <div className="stat-row">
-        <div className="stat"><span className="stat-label">Filled</span><span className="stat-val">{report.entries_filled}</span></div>
-        <div className="stat"><span className="stat-label">Stops</span><span className="stat-val">{report.stops_hit}</span></div>
-        <div className="stat"><span className="stat-label">LEX</span><span className="stat-val">{report.lex_recoveries}</span></div>
-        <div className="stat"><span className="stat-label">Decay</span><span className="stat-val">{report.decay_closes}</span></div>
-        <div className="stat"><span className="stat-label">Credit</span><span className="stat-val">{money(report.total_credit)}</span></div>
-        <div className="stat"><span className="stat-label">Day P&L</span>
-          <span className={`stat-val ${pnl >= 0 ? "pos" : "neg"}`}>{money(report.day_pnl)}</span></div>
+        <Stat label="Filled" value={report.entries_filled} />
+        <Stat label="Stops" value={report.stops_hit} />
+        <Stat label="LEX" value={report.lex_recoveries} />
+        <Stat label="Decay" value={report.decay_closes} />
+        <Stat label="Credit" value={money(report.total_credit)} />
+        <Stat label="Day P&L" value={money(report.day_pnl)} cls={pnl >= 0 ? "pos" : "neg"} hero />
       </div>
 
       {Object.keys(report.per_entry_pnl).length > 0 && (
         <table className="entries">
-          <thead><tr><th>Entry</th><th>P&L</th></tr></thead>
+          <thead><tr><th>Entry</th><th>P&amp;L</th></tr></thead>
           <tbody>
             {Object.entries(report.per_entry_pnl).map(([id, v]) => (
-              <tr key={id}><td>{id}</td>
-                <td className={Number(v) >= 0 ? "pos" : "neg"}>{money(v)}</td></tr>
+              <tr key={id}>
+                <td>{id}</td>
+                <td className={Number(v) >= 0 ? "pos" : "neg"}>{money(v)}</td>
+              </tr>
             ))}
           </tbody>
         </table>

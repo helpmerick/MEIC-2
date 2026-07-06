@@ -16,6 +16,7 @@ export default defineConfig({
       "/stop-trading": "http://127.0.0.1:8000",
       "/confirm-live": "http://127.0.0.1:8000",
       "/config": "http://127.0.0.1:8000",
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
     },
   },
 });

@@ -54,17 +54,27 @@ def paper_app():
     _seed_demo_day(comp)
     from pathlib import Path
 
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import FileResponse, HTMLResponse
+    from fastapi.staticfiles import StaticFiles
 
     from meic.adapters.api.app import create_app
     app = create_app(comp.state, comp.events)  # no api_token on the localhost demo bind
 
-    # A zero-dependency demo dashboard at "/" so the panel is viewable without a
-    # Node/React build. The production UI is the React app in frontend/.
-    demo = Path(__file__).resolve().parents[5] / "frontend" / "demo.html"
+    root = Path(__file__).resolve().parents[5]
+    dist = root / "frontend" / "dist"          # the built React app
+    demo = root / "frontend" / "demo.html"     # zero-dependency fallback
+
+    if (dist / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return demo.read_text(encoding="utf-8") if demo.exists() else "<h1>MEIC panel</h1>"
+    def index():
+        if (dist / "index.html").exists():
+            return FileResponse(str(dist / "index.html"))  # production React UI
+        return HTMLResponse(demo.read_text(encoding="utf-8") if demo.exists() else "<h1>MEIC</h1>")
+
+    @app.get("/demo", response_class=HTMLResponse)
+    def demo_page() -> str:
+        return demo.read_text(encoding="utf-8") if demo.exists() else "<h1>MEIC</h1>"
 
     return app

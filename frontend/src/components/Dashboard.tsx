@@ -1,18 +1,15 @@
 import type { PanelState } from "../types";
 
-// Read-only projection of the durable enabling states (ENT-01a/01b, RSK-01) and
-// mode (DAY-05). The dashboard names the blocking state when idle (UI-12).
-
-const BLOCKING_LABEL: Record<string, string> = {
-  DISARMED: "Disarmed — arm to enable the schedule",
-  STOP_TRADING: "Stop Trading is ON — new entries blocked",
-  CONFIRM_LIVE_OFF: "Confirm Live is OFF — entries blocked",
+const BLOCKING: Record<string, { title: string; sub: string }> = {
+  DISARMED: { title: "Disarmed", sub: "Arm to enable the standing schedule" },
+  STOP_TRADING: { title: "Stop Trading", sub: "New entries are blocked — management continues" },
+  CONFIRM_LIVE_OFF: { title: "Confirm Live is OFF", sub: "Entries are blocked until enabled" },
 };
 
 function Pill({ label, on, kind }: { label: string; on: boolean; kind: "good" | "warn" }) {
   return (
-    <span className={`pill ${on ? kind : "off"}`}>
-      {label}: <strong>{on ? "ON" : "OFF"}</strong>
+    <span className={`pill ${on ? kind : ""}`}>
+      <span className="pdot" /> {label} · <strong>{on ? "ON" : "OFF"}</strong>
     </span>
   );
 }
@@ -22,20 +19,25 @@ export function Dashboard({ state, connected }: { state: PanelState | null; conn
     return <section className="card"><h2>Status</h2><p className="muted">Connecting…</p></section>;
   }
   const enabled = state.entries_enabled;
+  const block = state.blocking_state ? BLOCKING[state.blocking_state] : null;
+
   return (
     <section className="card">
-      <div className="row between">
-        <h2>Status</h2>
-        <span className={`pill ${connected ? "good" : "off"}`}>{connected ? "connected" : "offline"}</span>
-      </div>
+      <h2>Status</h2>
 
-      <div className={`banner ${enabled ? "banner-good" : "banner-idle"}`}>
-        {enabled ? "ARMED · firing entries on schedule" : (state.blocking_state ? BLOCKING_LABEL[state.blocking_state] : "idle")}
+      <div className={`hero ${enabled ? "good" : "idle"}`}>
+        <span className="hero-icon">{enabled ? "🟢" : "⏸️"}</span>
+        <div>
+          <div className="hero-title">{enabled ? "Armed · firing on schedule" : block?.title ?? "Idle"}</div>
+          <div className="hero-sub">
+            {enabled ? "All three enabling states are set" : block?.sub ?? (connected ? "" : "reconnecting…")}
+          </div>
+        </div>
       </div>
 
       <div className="pills">
         <span className={`pill ${state.trading_mode === "paper" ? "info" : "warn"}`}>
-          mode: <strong>{state.trading_mode.toUpperCase()}</strong>
+          <span className="pdot" /> {state.trading_mode.toUpperCase()}
         </span>
         <Pill label="Armed" on={state.armed} kind="good" />
         <Pill label="Confirm Live" on={state.confirm_live} kind="good" />

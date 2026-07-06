@@ -1,29 +1,33 @@
 import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
 import { DayReportView } from "./components/DayReportView";
-import { useLivePanel } from "./useLivePanel";
+import { useLiveBot } from "./useLiveBot";
 
 export function App() {
-  const { state, report, connected, error, refresh } = useLivePanel();
+  const { state, report, connected, error, optimistic, refresh } = useLiveBot();
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>MEIC <span className="muted">control panel</span></h1>
-        {state && <span className={`mode-tag ${state.trading_mode}`}>{state.trading_mode.toUpperCase()}</span>}
+        <div className="brand">
+          <h1>MEIC<span className="dot">.</span></h1>
+          <span className="muted">control panel</span>
+        </div>
+        <div className="spacer" />
+        <span className={`live-dot ${connected ? "" : "off"}`} title={connected ? "live" : "offline"} />
+        {state && <span className={`mode-tag ${state.trading_mode}`}>{state.trading_mode}</span>}
       </header>
 
-      {error && <div className="banner banner-error">Backend unreachable: {error}</div>}
+      {error && <div className="banner-error">Backend unreachable — {error}</div>}
 
       <main className="grid">
         <Dashboard state={state} connected={connected} />
-        <CommandPanel state={state} onChange={refresh} />
-        <DayReportView report={report} />
+        <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
+        <div className="report"><DayReportView report={report} /></div>
       </main>
 
-      <footer className="app-footer muted">
-        Read-only projections + commands · no trading logic in the frontend (UI-03) ·
-        localhost-bound (NFR-06)
+      <footer className="app-footer">
+        Read-only projections + commands · no trading logic in the frontend (UI-03) · localhost-bound (NFR-06)
       </footer>
     </div>
   );
