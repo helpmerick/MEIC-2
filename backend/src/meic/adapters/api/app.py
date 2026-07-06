@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from meic.application.persistent_state import PersistentState
@@ -54,6 +54,27 @@ def create_app(
             "entries_enabled": state.entries_enabled(),
             "blocking_state": state.blocking_state(),
         }
+
+    def _snapshot() -> dict[str, Any]:
+        return {"state": get_state(), "report": get_report()}
+
+    @app.websocket("/ws")
+    async def ws(sock: WebSocket) -> None:
+        """Read-model delta stream (doc 05 §8). NFR-06: refuse a WS upgrade
+        with a foreign Origin. Pushes a snapshot on connect and on each client
+        ping; the client renders whatever it receives (no logic client-side)."""
+        origin = sock.headers.get("origin")
+        if origin is not None and origin != panel_origin:
+            await sock.close(code=1008)  # policy violation
+            return
+        await sock.accept()
+        try:
+            await sock.send_json(_snapshot())
+            while True:
+                await sock.receive_text()          # client pings to request a refresh
+                await sock.send_json(_snapshot())
+        except WebSocketDisconnect:
+            return
 
     @app.get("/report")
     def get_report() -> dict[str, Any]:

@@ -86,6 +86,22 @@ def test_tc_ui_02_dashboard_state_contract():
     assert s["entries_enabled"] is False and s["blocking_state"] == "DISARMED"
 
 
+def test_websocket_read_model_snapshot_and_origin_guard():
+    """doc 05 §8: the WS pushes a read-model snapshot; NFR-06 refuses a foreign
+    Origin on the upgrade."""
+    client, state, _ = _client()
+    with client.websocket_connect("/ws", headers={"origin": PANEL}) as ws:
+        snap = ws.receive_json()
+        assert "state" in snap and "report" in snap
+        assert snap["state"]["trading_mode"] == "paper"
+        ws.send_text("ping")
+        assert "state" in ws.receive_json()
+    # foreign Origin on the upgrade is refused
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws", headers={"origin": "https://evil.example"}) as ws:
+            ws.receive_json()
+
+
 def test_arm_disarm_and_report_endpoints():
     client, state, events = _client()
     h = {"origin": PANEL}
