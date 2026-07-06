@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEIC Control Panel (demo)</title>
+<style>
+  :root{--bg:#0f1216;--card:#171b21;--line:#262c34;--text:#e6e9ee;--muted:#8a93a0;--good:#2ecc71;--warn:#f5a623;--bad:#e74c3c;--info:#4aa3ff;--accent:#5b8def}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif}
+  .app{max-width:1100px;margin:0 auto;padding:24px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+  h1{font-size:20px;margin:0} .muted{color:var(--muted);font-weight:400}
+  .mode-tag{margin-left:auto;padding:4px 10px;border-radius:6px;font-weight:700;font-size:12px}
+  .mode-tag.paper{background:rgba(74,163,255,.15);color:var(--info)} .mode-tag.live{background:rgba(231,76,60,.18);color:var(--bad)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.grid>:last-child{grid-column:1/-1}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h2{margin:0 0 12px;font-size:15px}
+  .banner{padding:12px 14px;border-radius:8px;font-weight:600;margin-bottom:14px}
+  .banner-good{background:rgba(46,204,113,.14);color:var(--good)} .banner-idle{background:rgba(138,147,160,.12);color:var(--muted)}
+  .pills{display:flex;flex-wrap:wrap;gap:8px} .pill{padding:4px 10px;border-radius:999px;font-size:12px;background:var(--line);color:var(--muted)}
+  .pill.good{background:rgba(46,204,113,.15);color:var(--good)} .pill.warn{background:rgba(245,166,35,.15);color:var(--warn)}
+  .pill.info{background:rgba(74,163,255,.15);color:var(--info)} .pill.off{background:var(--line);color:var(--muted)}
+  .cmd{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .btn{padding:10px 12px;border:1px solid var(--line);background:#1e232b;color:var(--text);border-radius:8px;font-weight:600;cursor:pointer}
+  .btn:hover{border-color:var(--accent)} .btn:disabled{opacity:.4;cursor:not-allowed} .btn-active{border-color:var(--warn);color:var(--warn)}
+  .stat-row{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}@media(max-width:760px){.stat-row{grid-template-columns:repeat(3,1fr)}}
+  .stat{background:#1e232b;border-radius:8px;padding:10px;text-align:center}
+  .stat-label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase}.stat-val{display:block;font-size:20px;font-weight:700;margin-top:4px}
+  .pos{color:var(--good)}.neg{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}th{color:var(--muted)}
+  .msg{margin-top:10px;font-size:12px;color:var(--info)}
+  footer{margin-top:20px;font-size:12px;text-align:center;color:var(--muted)}
+  .demo-note{background:rgba(245,166,35,.12);color:var(--warn);padding:8px 12px;border-radius:8px;font-size:12px;margin-bottom:16px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>MEIC <span class="muted">control panel</span></h1><span id="mode" class="mode-tag paper">…</span></header>
+  <div class="demo-note">Demo view served by the backend (no Node needed). The production UI is the React app in <code>frontend/</code>.</div>
+  <div class="grid">
+    <section class="card"><h2>Status</h2><div id="banner" class="banner banner-idle">…</div><div id="pills" class="pills"></div></section>
+    <section class="card"><h2>Commands</h2>
+      <div class="cmd">
+        <button class="btn" onclick="cmd('/arm')">Arm</button>
+        <button class="btn" onclick="cmd('/disarm')">Disarm</button>
+        <button id="stopBtn" class="btn" onclick="toggleStop()">Stop Trading</button>
+        <button id="clBtn" class="btn" onclick="toggleCL()">Confirm Live</button>
+      </div>
+      <div id="cmdMsg" class="msg"></div>
+    </section>
+    <section class="card"><h2>Day report <span id="date" class="muted"></span></h2>
+      <div class="stat-row" id="stats"></div>
+      <table id="entries"></table>
+    </section>
+  </div>
+  <footer>Read-only projections + commands · no trading logic in the frontend (UI-03) · localhost-bound (NFR-06)</footer>
+</div>
+<script>
+let S = null;
+const money = v => { const n = Number(v); return (n>=0?"+":"")+n.toFixed(2); };
+async function j(path, opts){ const r = await fetch(path, opts); if(!r.ok) throw await r.json().catch(()=>({detail:r.status})); return r.json(); }
+async function refresh(){
+  try{
+    const [s, rep] = await Promise.all([j('/state'), j('/report')]);
+    S = s;
+    document.getElementById('mode').textContent = s.trading_mode.toUpperCase();
+    document.getElementById('mode').className = 'mode-tag '+s.trading_mode;
+    const b = document.getElementById('banner');
+    b.textContent = s.entries_enabled ? 'ARMED · firing entries on schedule' : (s.blocking_state||'idle');
+    b.className = 'banner '+(s.entries_enabled?'banner-good':'banner-idle');
+    document.getElementById('pills').innerHTML =
+      pill('mode',s.trading_mode.toUpperCase(),'info')+pill('Armed',s.armed?'ON':'OFF',s.armed?'good':'off')+
+      pill('Confirm Live',s.confirm_live?'ON':'OFF',s.confirm_live?'good':'off')+pill('Stop Trading',s.stop_trading?'ON':'OFF',s.stop_trading?'warn':'off');
+    document.getElementById('stopBtn').textContent = s.stop_trading?'Resume Trading':'Stop Trading';
+    document.getElementById('stopBtn').className = 'btn'+(s.stop_trading?' btn-active':'');
+    document.getElementById('clBtn').textContent = s.confirm_live?'Confirm Live: ON':'Confirm Live: OFF';
+    document.getElementById('clBtn').className = 'btn'+(s.confirm_live?' btn-active':'');
+    document.getElementById('date').textContent = rep.date||'';
+    document.getElementById('stats').innerHTML =
+      stat('Filled',rep.entries_filled)+stat('Stops',rep.stops_hit)+stat('LEX',rep.lex_recoveries)+
+      stat('Decay',rep.decay_closes)+stat('Credit',money(rep.total_credit))+stat('Day P&L',money(rep.day_pnl),Number(rep.day_pnl)>=0?'pos':'neg');
+    let rows='<thead><tr><th>Entry</th><th>P&L</th></tr></thead><tbody>';
+    for(const [id,v] of Object.entries(rep.per_entry_pnl)) rows+=`<tr><td>${id}</td><td class="${Number(v)>=0?'pos':'neg'}">${money(v)}</td></tr>`;
+    document.getElementById('entries').innerHTML = rows+'</tbody>';
+  }catch(e){ document.getElementById('banner').textContent='backend unreachable'; }
+}
+const pill=(l,v,k)=>`<span class="pill ${k}">${l}: <strong>${v}</strong></span>`;
+const stat=(l,v,cls='')=>`<div class="stat"><span class="stat-label">${l}</span><span class="stat-val ${cls}">${v}</span></div>`;
+async function cmd(path){ try{ await j(path,{method:'POST',headers:{'content-type':'application/json'}}); msg(''); await refresh(); }catch(e){ msg('Rejected: '+JSON.stringify(e.detail||e)); } }
+const toggleStop=()=>cmd('/stop-trading?on='+(!S.stop_trading));
+const toggleCL=()=>cmd('/confirm-live?on='+(!S.confirm_live));
+const msg=t=>document.getElementById('cmdMsg').textContent=t;
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
