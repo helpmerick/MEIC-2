@@ -4,3 +4,4 @@ pytest-asyncio>=0.23
 tzdata>=2024.1  # Windows: zoneinfo has no system tz database
 fastapi>=0.110
 uvicorn>=0.29
+websockets>=12
