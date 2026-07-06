@@ -59,6 +59,8 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | `stop_order_type` | stop_market \| stop_limit | stop_market | next-entry | STP-03 |
 | `stop_limit_offset_ticks` | 1–20 (stop_limit only) | 4 | next-entry | STP-03 |
 | `stop_limit_escalation_seconds` | 2–60 | 10 | immediate | STP-03, EC-STP-08 |
+| `watchdog_grace_seconds` | 3–60 | 10 | immediate | STP-03b — mark at/above trigger this long with stop unfilled ⇒ critical alert |
+| `watchdog_escalate_seconds` | 5–120 | 20 | immediate | STP-03b — total from first breach; bot buys back + cancels the sleeping stop |
 | `stop_retry_seconds` | 1–30 | 5 | immediate | STP-04 |
 | `stop_retry_attempts` | 1–10 | 3 | immediate | STP-04 |
 | `unprotected_action` | flatten_side \| flatten_condor | flatten_side | immediate | STP-04 |

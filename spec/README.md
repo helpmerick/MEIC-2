@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.41 — 2026-07-06
+- v1.41 changes (STP-05a ruling, operator-ratified option (c)): STP-03b stop watchdog added — bot-side secondary trigger layer (10s alert / 20s escalate, ORD-08-governed race, supplements-never-replaces the resting stop, escalations logged as calibration evidence of the broker's true trigger source). Support ticket filed in parallel for the authoritative trigger-source answer; no answer weakens the watchdog. TC-STP-17, config watchdog_grace/escalate_seconds.
 - Version: 1.40 — 2026-07-05
 - v1.40 changes (agent-proposed, operator-ratified): TC-STK-08 wrapped step line joined (valid Gherkin); TC-STK-07's two retired adjacency-guard scenarios replaced with the STK-11 probe-match integrity invariant — the old scenarios demanded rejection behavior the v1.39 probe walk abolished.
 - Version: 1.39 — 2026-07-05

@@ -465,6 +465,30 @@ Scenario: Markup counts toward feasibility
   Then the entry is feasible   # STP-02b adds to the trigger before the check
 ```
 
+**TC-STP-17** — STP-03b stop watchdog (v1.41)
+```gherkin
+Scenario: Silent in the normal world
+  Given the mark crosses the trigger and the broker stop fills within 6 seconds
+  Then the watchdog never alerts and never acts
+
+Scenario: Alert at grace, escalate at bound
+  Given the mark holds at or above trigger and the resting stop stays unfilled
+  Then a critical alert fires at 10 seconds
+  And at 20 seconds the bot sends a marketable buy-to-close and cancels the resting stop
+  And the side proceeds SIDE_STOPPED into LEX with initiator watchdog_escalation
+
+Scenario: Race - broker stop fills during escalation
+  Given the resting stop fills while the escalation order is in flight
+  Then the escalation aborts per ORD-08 and exactly one buy-back exists (order count = 1)
+
+Scenario: Stale marks pause the clock
+  Given quotes go stale mid-breach
+  Then the watchdog clock pauses and resumes on fresh data; no action on stale marks
+
+Scenario: Every escalation is calibration evidence
+  Then each watchdog_escalation record stores mark-at-breach, elapsed time, and fill price
+```
+
 **TC-STP-13** — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
 
 ## Net-loss estimation (NLE)
@@ -880,7 +904,7 @@ Scenario: Decision moment - give up safely
 | DAY-01/02 | TC-EOD-05 | | STP-01/02 | TC-STP-01/02/03 |
 | DAY-03 | TC-RSK-05 | | STP-03 | TC-STP-09 |
 | DAY-04/05 | TC-REC-01, TC-UI-04 | | STP-04 | TC-STP-04 |
-| ENT-01/02 | TC-ENT-01 | | STP-02b/02c / STP-05/05a | TC-STP-14/15/16, TC-STP-08/13 |
+| ENT-01/02 | TC-ENT-01 | | STP-02b/02c/03b / STP-05/05a | TC-STP-14/15/16/17, TC-STP-08/13 |
 | ENT-03 | TC-ENT-02 | | STP-06 | TC-STP-01 |
 | ENT-04/05 | TC-ENT-03 | | STP-07/08 | TC-STP-06 |
 | ENT-06 | TC-ENT-04 | | STP-09 | TC-EOD-01 |
