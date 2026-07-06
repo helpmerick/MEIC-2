@@ -4,12 +4,19 @@ A pure fold from an ordered event log to day state + P&L. "Deterministic"
 is the whole point: replaying the same log always yields an equal DayState,
 so crash recovery (rebuild from the log) and the replay invariant hold.
 
-P&L model (Ash's outcome contract, TC-STP-01 v1.38): the entry collects its
-net credit up front; each stopped side costs the buy-to-close fill and gives
-back the long's recovery. So
-    entry_pnl = net_credit − Σ(stop fills) + Σ(long recoveries)
-e.g. credit 4.00, one side stopped at 3.80, zero recovery ⇒ +0.20; both
-sides stopped ⇒ −3.60 (about the premium, never more before slippage).
+P&L model (Ash's outcome contract, TC-STP-01 v1.38; PNL-02): the entry
+collects its net credit up front; each stopped side costs the buy-to-close
+fill and gives back the long's recovery; fees (PNL-01) reduce every fill. So
+    entry_pnl = net_credit − Σ(stop fills) + Σ(long recoveries) − Σ(fees)
+e.g. credit 4.00, one side stopped at 3.80, zero recovery, zero fees ⇒ +0.20;
+both sides stopped ⇒ −3.60 (about the premium, never more before slippage).
+
+Fees are RECORDED on each fill event (events.py) and summed here — the
+projection never recomputes them, so replay is deterministic (PNL-03) and the
+figure reconciles against broker truth at EOD (PNL-04). The remaining PNL-02
+term — settlement effects on an in-the-money expiring leg — is ~0 for the
+stop-protected 0DTE case; it enters with EOD settlement (slice 4/5) and is
+marked by the TC-PNL / TC-EOD reds until then.
 """
 from __future__ import annotations
 
@@ -37,6 +44,7 @@ class EntryProjection:
     net_credit: Decimal = Decimal("0")
     stop_fills: Decimal = Decimal("0")
     recoveries: Decimal = Decimal("0")
+    fees: Decimal = Decimal("0")
     sides_stopped: tuple[str, ...] = ()
     sides_closed: tuple[str, ...] = ()
     sides_expired: tuple[str, ...] = ()
@@ -44,7 +52,7 @@ class EntryProjection:
 
     @property
     def pnl(self) -> Decimal:
-        return self.net_credit - self.stop_fills + self.recoveries
+        return self.net_credit - self.stop_fills + self.recoveries - self.fees
 
 
 @dataclass(frozen=True)
@@ -81,14 +89,17 @@ def apply(state: DayState, event: Event) -> DayState:
         return replace(state, entries=_put(state, _entry(state, event.entry_id)))
     if isinstance(event, CondorFilled):
         e = _entry(state, event.entry_id)
-        return replace(state, entries=_put(state, replace(e, net_credit=e.net_credit + event.net_credit)))
+        return replace(state, entries=_put(state, replace(
+            e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
-            e, stop_fills=e.stop_fills + event.fill, sides_stopped=e.sides_stopped + (event.side,))))
+            e, stop_fills=e.stop_fills + event.fill, fees=e.fees + event.fee,
+            sides_stopped=e.sides_stopped + (event.side,))))
     if isinstance(event, LongSold):
         e = _entry(state, event.entry_id)
-        return replace(state, entries=_put(state, replace(e, recoveries=e.recoveries + event.recovery)))
+        return replace(state, entries=_put(state, replace(
+            e, recoveries=e.recoveries + event.recovery, fees=e.fees + event.fee)))
     if isinstance(event, SideClosed):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(e, sides_closed=e.sides_closed + (event.side,))))

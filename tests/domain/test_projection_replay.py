@@ -54,6 +54,30 @@ def test_both_sides_stopped_loses_about_the_premium():
     assert fold(events).entries["e"].pnl == D("-3.60")
 
 
+def test_fees_reduce_entry_pnl_pnl01():
+    """PNL-01/02: recorded per-fill fees subtract from entry P&L. The seam is
+    designed now; the FeeModel that POPULATES the fee lands in slice 2/3."""
+    events = [
+        DayArmed(date="d", entry_count=1),
+        CondorFilled(entry_id="e", net_credit=D("4.00"), fee=D("0.08")),
+        ShortStopped(entry_id="e", side="PUT", fill=D("3.80"), slippage=D("0"), fee=D("0.02")),
+        LongSold(entry_id="e", side="PUT", recovery=D("0.00"), fee=D("0.02")),
+        SideExpired(entry_id="e", side="CALL"),
+    ]
+    # 4.00 - 3.80 + 0 - (0.08 + 0.02 + 0.02) = 0.08
+    assert fold(events).entries["e"].pnl == D("0.08")
+
+
+def test_fee_field_defaults_and_old_log_without_fee_still_replays():
+    """Schema evolution: an event dict written before `fee` existed replays
+    with fee defaulting to 0 (no KeyError)."""
+    from meic.domain.events import Event
+    old = {"type": "CondorFilled", "entry_id": "e", "net_credit": "4.00"}  # no fee key
+    ev = Event.from_dict(old)
+    assert ev.fee == D("0")
+    assert fold([ev]).entries["e"].pnl == D("4.00")
+
+
 def test_replay_is_deterministic():
     """REC-01: replaying the same log reproduces identical state + P&L."""
     events = canonical_day()

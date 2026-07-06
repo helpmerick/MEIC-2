@@ -45,6 +45,10 @@ class Event:
         cls = Event._registry[data["type"]]
         kwargs: dict[str, Any] = {}
         for f in fields(cls):  # type: ignore[arg-type]
+            if f.name not in data:
+                # Field absent in an older log entry — fall back to its default
+                # (schema evolution: e.g. `fee` added after early events).
+                continue
             raw = data[f.name]
             kwargs[f.name] = Decimal(raw) if f.type in ("Decimal", Decimal) else raw
         return cls(**kwargs)
@@ -85,10 +89,18 @@ class CondorProposed(Event):
     call_short: Decimal
 
 
+# `fee` on every fill-bearing event: the per-contract commissions/fees (PNL-01)
+# incurred by THAT fill, RECORDED AT FILL TIME from the FeeModel then in force.
+# Recording (not recomputing) keeps replay deterministic (PNL-03) and lets the
+# EOD pass reconcile recorded fees against broker truth (PNL-04). Default 0.00
+# is the seam only — the FeeModel that populates it lands with the code that
+# produces each fill (stop fills: slice 2; entry fills: slice 3).
+
 @dataclass(frozen=True)
 class CondorFilled(Event):
     entry_id: str
     net_credit: Decimal  # actual net fill credit (STK-02a) — the P&L basis
+    fee: Decimal = Decimal("0")  # entry fees, all four legs (PNL-01)
 
 
 @dataclass(frozen=True)
@@ -97,6 +109,7 @@ class ShortStopped(Event):
     side: str  # "PUT" | "CALL"
     fill: Decimal  # buy-to-close fill price paid
     slippage: Decimal
+    fee: Decimal = Decimal("0")  # buy-to-close fee (PNL-01)
 
 
 @dataclass(frozen=True)
@@ -104,6 +117,7 @@ class LongSold(Event):
     entry_id: str
     side: str
     recovery: Decimal  # credit received selling the orphaned long (LEX)
+    fee: Decimal = Decimal("0")  # long-sale fee (PNL-01)
 
 
 @dataclass(frozen=True)
