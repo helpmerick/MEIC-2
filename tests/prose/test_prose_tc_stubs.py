@@ -47,7 +47,7 @@ def test_tc_ord_05():
     raise NotImplementedError("TC-ORD-05: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-02 — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas; values outside the pct set or basis set are rejected by config validation (doc 06).
+# TC-STP-02 — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas (per_side formulas stay verified in the domain even while gated); values outside the pct set or basis set are rejected by config validation (doc 06); SELECTING per_side is rejected `allocation_unverified` per STP-02d (v1.43).
 def test_tc_stp_02():
     raise NotImplementedError("TC-STP-02: prose test case not implemented (Phase 1 red)")
 
