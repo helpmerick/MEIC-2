@@ -1,96 +1,133 @@
-"""Domain unit tests: STK-10/11 chain guards, STK-02/03/07 premium walk.
+"""Domain unit tests: STK-10 chain gate, STK-02 probe walk (v1.39).
+
+The eight TC-STK-08 vectors are pinned HERE at unit level because the
+extracted TC-STK-08.feature is currently invalid Gherkin (wrapped step line,
+amendment proposed to the operator) — the BDD binding follows once ratified.
 
 Put-side fixtures: strikes_toward_otm ordered DESCENDING (nearest money first).
 """
 from decimal import Decimal as D
 
-from meic.domain.chain import ChainSide, Mark, adjacency_ok, completeness_ok
-from meic.domain.walk import Selected, Skip, WingUnmarked, select_side
+import pytest
+
+from meic.domain.chain import ChainSide, Mark, completeness_ok
+from meic.domain.walk import Selected, Skip, WingUnmarked, lattice_price, probe_prices, select_side
 
 
-def put_side(marks: dict, strikes=None) -> ChainSide:
-    strikes = strikes or sorted(marks, reverse=True)
-    return ChainSide(tuple(D(str(s)) for s in strikes), {D(str(k)): v for k, v in marks.items()})
+def put_side(mids: dict, strikes=None, bids: dict | None = None) -> ChainSide:
+    """mids: strike -> raw mid. Wing strikes included automatically 50 below
+    each candidate unless the test provides its own strike list."""
+    strikes = strikes or sorted({*mids, *(D(str(k)) - 50 for k in map(D, map(str, mids)))}, reverse=True)
+    marks = {}
+    for k, mid in mids.items():
+        m = D(str(mid))
+        bid = D(str((bids or {}).get(k))) if bids and k in bids else m - D("0.02")
+        marks[D(str(k))] = Mark(bid=bid, ask=2 * m - bid)
+    return ChainSide(tuple(D(str(s)) for s in strikes), marks)
 
 
-def mk(mid, bid=None):  # a Mark with the given mid (symmetric spread)
-    mid = D(str(mid))
-    bid = D(str(bid)) if bid is not None else mid - D("0.05")
-    return Mark(bid=bid, ask=2 * mid - bid)
+WALK = dict(target_premium=D("3.00"), wing_width=D("50"), otm_direction=D(-1))
 
 
-WALK = dict(target_premium=D("3.00"), tolerance=D("0.10"), wing_width=D("50"), otm_direction=D(-1))
+def wings(*shorts):
+    """Cheap marked wings 50 points below the given short strikes."""
+    return {s - 50: "0.10" for s in shorts}
 
 
-class TestPremiumWalk:
-    def test_tc_stk_02_overshoot_within_tolerance_accepted(self):
-        # mids 3.10 and 2.85 => the 3.10 strike wins (ceiling inclusive)
-        side = put_side({6000: mk("3.10"), 5995: mk("2.85"), 5950: mk("0.60"), 5945: mk("0.55")},
-                        strikes=[6000, 5995, 5950, 5945])
+class TestProbeSequence:
+    def test_exact_deterministic_order(self):
+        seq = probe_prices(D("3.00"), floor=D("1.75"))
+        head = tuple(D(p) for p in ("3.00", "2.95", "3.05", "2.90", "3.10", "2.85", "3.15", "2.80", "2.75"))
+        assert seq[: len(head)] == head
+        assert seq[-1] == D("1.75")  # floor probe inclusive
+        assert len(seq) == 1 + 25 + 3  # T + down + up
+
+    def test_floor_truncates_down_probes(self):
+        seq = probe_prices(D("2.00"), floor=D("1.00"))
+        assert min(seq) == D("1.00") and D("0.95") not in seq
+
+    def test_lattice_rounding(self):
+        assert lattice_price(D("2.93")) == D("2.95")
+        assert lattice_price(D("2.92")) == D("2.90")
+        assert lattice_price(D("3.20")) == D("3.20")
+
+
+class TestProbeWalkVectors:
+    """TC-STK-08 vectors A–E2 + lattice, pinned at unit level."""
+
+    def test_vector_a_first_down_probe_matches(self):
+        side = put_side({6000: "3.20", 5995: "2.93", 5990: "2.70", **wings(5995)})
         r = select_side(side, **WALK)
-        assert isinstance(r, Selected) and r.short_strike == D("6000") and r.long_strike == D("5950")
+        assert isinstance(r, Selected)
+        assert r.short_strike == D("5995") and r.probe_price == D("2.95") and r.probe_number == 2
 
-    def test_tc_stk_02_one_tick_over_ceiling_rejected(self):
-        # 3.11 > 3.10 ceiling => the 2.85 strike is selected
-        side = put_side({6000: mk("3.11"), 5995: mk("2.85"), 5945: mk("0.55")},
-                        strikes=[6000, 5995, 5945])
+    def test_vector_b_up_probe_within_cap_matches(self):
+        side = put_side({6000: "3.30", 5995: "3.05", 5990: "2.80", **wings(5995)})
+        r = select_side(side, **WALK)
+        assert isinstance(r, Selected)
+        assert r.short_strike == D("5995") and r.probe_price == D("3.05") and r.probe_number == 3
+
+    def test_vector_c_equal_distance_above_cap_never_selected(self):
+        side = put_side({6000: "3.45", 5995: "3.20", 5990: "2.80", **wings(5990)})
+        r = select_side(side, **WALK)
+        assert isinstance(r, Selected)
+        assert r.short_strike == D("5990") and r.probe_price == D("2.80")  # 3.20 skipped forever
+
+    def test_vector_d_full_exhaustion_skips(self):
+        side = put_side({6000: "3.45", 5995: "1.60", **wings(6000, 5995)})  # nothing in [1.75, 3.15]
+        assert select_side(side, **WALK) == Skip("no_valid_strikes")
+
+    def test_vector_e_deep_walk_sells_thin_but_legal(self):
+        side = put_side({5990: "1.80", **wings(5990)})
+        r = select_side(side, **WALK)
+        assert isinstance(r, Selected) and r.short_strike == D("5990") and r.probe_price == D("1.80")
+
+    def test_vector_e2_hard_floor_beats_walk_depth(self):
+        side = put_side({5990: "0.95", **wings(5990)})
+        r = select_side(side, target_premium=D("2.00"), wing_width=D("50"), otm_direction=D(-1))
+        assert r == Skip("no_valid_strikes")  # floor = max(0.75, 1.00) = 1.00
+
+    def test_lattice_answers_290_not_295(self):
+        side = put_side({5995: "2.92", **wings(5995)})
+        r = select_side(side, **WALK)
+        assert isinstance(r, Selected) and r.probe_price == D("2.90") and r.probe_number == 4
+
+
+class TestProbeWalkMechanics:
+    def test_tie_same_probe_price_closest_raw_mid_wins(self):
+        # both round to 2.95: 2.94 (dist .01) beats 2.97 (dist .02)
+        side = put_side({6000: "2.97", 5995: "2.94", **wings(6000, 5995)})
         r = select_side(side, **WALK)
         assert isinstance(r, Selected) and r.short_strike == D("5995")
 
-    def test_tc_stk_02_ceiling_beats_proximity(self):
-        side = put_side({6000: mk("3.25"), 5995: mk("2.85"), 5945: mk("0.55")},
-                        strikes=[6000, 5995, 5945])
+    def test_tie_equal_distance_goes_further_otm(self):
+        # 2.94 and 2.96 both dist .01 from 2.95: further OTM (5995) wins
+        side = put_side({6000: "2.96", 5995: "2.94", **wings(6000, 5995)})
         r = select_side(side, **WALK)
         assert isinstance(r, Selected) and r.short_strike == D("5995")
 
-    def test_tc_stk_02_nothing_at_or_below_ceiling(self):
-        side = put_side({6000: mk("4.00"), 5995: mk("3.50")}, strikes=[6000, 5995])
+    def test_stk07_zero_bid_short_skips(self):
+        side = put_side({6000: "3.00", **wings(6000)}, bids={6000: "0"})
         assert select_side(side, **WALK) == Skip("no_valid_strikes")
-
-    def test_stk_07_zero_bid_short_skips(self):
-        side = put_side({6000: mk("3.05", bid="0"), 5950: mk("0.60")}, strikes=[6000, 5950])
-        assert select_side(side, **WALK) == Skip("no_valid_strikes")
-
-    def test_stk_11_hole_one_step_closer_rejects(self):
-        # 6000 unmarked (hole), 5995 marked at 2.85: adjacency can't prove continuity
-        side = put_side({5995: mk("2.85"), 5945: mk("0.55")}, strikes=[6000, 5995, 5945])
-        assert select_side(side, **WALK) == Skip("incomplete_chain")
-
-    def test_stk_11_leapt_hole_rejects(self):
-        # closer strike marked BELOW the ceiling => walk should have taken it —
-        # but it was skipped as a data error elsewhere: guard flags the leap
-        side = put_side({6000: mk("3.02"), 5995: mk("2.85"), 5945: mk("0.55")},
-                        strikes=[6000, 5995, 5945])
-        # force selection to land on 5995 by unmarking 6000's bid? No — walk takes
-        # 6000 (<= ceiling). Instead: 6000 marked above ceiling, 5995 hole, 5990 marked.
-        side = put_side({6000: mk("3.25"), 5990: mk("2.85"), 5940: mk("0.55")},
-                        strikes=[6000, 5995, 5990, 5940])
-        assert select_side(side, **WALK) == Skip("incomplete_chain")  # 5995 is a hole
 
     def test_wing_unmarked_is_retry_not_skip(self):
-        side = put_side({6000: mk("3.05"), 5995: mk("2.85")}, strikes=[6000, 5995, 5950])
+        side = put_side({6000: "3.00"}, strikes=[6000, 5995, 5950])
         r = select_side(side, **WALK)
         assert isinstance(r, WingUnmarked) and r.long_strike == D("5950")
 
     def test_unlisted_wing_skips(self):
-        side = put_side({6000: mk("3.05")}, strikes=[6000, 5995])
+        side = put_side({6000: "3.00"}, strikes=[6000, 5995])
         assert select_side(side, **WALK) == Skip("no_valid_strikes")
 
 
 class TestChainGuards:
     def test_stk_10_completeness_below_pct_fails(self):
-        # TC-STK-07: 75% marked at fire time vs 90% requirement
         band = tuple(D(str(s)) for s in [6000, 5995, 5990, 5985])
-        side = put_side({6000: mk("3.0"), 5995: mk("2.8"), 5990: mk("2.6")}, strikes=list(band))
+        side = put_side({6000: "3.0", 5995: "2.8", 5990: "2.6"}, strikes=list(band))
         assert not completeness_ok(side, band_strikes=band, completeness_pct=D("90"))
         assert completeness_ok(side, band_strikes=band, completeness_pct=D("75"))
 
     def test_stk_10_far_otm_emptiness_never_trips(self):
-        # strikes outside the band are not in band_strikes => irrelevant
         band = tuple(D(str(s)) for s in [6000, 5995])
-        side = put_side({6000: mk("3.0"), 5995: mk("2.8")}, strikes=[6000, 5995, 5000, 4900])
+        side = put_side({6000: "3.0", 5995: "2.8"}, strikes=[6000, 5995, 5000, 4900])
         assert completeness_ok(side, band_strikes=band, completeness_pct=D("90"))
-
-    def test_stk_11_nearest_money_strike_passes_vacuously(self):
-        side = put_side({6000: mk("3.0")}, strikes=[6000])
-        assert adjacency_ok(side, D("6000"), ceiling=D("3.10"))

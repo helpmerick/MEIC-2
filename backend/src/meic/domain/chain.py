@@ -1,10 +1,14 @@
-"""Chain snapshot model + integrity gates — STK-04 (data), STK-10, STK-11.
+"""Chain snapshot model + integrity gate — STK-04 (data), STK-10.
 
 Pure: the snapshot is handed in fully formed (adapters own staleness stamping
 and retrieval). One ChainSide = one option type's view for one expiration.
 Strikes toward-OTM ordering is the caller's responsibility (puts: descending
 from the money; calls: ascending) so this module never needs to know spot
-conventions — it just walks the given order.
+conventions.
+
+v1.39 note: the v1.4 adjacency guard is retired — STK-11 is now probe-match
+integrity, enforced inside the probe walk itself (walk.py); STK-10
+completeness remains the primary defense against holey chains.
 """
 from __future__ import annotations
 
@@ -39,11 +43,6 @@ class ChainSide:
     def is_marked(self, strike: Decimal) -> bool:
         return strike in self.marks
 
-    def one_step_closer_to_money(self, strike: Decimal) -> Decimal | None:
-        """The adjacent listed strike toward the money (STK-11 guard input)."""
-        idx = self.strikes_toward_otm.index(strike)
-        return self.strikes_toward_otm[idx - 1] if idx > 0 else None
-
 
 def completeness_ok(
     side: ChainSide,
@@ -61,18 +60,3 @@ def completeness_ok(
         return False
     marked = sum(1 for s in band_strikes if side.is_marked(s))
     return (Decimal(marked) / Decimal(len(band_strikes))) * 100 >= completeness_pct
-
-
-def adjacency_ok(side: ChainSide, selected: Decimal, ceiling: Decimal) -> bool:
-    """STK-11 selection-continuity guard.
-
-    The strike one step closer to the money than the selection must (a) have a
-    valid mark and (b) carry a premium ABOVE the ceiling — proving the walk
-    descended continuously rather than leaping a hole. The nearest-the-money
-    strike (no closer neighbour) passes vacuously.
-    """
-    closer = side.one_step_closer_to_money(selected)
-    if closer is None:
-        return True
-    mark = side.marks.get(closer)
-    return mark is not None and mark.mid > ceiling

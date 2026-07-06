@@ -1,27 +1,32 @@
-"""Hand-written step definitions for TC-STK-07 — STK-10/11 chain integrity (Phase 3).
+"""Hand-written step definitions for TC-STK-07 — STK-10 chain integrity (Phase 3).
 
-Domain-pure substance is real: gate outcomes, adjacency rejections, and the
-heal-then-proceed progression are modeled as before/after chain snapshots.
+v1.39 NOTE: scenarios 3–4 of this feature still encode the RETIRED v1.4
+adjacency guard ('one step closer to the money' rejections). v1.39's STK-11
+replaced that guard with probe-match integrity — under the probe walk these
+two scenarios describe behavior that no longer exists. A spec amendment to
+rewrite/remove them has been proposed to the operator; their steps raise
+NotImplementedError until ratified. Scenarios 1, 2, 5 and 6 remain real.
+
 The retry CADENCE (chain_retry_seconds timer, entry-window expiry clock) is
-application-layer and gets exercised by the application-phase tests; the
-skip reasons and gate verdicts asserted here are the domain truth they reuse.
+application-layer; the gate verdicts and skip reasons asserted here are the
+domain truth those loops reuse.
 """
 from decimal import Decimal as D
 
 import pytest
 from pytest_bdd import given, scenarios, then, when
 
-from meic.domain.chain import ChainSide, Mark, adjacency_ok, completeness_ok
-from meic.domain.walk import Selected, Skip, WingUnmarked, select_side
+from meic.domain.chain import ChainSide, Mark, completeness_ok
+from meic.domain.walk import Selected, WingUnmarked, select_side
 
 scenarios("../features/TC-STK-07.feature")
 
-WALK = dict(target_premium=D("3.00"), tolerance=D("0.10"), wing_width=D("50"), otm_direction=D(-1))
+WALK = dict(target_premium=D("3.00"), wing_width=D("50"), otm_direction=D(-1))
 
 
 def _mk(mid: str) -> Mark:
     m = D(mid)
-    return Mark(bid=m - D("0.05"), ask=m + D("0.05"))
+    return Mark(bid=m - D("0.02"), ask=m + D("0.02"))
 
 
 BAND = tuple(D(str(s)) for s in (6000, 5995, 5990, 5985))
@@ -74,38 +79,38 @@ def _(world):
     assert world["skip"] == "incomplete_chain"
 
 
-# --- Scenario: adjacency catches a hole at the target ------------------------
+# --- Scenarios 3-4: RETIRED adjacency guard — blocked on proposed amendment ---
+
+_ADJACENCY_STALE = (
+    "TC-STK-07 scenarios 3-4 encode the v1.4 adjacency guard, retired by "
+    "v1.39 STK-11 (probe-match integrity). Spec amendment proposed to the "
+    "operator to rewrite/remove them; frozen until ratified."
+)
+
 
 @given('the completeness gate passes at 90%')
 def _(world):
-    world["completeness_passed"] = True  # context; the hole sits AT the target
+    pass  # context only; the stale adjacency step below blocks the scenario
 
 
 @given("the strike one step closer to the money than the walk's selection has no mark")
-def _(world):
-    # 6000 is a hole; 5995 marked at 2.85 — walk lands on 5995, guard rejects
-    side = ChainSide((D("6000"), D("5995"), D("5945")),
-                     {D("5995"): _mk("2.85"), D("5945"): _mk("0.55")})
-    world["result"] = select_side(side, **WALK)
+def _():
+    raise NotImplementedError(_ADJACENCY_STALE)
 
 
 @then('the selection is rejected and treated as a STK-10 failure (retry, then skip)')
-def _(world):
-    assert world["result"] == Skip("incomplete_chain")
+def _():
+    raise NotImplementedError(_ADJACENCY_STALE)
 
-
-# --- Scenario: adjacency catches a leapt hole --------------------------------
 
 @given('the strike one step closer to the money is marked BELOW the ceiling')
-def _(world):
-    # A richer qualifying strike exists one step closer: continuity is disproven
-    side = ChainSide((D("6000"), D("5995")), {D("6000"): _mk("3.02"), D("5995"): _mk("2.85")})
-    world["adjacency"] = adjacency_ok(side, D("5995"), ceiling=D("3.10"))
+def _():
+    raise NotImplementedError(_ADJACENCY_STALE)
 
 
 @then('the selection is rejected            # the walk should have selected that richer strike')
-def _(world):
-    assert world["adjacency"] is False
+def _():
+    raise NotImplementedError(_ADJACENCY_STALE)
 
 
 # --- Scenario: missing wing retries ------------------------------------------
@@ -113,8 +118,8 @@ def _(world):
 @given('the wing strike has no mark at fire time but appears at T+15s')
 def _(world):
     strikes = (D("6000"), D("5995"), D("5950"))
-    t0 = ChainSide(strikes, {D("6000"): _mk("3.05"), D("5995"): _mk("2.85")})
-    t1 = ChainSide(strikes, {D("6000"): _mk("3.05"), D("5995"): _mk("2.85"), D("5950"): _mk("0.60")})
+    t0 = ChainSide(strikes, {D("6000"): _mk("3.05")})
+    t1 = ChainSide(strikes, {D("6000"): _mk("3.05"), D("5950"): _mk("0.60")})
     world["r_t0"] = select_side(t0, **WALK)
     world["r_t1"] = select_side(t1, **WALK)
 
