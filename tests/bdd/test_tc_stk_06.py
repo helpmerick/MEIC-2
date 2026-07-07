@@ -11,7 +11,10 @@ import pytest
 from pytest_bdd import given, scenarios, then, when
 
 from meic.domain.collision import Abort, Resolved, resolve_collisions
+from meic.domain.events import CondorFilled, ShortStopped
 from meic.domain.gates import GatesFailed, check_credit_gates
+from meic.domain.projection import fold
+from meic.domain.risk import exceeds_max_day_risk, worst_case_loss
 
 scenarios("../features/TC-STK-06.feature")
 
@@ -64,10 +67,21 @@ def _(world):
 
 
 @then("both entries' fills and stops attribute correctly by order ID")
-def _():
-    raise NotImplementedError(
-        "TC-STK-06: OWN-01 order-ID attribution involves fills/stops — "
-        "frozen until STP-05a findings review + Phase 2 merge")
+def _(world):
+    # freeze lifted (STP-05a reviewed 2026-07-06). Two entries stack shorts at
+    # 5990; each fill/stop carries its own entry_id (1:1 with its order), so the
+    # projection attributes them to the right entry — never commingled (OWN-01).
+    events = [
+        CondorFilled(entry_id="e1", net_credit=D("2.00")),
+        CondorFilled(entry_id="e3", net_credit=D("2.20")),
+        ShortStopped(entry_id="e1", side="PUT", fill=D("3.80"), slippage=D("0")),
+        ShortStopped(entry_id="e3", side="CALL", fill=D("3.50"), slippage=D("0")),
+    ]
+    entries = fold(events).entries
+    assert entries["e1"].net_credit == D("2.00") and entries["e1"].stop_fills == D("3.80")
+    assert entries["e3"].net_credit == D("2.20") and entries["e3"].stop_fills == D("3.50")
+    assert entries["e1"].sides_stopped == ("PUT",)   # e3's CALL stop did not leak in
+    assert entries["e3"].sides_stopped == ("CALL",)
 
 
 @given("the wing target already holds another entry's long")
@@ -99,10 +113,22 @@ def _(world):
 
 
 @then('RSK-04 evaluates the widened worst case before submission')
-def _():
-    raise NotImplementedError(
-        "TC-STK-06: RSK-04 is the application-layer risk gate — built in the "
-        "application phase; the domain exposes Resolved.widened for it (asserted above)")
+def _(world):
+    # freeze lifted. The long shifted alone to 5935, so the spread is 55 wide
+    # (was 50). RSK-04 must gate on the WIDENED worst case, not the original.
+    r = world["result"]
+    widened_width = r.short_strike - r.long_strike            # 5990 - 5935 = 55
+    original_width = D("50")
+    net_credit = D("2.00")
+    widened_wc = worst_case_loss(widened_width, net_credit)   # (55-2)*100 = 5300
+    original_wc = worst_case_loss(original_width, net_credit)  # (50-2)*100 = 4800
+    assert widened_wc > original_wc
+
+    # a max_day_risk between the two only trips on the widened figure — proving
+    # RSK-04 evaluates the widened worst case before submission (not the original)
+    max_day_risk = D("5000")
+    assert exceeds_max_day_risk([], widened_wc, max_day_risk) is True
+    assert exceeds_max_day_risk([], original_wc, max_day_risk) is False
 
 
 @then('five failed long shifts abort the entry with "strike_collision"')
