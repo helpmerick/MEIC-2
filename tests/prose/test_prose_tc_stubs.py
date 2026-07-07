@@ -57,16 +57,6 @@ def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-API-01 — EC-API-01/REC-06: token expiry renewed proactively; forced auth failure ⇒ backoff, entries blocked, alert.
-def test_tc_api_01():
-    raise NotImplementedError("TC-API-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-API-02 — EC-API-02: under injected 429s, exit-side requests are always sent before queued entry-side requests; none dropped.
-def test_tc_api_02():
-    raise NotImplementedError("TC-API-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-API-03 — EC-API-04: unknown broker position adopted; naked short protected (stop placed) before any other action; entries blocked until reconciled.
 def test_tc_api_03():
     raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")
