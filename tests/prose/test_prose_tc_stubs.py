@@ -92,19 +92,9 @@ def test_tc_eod_03():
     raise NotImplementedError("TC-EOD-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-RSK-02 — RSK-02 tombstone (absence test): config containing `daily_max_loss`, `daily_loss_also_flatten` or `risk_eval_seconds` is REJECTED as unknown keys; a scripted heavy-loss whipsaw day produces NO automatic halt, flatten, or entry block — remaining composed entries run through their normal gates (documents the deliberately accepted behavior); no `daily_loss` initiator exists anywhere (architecture assertion).
-def test_tc_rsk_02():
-    raise NotImplementedError("TC-RSK-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-RSK-05 — RSK-07/EC-RSK-06: injected clock drift blocks entries; existing management continues.
 def test_tc_rsk_05():
     raise NotImplementedError("TC-RSK-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-RSK-06 — EC-RSK-04: in paper mode, the live adapter is not instantiated (structural test — assert wiring, not flags).
-def test_tc_rsk_06():
-    raise NotImplementedError("TC-RSK-06: prose test case not implemented (Phase 1 red)")
 
 
 # TC-API-01 — EC-API-01/REC-06: token expiry renewed proactively; forced auth failure ⇒ backoff, entries blocked, alert.
@@ -120,11 +110,6 @@ def test_tc_api_02():
 # TC-API-03 — EC-API-04: unknown broker position adopted; naked short protected (stop placed) before any other action; entries blocked until reconciled.
 def test_tc_api_03():
     raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-API-04 — EC-API-06: cancel-rejected-because-filled routed as a fill.
-def test_tc_api_04():
-    raise NotImplementedError("TC-API-04: prose test case not implemented (Phase 1 red)")
 
 
 # TC-OWN-06 — OWN-07: flatten-all against an account containing FOREIGN positions closes every bot entry and leaves every FOREIGN position untouched; no account-level close-all endpoint is ever called (fake-broker records endpoint usage).

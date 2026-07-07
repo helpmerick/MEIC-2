@@ -10,6 +10,11 @@ from .stop_basis import StopBasisRejected, validate_stop_basis
 
 STOP_PCT_SET = tuple(range(95, 305, 5))  # {95, 100, …, 300}, exactly (STP-02, UI-04)
 
+# RSK-02 tombstone (removed v1.32, MUST NOT BE BUILT): the daily-loss feature is
+# gone. Its config keys are REJECTED as unknown (spec 06 §169) so a stale config
+# reviving the feature fails loudly rather than silently doing nothing.
+TOMBSTONE_KEYS = frozenset({"daily_max_loss", "daily_loss_also_flatten", "risk_eval_seconds"})
+
 
 class ConfigRejected(ValueError):
     def __init__(self, key: str, reason: str) -> None:
@@ -32,6 +37,9 @@ def validate_bind(bind_host: str, api_token: str | None) -> None:
 def validate_config(cfg: dict) -> None:
     """Validate a proposed config patch. Raises ConfigRejected / StopBasisRejected
     on the first problem (UI-03: reject out-of-range regardless of client)."""
+    for key in cfg:
+        if key in TOMBSTONE_KEYS:
+            raise ConfigRejected(key, "removed_rsk02")  # RSK-02 tombstone — must not be built
     if "stop_loss_pct" in cfg:
         validate_stop_loss_pct(int(cfg["stop_loss_pct"]))
     if "stop_basis" in cfg:
