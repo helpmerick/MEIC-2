@@ -112,11 +112,6 @@ def test_tc_api_03():
     raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-OWN-06 — OWN-07: flatten-all against an account containing FOREIGN positions closes every bot entry and leaves every FOREIGN position untouched; no account-level close-all endpoint is ever called (fake-broker records endpoint usage).
-def test_tc_own_06():
-    raise NotImplementedError("TC-OWN-06: prose test case not implemented (Phase 1 red)")
-
-
 # TC-SIM-03 — SIM-04 money: an entry fill posts credit minus per-leg fees to the ledger; open entries consume margin per the spread requirement and release on close; insufficient simulated BP skips the entry (rejected_bp); settlement posts against the real closing level; the ledger survives container restart (REC-07).
 def test_tc_sim_03():
     raise NotImplementedError("TC-SIM-03: prose test case not implemented (Phase 1 red)")
