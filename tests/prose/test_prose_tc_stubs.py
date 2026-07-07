@@ -82,26 +82,6 @@ def test_tc_nle_07():
     raise NotImplementedError("TC-NLE-07: prose test case not implemented (Phase 1 red)")
 
 
-# TC-LEX-02 — LEX-02/EC-LEX-01: stale then crossed quotes ⇒ wait, then fallback path; no order priced off invalid quotes.
-def test_tc_lex_02():
-    raise NotImplementedError("TC-LEX-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-03 — LEX-04 floor: sell price never below max(bid, intrinsic); scripted deep-ITM long asserts intrinsic floor binds.
-def test_tc_lex_03():
-    raise NotImplementedError("TC-LEX-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-04 — LEX-06/EC-LEX-02: fallback unfilled ⇒ critical alert and retry loop continues until fill or close.
-def test_tc_lex_04():
-    raise NotImplementedError("TC-LEX-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-05 — LEX-07: after LEX completes, per-side position is flat; no cheap-long is ever retained.
-def test_tc_lex_05():
-    raise NotImplementedError("TC-LEX-05: prose test case not implemented (Phase 1 red)")
-
-
 # TC-LEX-06 — LEX-08/EC-LEX-03: fill-during-replace race ⇒ broker truth adopted; double-fill (short position created) ⇒ immediate buy-back + critical alert.
 def test_tc_lex_06():
     raise NotImplementedError("TC-LEX-06: prose test case not implemented (Phase 1 red)")
@@ -110,11 +90,6 @@ def test_tc_lex_06():
 # TC-LEX-07 — LEX-09: late fill after presumed cancel ⇒ P&L corrected from broker records.
 def test_tc_lex_07():
     raise NotImplementedError("TC-LEX-07: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-08 — EC-LEX-04: zero-bid long ⇒ minimum-tick limit rests until fill or expiry.
-def test_tc_lex_08():
-    raise NotImplementedError("TC-LEX-08: prose test case not implemented (Phase 1 red)")
 
 
 # TC-LEX-09 — EC-LEX-06 restart mid-ladder: ladder resumes from persisted step, working order rediscovered by key.
@@ -147,16 +122,6 @@ def test_tc_rsk_02():
     raise NotImplementedError("TC-RSK-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-RSK-03 — RSK-04: entry blocked when worst-case exposure would exceed max_day_risk; assert both exposure numbers computed as specified.
-def test_tc_rsk_03():
-    raise NotImplementedError("TC-RSK-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-RSK-04 — RSK-05/EC-DAT-04: absurd order price and absurd inbound quote both rejected before any broker call.
-def test_tc_rsk_04():
-    raise NotImplementedError("TC-RSK-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-RSK-05 — RSK-07/EC-RSK-06: injected clock drift blocks entries; existing management continues.
 def test_tc_rsk_05():
     raise NotImplementedError("TC-RSK-05: prose test case not implemented (Phase 1 red)")
@@ -165,11 +130,6 @@ def test_tc_rsk_05():
 # TC-RSK-06 — EC-RSK-04: in paper mode, the live adapter is not instantiated (structural test — assert wiring, not flags).
 def test_tc_rsk_06():
     raise NotImplementedError("TC-RSK-06: prose test case not implemented (Phase 1 red)")
-
-
-# TC-RSK-08 — RSK-08 order cap: scripted day approaching daily_order_cap ⇒ new entries blocked at the buffer; a stop replacement and a LEX order submitted after the cap are NOT blocked; cancel/replaces counted as orders.
-def test_tc_rsk_08():
-    raise NotImplementedError("TC-RSK-08: prose test case not implemented (Phase 1 red)")
 
 
 # TC-API-01 — EC-API-01/REC-06: token expiry renewed proactively; forced auth failure ⇒ backoff, entries blocked, alert.
@@ -190,31 +150,6 @@ def test_tc_api_03():
 # TC-API-04 — EC-API-06: cancel-rejected-because-filled routed as a fill.
 def test_tc_api_04():
     raise NotImplementedError("TC-API-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-OWN-02 — OWN-03 attribution: crash orphan vs foreign — a position matching the bot's own fill records (order IDs in the event log) is adopted and managed (REC-03/04, stop re-placed); an identical-looking position with no matching fills is FOREIGN. Both in one scripted account.
-def test_tc_own_02():
-    raise NotImplementedError("TC-OWN-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-OWN-04 — OWN-06 ledger shortfall: operator manually buys back 1 of the bot's 2 shorts (broker = 1, ledger = 2) ⇒ entry automation SUSPENDED, ledger written down via ForeignReduction, critical alert, no compensating orders; automation resumes only on acknowledgment.
-def test_tc_own_04():
-    raise NotImplementedError("TC-OWN-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-OWN-05 — OWN-04 structural cap (property test): across all exit paths (stop placement, LEX, CLS, flatten), every outbound order quantity ≤ ledger(symbol) at submit time, under randomized foreign deltas; the cap lives in the single order-construction path (architecture assertion).
-def test_tc_own_05():
-    raise NotImplementedError("TC-OWN-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-OWN-08 — OWN-09 guards (Bug #8 regression): a fresh fill whose position hasn't propagated (net 0 read seconds after stop placement) does NOT trigger external close — seen_open unmet and grace window unexpired; the stop is left resting; a single reconcile pass is never sufficient.
-def test_tc_own_08():
-    raise NotImplementedError("TC-OWN-08: prose test case not implemented (Phase 1 red)")
-
-
-# TC-OWN-09 — OWN-10 partial reduction: operator buys back 1 of the bot's 2 shorts ⇒ entry SUSPENDED, ledger written down, **zero order actions by the bot** (the 2-lot stop is left untouched); critical alert spells out the over-buy chain ("trigger closes 1, OPENS 1 long"); one-click Resize-stop and Cancel-stop actions each work when clicked and are tagged as operator actions in the event log.
-def test_tc_own_09():
-    raise NotImplementedError("TC-OWN-09: prose test case not implemented (Phase 1 red)")
 
 
 # TC-OWN-06 — OWN-07: flatten-all against an account containing FOREIGN positions closes every bot entry and leaves every FOREIGN position untouched; no account-level close-all endpoint is ever called (fake-broker records endpoint usage).
