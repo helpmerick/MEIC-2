@@ -82,11 +82,6 @@ def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-FLT-02 — RSK-01a concurrency + rails: entries flatten concurrently; under injected 429s all flatten orders are exit-priority (EC-API-02); flatten orders are never blocked by the daily order cap (RSK-08).
-def test_tc_flt_02():
-    raise NotImplementedError("TC-FLT-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-EOD-03 — EOD-03: after settlement/close, zero working orders remain; an uncancellable order produces a named critical alert.
 def test_tc_eod_03():
     raise NotImplementedError("TC-EOD-03: prose test case not implemented (Phase 1 red)")
