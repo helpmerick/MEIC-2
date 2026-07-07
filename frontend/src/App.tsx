@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, type OutageDrill } from "./api";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
@@ -12,6 +12,8 @@ export function App() {
   const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
   const [theme, toggleTheme] = useTheme();
   const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
+  const [drill, setDrill] = useState<OutageDrill | null>(null);
+  const [drilling, setDrilling] = useState(false);
 
   const flash = useCallback((text: string, kind: "ok" | "err") => {
     setToast({ text, kind });
@@ -44,6 +46,22 @@ export function App() {
     }
   }, [flash, refresh]);
 
+  // UC-12: the stop-independence drill — simulate a bot outage and show the
+  // evidence that resting stops stayed working throughout.
+  const runOutageDrill = useCallback(async () => {
+    setDrilling(true);
+    try {
+      const r = await api.outageDrill();
+      setDrill(r);
+      flash(r.survived ? "Outage drill passed — stops stayed working"
+        : "Outage drill: no resting stops to test", r.survived ? "ok" : "err");
+    } catch (e) {
+      flash(`Drill failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err");
+    } finally {
+      setDrilling(false);
+    }
+  }, [flash]);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -52,6 +70,10 @@ export function App() {
           <span className="muted">control panel</span>
         </div>
         <div className="spacer" />
+        <button className="btn drill-btn" onClick={runOutageDrill} disabled={drilling}
+                title="UC-12: simulate a bot outage and verify stops stay working">
+          {drilling ? <span className="spin" /> : null}{drilling ? "Drilling…" : "Outage drill"}
+        </button>
         <button className="btn danger flatten-btn" onClick={flattenAll} title="Close every open entry (typed confirmation)">
           Flatten all
         </button>
@@ -68,6 +90,17 @@ export function App() {
       </header>
 
       {error && <div className="banner-error">Backend unreachable — {error}</div>}
+
+      {drill && (
+        <div className={`drill-result ${drill.survived ? "ok" : "warn"}`}>
+          <button className="drill-x" onClick={() => setDrill(null)} aria-label="Dismiss">×</button>
+          <strong>{drill.survived ? "✓ Stop independence drill passed" : "⚠ Drill inconclusive"}</strong>
+          <span> — {drill.stops_before.length} resting stop(s), {drill.outage_seconds}s simulated outage:{" "}
+            {drill.survived ? "all still working" : "no stops to test"}
+            {drill.survived && `, timestamps ${drill.timestamps_unbroken ? "unbroken" : "CHANGED"}`}.</span>
+          <div className="drill-note">{drill.honesty_note}</div>
+        </div>
+      )}
 
       <main className="grid">
         <Dashboard state={state} connected={connected} />

@@ -59,4 +59,22 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     expect(spy).toHaveBeenCalledWith("FLATTEN");
     await waitFor(() => expect(screen.getByText(/flattened 2 entries/i)).toBeInTheDocument());
   });
+
+  it("Outage drill runs and shows the evidence banner with the honesty caveat", async () => {
+    const spy = vi.spyOn(api, "outageDrill").mockResolvedValue({
+      outage_seconds: 2,
+      stops_before: [{ order_id: "s1", received_at: "t", entry_id: "e1", leg: "short_put" }],
+      stops_after: [{ order_id: "s1", received_at: "t", entry_id: "e1", leg: "short_put" }],
+      survived: true, timestamps_unbroken: true,
+      honesty_note: "PAPER: … not broker-side independence (SIM-06). … TC-STP-08 …",
+    });
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /outage drill/i }));
+
+    expect(spy).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/stop independence drill passed/i)).toBeInTheDocument());
+    expect(screen.getByText(/timestamps unbroken/i)).toBeInTheDocument();
+    expect(screen.getByText(/SIM-06/)).toBeInTheDocument(); // honesty caveat shown
+  });
 });
