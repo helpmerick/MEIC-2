@@ -37,21 +37,6 @@ def test_tc_nle_07():
     raise NotImplementedError("TC-NLE-07: prose test case not implemented (Phase 1 red)")
 
 
-# TC-LEX-06 — LEX-08/EC-LEX-03: fill-during-replace race ⇒ broker truth adopted; double-fill (short position created) ⇒ immediate buy-back + critical alert.
-def test_tc_lex_06():
-    raise NotImplementedError("TC-LEX-06: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-07 — LEX-09: late fill after presumed cancel ⇒ P&L corrected from broker records.
-def test_tc_lex_07():
-    raise NotImplementedError("TC-LEX-07: prose test case not implemented (Phase 1 red)")
-
-
-# TC-LEX-09 — EC-LEX-06 restart mid-ladder: ladder resumes from persisted step, working order rediscovered by key.
-def test_tc_lex_09():
-    raise NotImplementedError("TC-LEX-09: prose test case not implemented (Phase 1 red)")
-
-
 # TC-CLS-02 — UC-14/UI-16: Close trade fires **instantly with no confirmation dialog** (Bug #16), closes via CLS, clears any armed TPF floor, tags the report `manual`; failures render as a toast, never a blocking dialog; a rapid double-click produces exactly one close (idempotency, TC-CLS-03). On a WORKING entry the action is Cancel entry (CLS-03), also instant. Flatten-all still requires the typed FLATTEN confirmation (TC-FLT-01).
 def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
