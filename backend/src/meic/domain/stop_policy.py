@@ -76,6 +76,13 @@ def stop_trigger(
     return ticks.floor(raw)
 
 
+def markup_worst_case_increase(markup: Decimal, *, contracts: int = 1) -> Decimal:
+    """UI-18: the worst-case extra loss a rebate markup can cause. The markup
+    raises each short's stop by `markup`, so a stop-out pays that much more per
+    contract (×100); both sides stopping is the worst case (×2)."""
+    return markup * 100 * contracts * 2
+
+
 def clears(trigger: Decimal, short_price: Decimal, *, ticks: TickTable, min_distance_ticks: int) -> bool:
     """STP-02c: does `trigger` sit at least min_distance_ticks ABOVE short_price?
     Rule is >= (the knife-edge at exactly the minimum is feasible)."""

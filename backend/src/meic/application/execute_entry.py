@@ -151,10 +151,10 @@ class ExecuteEntryAttempt:
                 return EntryOutcome("FILLED", fill_credit=fill_credit)
             await self._clock.wait_until(self._clock.now())  # advance-controlled reprice gap
 
-        # ORD-03: floor reached unfilled ⇒ cancel and skip
+        # ORD-03 / EC-ENT-05: floor reached unfilled ⇒ cancel and skip
         if working_id is not None:
             await self._broker.cancel(working_id)
-        return self._skip(day, n, "unfilled")
+        return self._skip(day, n, "unfilled_at_floor")
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):
