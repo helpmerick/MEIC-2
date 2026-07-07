@@ -17,21 +17,6 @@ def test_tc_ent_04():
     raise NotImplementedError("TC-ENT-04: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STK-01 — STK-02 delta method: with a scripted chain, the selected short strikes are the closest to 0.10Δ not exceeding 0.15Δ; boundary case at exactly short_delta_max selects the strike.
-def test_tc_stk_01():
-    raise NotImplementedError("TC-STK-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STK-04 — STK-04/DAT-02: greeks older than max_quote_age_ms ⇒ entry aborted.
-def test_tc_stk_04():
-    raise NotImplementedError("TC-STK-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STK-05 — STK-08: all order and trigger prices land on valid ticks for both the sub-$3 and $3+ regimes.
-def test_tc_stk_05():
-    raise NotImplementedError("TC-STK-05: prose test case not implemented (Phase 1 red)")
-
-
 # TC-ORD-04 — EC-ENT-06 partial fill: (a) balanced partial — 1 of 2 condors filled at cancel ⇒ filled condor kept and protected (stops placed), quantity recorded; (b) unbalanced-leg anomaly injected via fake broker ⇒ completion attempted for partial_fix_seconds, else filled legs flattened; no unbalanced position remains; critical alert fired.
 def test_tc_ord_04():
     raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
@@ -92,31 +77,6 @@ def test_tc_stp_13():
     raise NotImplementedError("TC-STP-13: prose test case not implemented (Phase 1 red)")
 
 
-# TC-NLE-02 — NLE-02: asymmetric scripted chain (put skew) produces different put and call estimates; no blended figure exists anywhere in the API payloads.
-def test_tc_nle_02():
-    raise NotImplementedError("TC-NLE-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NLE-03 — NLE-03: stale chain / too few strikes to interpolate ⇒ estimate UNAVAILABLE; the entry proceeds normally and on time; no alert above info level.
-def test_tc_nle_03():
-    raise NotImplementedError("TC-NLE-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NLE-04 — NLE-04 isolation (property test): across stop_basis × pct ∈ {95..300 step 5} × NLE {enabled, disabled, throwing}, stop trigger prices and stop order payloads are byte-identical. The estimator module has no import path to order placement (architecture test).
-def test_tc_nle_04():
-    raise NotImplementedError("TC-NLE-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NLE-05 — NLE-06: every short-stop event (including whipsaw — both sides) writes a complete calibration record; estimate error = realized − estimated; record appears in the EOD-05 report; replay (TC-REC-01) reproduces identical records.
-def test_tc_nle_05():
-    raise NotImplementedError("TC-NLE-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NLE-06 — NLE-07: with 24 samples the calibration view reports "insufficient data"; with 25+ it reports per-side realized net-loss ratio and mean estimate error matching hand-computed values from the scripted history.
-def test_tc_nle_06():
-    raise NotImplementedError("TC-NLE-06: prose test case not implemented (Phase 1 red)")
-
-
 # TC-NLE-07 — NLE-05/UI-13: preview endpoint returns per-side estimates for a candidate pct when the market is open, UNAVAILABLE when closed/stale; changing pct in the selector recomputes without submitting anything.
 def test_tc_nle_07():
     raise NotImplementedError("TC-NLE-07: prose test case not implemented (Phase 1 red)")
@@ -167,16 +127,6 @@ def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-CLS-03 — CLS-01(5) idempotency under retry: a duplicated close command (double-click, client retry) produces no duplicate orders; per-leg close order count = 1.
-def test_tc_cls_03():
-    raise NotImplementedError("TC-CLS-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-CLS-04 — CLS-01/05 completeness: after a Close trade on a fully-open entry, the broker holds zero positions and zero working orders for that entry's four legs (stops cancelled, both spreads closed); after Flatten all, the same holds for every bot entry while FOREIGN positions and the operator's own orders are untouched; a bot-commanded close never leaves a resting stop (contrast: broker-side operator interventions, TC-OWN-07/09, where the bot touches nothing).
-def test_tc_cls_04():
-    raise NotImplementedError("TC-CLS-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-FLT-03 — RSK-01b combined control: one press (typed FLATTEN) activates Stop Trading BEFORE the first close order is submitted (event order asserted), then flattens every bot entry; afterwards no scheduled entry fires and the stopped state persists across restart; the implementation invokes the two existing controls (architecture assertion: no third close/block path exists).
 def test_tc_flt_03():
     raise NotImplementedError("TC-FLT-03: prose test case not implemented (Phase 1 red)")
@@ -187,24 +137,9 @@ def test_tc_flt_02():
     raise NotImplementedError("TC-FLT-02: prose test case not implemented (Phase 1 red)")
 
 
-# TC-EOD-02 — EOD-02: with eod_close_time set, all open sides closed via ladder before the deadline.
-def test_tc_eod_02():
-    raise NotImplementedError("TC-EOD-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-EOD-03 — EOD-03: after settlement/close, zero working orders remain; an uncancellable order produces a named critical alert.
 def test_tc_eod_03():
     raise NotImplementedError("TC-EOD-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-EOD-04 — EOD-04/EC-STP-09: stop fills at 15:58 ⇒ LEX works until close; remainder expires.
-def test_tc_eod_04():
-    raise NotImplementedError("TC-EOD-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-EOD-05 — DAY-02/EC-ENT-13 half day: late entries skipped; EOD schedule uses 13:00 close.
-def test_tc_eod_05():
-    raise NotImplementedError("TC-EOD-05: prose test case not implemented (Phase 1 red)")
 
 
 # TC-RSK-02 — RSK-02 tombstone (absence test): config containing `daily_max_loss`, `daily_loss_also_flatten` or `risk_eval_seconds` is REJECTED as unknown keys; a scripted heavy-loss whipsaw day produces NO automatic halt, flatten, or entry block — remaining composed entries run through their normal gates (documents the deliberately accepted behavior); no `daily_loss` initiator exists anywhere (architecture assertion).
@@ -235,16 +170,6 @@ def test_tc_rsk_06():
 # TC-RSK-08 — RSK-08 order cap: scripted day approaching daily_order_cap ⇒ new entries blocked at the buffer; a stop replacement and a LEX order submitted after the cap are NOT blocked; cancel/replaces counted as orders.
 def test_tc_rsk_08():
     raise NotImplementedError("TC-RSK-08: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DAT-01 — DAT-02/EC-DAT-01: silent staleness (connected, no ticks) detected per instrument; decisions blocked.
-def test_tc_dat_01():
-    raise NotImplementedError("TC-DAT-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-DAT-03 — DAT-04/EC-DAT-05/EC-ENT-09: halt blocks entries; no catch-up; ladders re-validate quotes on resume.
-def test_tc_dat_03():
-    raise NotImplementedError("TC-DAT-03: prose test case not implemented (Phase 1 red)")
 
 
 # TC-API-01 — EC-API-01/REC-06: token expiry renewed proactively; forced auth failure ⇒ backoff, entries blocked, alert.
@@ -297,11 +222,6 @@ def test_tc_own_06():
     raise NotImplementedError("TC-OWN-06: prose test case not implemented (Phase 1 red)")
 
 
-# TC-SIM-02 — SIM-03 stop simulation: mark reaching the trigger fires the simulated stop; fill = trigger + 3 ticks; slippage recorded via the same EC-STP-03 path; LEX then runs identically to live.
-def test_tc_sim_02():
-    raise NotImplementedError("TC-SIM-02: prose test case not implemented (Phase 1 red)")
-
-
 # TC-SIM-03 — SIM-04 money: an entry fill posts credit minus per-leg fees to the ledger; open entries consume margin per the spread requirement and release on close; insufficient simulated BP skips the entry (rejected_bp); settlement posts against the real closing level; the ledger survives container restart (REC-07).
 def test_tc_sim_03():
     raise NotImplementedError("TC-SIM-03: prose test case not implemented (Phase 1 red)")
@@ -310,11 +230,6 @@ def test_tc_sim_03():
 # TC-SIM-04 — SIM-05 pipeline identity: an identical scripted day through SimulatedBroker and FakeBroker(live-shape) produces the same event sequence, NLE calibration records, and a PNL-04 reconcile against the sim transaction ledger; every report stamped PAPER.
 def test_tc_sim_04():
     raise NotImplementedError("TC-SIM-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-SIM-05 — SIM-01/06 structure + honesty: live adapter never constructed in paper (with TC-RSK-06); cert sandbox endpoints never referenced by paper mode (architecture assertion); the UI limitations tooltip renders the SIM-06 list.
-def test_tc_sim_05():
-    raise NotImplementedError("TC-SIM-05: prose test case not implemented (Phase 1 red)")
 
 
 # TC-NFR-02 — NFR-02: probe runs every session_probe_seconds during market hours only (zero probes outside); a probe hitting a token error triggers immediate refresh; proactive refresh occurs every session_refresh_seconds; the account stream survives a full simulated token rotation without losing a fill event.
@@ -330,21 +245,6 @@ def test_tc_nfr_03():
 # TC-NFR-05 — NFR-05 (Bug #21 regression): a BOM-prefixed `.env` loads correctly (key names intact); a config file whose hash changed outside the bot's own writes blocks arming with a named-file error until operator confirmation; a truncated file is refused, never silently defaulted.
 def test_tc_nfr_05():
     raise NotImplementedError("TC-NFR-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-PNL-01 — PNL-01/02: per-entry P&L for a scripted day (entry credit, one stop-out with slippage, long recovery, one side expired) matches hand-computed figures including fees to the cent.
-def test_tc_pnl_01():
-    raise NotImplementedError("TC-PNL-01: prose test case not implemented (Phase 1 red)")
-
-
-# TC-PNL-02 — PNL-03: live marking uses mid, degrading to worst-of-bid/ask when stale; TPF evaluation never blocks on broker reporting availability.
-def test_tc_pnl_02():
-    raise NotImplementedError("TC-PNL-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-PNL-03 — PNL-04 broker authority: scripted transaction history diverging from bot-computed realized P&L by $0.12 on one entry ⇒ day report shows the broker figure as authoritative, `PnlMismatch` flagged with both figures and the delta, alert raised; divergence at $0.03 (under tolerance) reconciles silently; a recurring per-contract divergence pattern is surfaced as a fee-model correction suggestion; intraday replay determinism (TC-REC-01) is unaffected by reconciliation results.
-def test_tc_pnl_03():
-    raise NotImplementedError("TC-PNL-03: prose test case not implemented (Phase 1 red)")
 
 
 # TC-UI-03 — UC-08/UI-11: manual actions are tagged `manual` in the event log; automated management pauses for that entry until manual mode exit.
