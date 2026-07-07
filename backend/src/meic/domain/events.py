@@ -101,6 +101,7 @@ class CondorFilled(Event):
     entry_id: str
     net_credit: Decimal  # actual net fill credit (STK-02a) — the P&L basis
     fee: Decimal = Decimal("0")  # entry fees, all four legs (PNL-01)
+    short_premium: Decimal = Decimal("0")  # gross premium on the shorts (UI-14 label)
 
 
 @dataclass(frozen=True)

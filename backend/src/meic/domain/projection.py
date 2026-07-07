@@ -43,6 +43,7 @@ from .events import (
 class EntryProjection:
     entry_id: str
     net_credit: Decimal = Decimal("0")
+    short_premium: Decimal = Decimal("0")  # UI-14: gross short premium, labelled apart from net
     stop_fills: Decimal = Decimal("0")
     recoveries: Decimal = Decimal("0")
     fees: Decimal = Decimal("0")
@@ -108,7 +109,8 @@ def apply(state: DayState, event: Event) -> DayState:
     if isinstance(event, CondorFilled):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
-            e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee)))
+            e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee,
+            short_premium=e.short_premium + event.short_premium)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
@@ -161,6 +163,7 @@ class DayReport:
     day_pnl: Decimal
     skips: tuple[tuple[int, str], ...]
     per_entry_pnl: dict[str, Decimal]
+    total_short_premium: Decimal = Decimal("0")  # UI-14: shown apart from net credit
 
 
 def day_report(events: list[Event]) -> DayReport:
@@ -177,4 +180,5 @@ def day_report(events: list[Event]) -> DayReport:
         day_pnl=state.day_pnl,
         skips=state.skipped,
         per_entry_pnl={e.entry_id: e.pnl for e in entries},
+        total_short_premium=sum((e.short_premium for e in entries), Decimal("0")),
     )
