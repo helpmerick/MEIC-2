@@ -53,7 +53,19 @@ export const api = {
     post<{ result: string }>(`/close/${encodeURIComponent(entryId)}`),
   flatten: (confirmation: string) =>
     post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
+  outageDrill: () =>
+    post<OutageDrill>("/drill/outage", { outage_seconds: 2 }),
 };
+
+// UC-12 stop-independence drill evidence (mirrors application/drills.py).
+export interface OutageDrill {
+  outage_seconds: number;
+  stops_before: { order_id: string; received_at: string; entry_id: string; leg: string }[];
+  stops_after: { order_id: string; received_at: string; entry_id: string; leg: string }[];
+  survived: boolean;
+  timestamps_unbroken: boolean;
+  honesty_note: string;
+}
 
 // Discrete stop-pct set (UI-04) — in production generated from the config
 // schema the backend serves, so UI and backend cannot drift.

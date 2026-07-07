@@ -51,6 +51,13 @@ class PanelCommands:
         self._clear_tpf(entry_id)
         return {"result": "closed", "initiator": "manual"}
 
+    async def run_outage_drill(self, outage_seconds: float = 2.0) -> dict:
+        """UC-12: run the stop-independence drill against the live broker and
+        return the evidence for the panel to display."""
+        from meic.application.drills import run_stop_independence_drill
+        ev = await run_stop_independence_drill(self._comp.broker, outage_seconds=outage_seconds)
+        return ev.as_dict()
+
     async def flatten(self, confirmation: str) -> dict:
         """RSK-01a: close every open entry — but only on a typed FLATTEN."""
         if confirmation != FLATTEN_CONFIRMATION:

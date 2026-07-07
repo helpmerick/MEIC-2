@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
@@ -64,6 +65,7 @@ class SimOrder:
     intent: dict
     status: str  # WORKING | FILLED
     fill_price: Decimal | None = None
+    received_at: str | None = None  # broker placement time (UC-12 drill evidence)
 
 
 class SimulatedBroker:
@@ -137,7 +139,8 @@ class SimulatedBroker:
     # --- BrokerGateway surface ------------------------------------------------
     async def submit(self, order: dict) -> str:
         oid = f"SIM-{next(self._ids)}"
-        self._orders[oid] = SimOrder(order_id=oid, intent=dict(order), status="WORKING")
+        self._orders[oid] = SimOrder(order_id=oid, intent=dict(order), status="WORKING",
+                                     received_at=datetime.now(timezone.utc).isoformat())
 
         # SIM-04: an opening order may carry its worst-case margin. The ENT-03
         # BP gate strains against simulated capital exactly as live — if the

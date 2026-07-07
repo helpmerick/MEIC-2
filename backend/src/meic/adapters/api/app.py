@@ -203,4 +203,11 @@ def create_app(
                 raise HTTPException(status_code=400, detail="confirmation_required")
             return result
 
+        @app.post("/drill/outage")
+        async def outage_drill(body: dict[str, Any] | None = None) -> dict[str, Any]:
+            """UC-12: simulate a bot outage and return evidence that the resting
+            stops stayed working (with unbroken timestamps) throughout."""
+            seconds = float((body or {}).get("outage_seconds", 2.0))
+            return await commands.run_outage_drill(seconds)
+
     return app
