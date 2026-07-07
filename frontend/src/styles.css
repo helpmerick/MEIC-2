@@ -269,3 +269,8 @@ body {
   background: transparent; border: none; color: var(--faint); font-size: 17px; cursor: pointer; line-height: 1;
 }
 .drill-x:hover { color: var(--text); background: var(--surface); }
+
+/* --- mode switch (UC-10) — the mode tag doubles as a stage-switch button --- */
+.mode-switch { cursor: pointer; font-family: inherit; transition: filter .15s ease, transform .12s ease; }
+.mode-switch:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.mode-switch:active { transform: translateY(0); }

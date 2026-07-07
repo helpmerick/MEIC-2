@@ -51,6 +51,25 @@ class PanelCommands:
         self._clear_tpf(entry_id)
         return {"result": "closed", "initiator": "manual"}
 
+    async def switch_mode(self, target: str, confirmation: str = "") -> dict:
+        """UC-10/DAY-05: stage a paper/live switch. Requires a flat book (derived
+        from the live projection + broker) and, for live, a typed LIVE. Staged
+        changes are recorded to the durable log and take effect next day."""
+        from meic.application.mode_switch import request_mode_switch
+        from meic.domain.events import ModeSwitchStaged
+
+        day = fold(self._comp.events)
+        open_positions = sum(1 for e in day.entries.values()
+                             if not e.close_initiator and _open_sides(e))
+        working = len(await self._comp.broker.working_orders())
+        result = request_mode_switch(
+            target=target, current=self._comp.state.trading_mode,
+            open_positions=open_positions, working_orders=working, confirmation=confirmation)
+        if result.staged:
+            self._comp.events.append(ModeSwitchStaged(target=target, effective=result.effective))
+        return {"staged": result.staged, "target": result.target,
+                "effective": result.effective, "reason": result.reason}
+
     async def run_outage_drill(self, outage_seconds: float = 2.0) -> dict:
         """UC-12: run the stop-independence drill against the live broker and
         return the evidence for the panel to display."""

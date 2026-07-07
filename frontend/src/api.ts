@@ -55,6 +55,8 @@ export const api = {
     post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
   outageDrill: () =>
     post<OutageDrill>("/drill/outage", { outage_seconds: 2 }),
+  modeSwitch: (target: "paper" | "live", confirmation: string) =>
+    post<{ staged: boolean; target: string; effective: string }>("/mode-switch", { target, confirmation }),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).
