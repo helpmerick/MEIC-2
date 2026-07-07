@@ -230,3 +230,26 @@ body {
 .feed-detail { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
 .flash-in { animation: flashin 0.6s ease; }
 @keyframes flashin { 0% { background: rgba(124,156,255,0.22); transform: translateX(-4px); } 100% { background: transparent; transform: none; } }
+
+/* --- close button on entry cards + flatten + toast ----------------------- */
+.ec-close {
+  margin-top: 10px; width: 100%; padding: 7px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+  background: var(--surface); color: var(--muted); border: 1px solid var(--line);
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.ec-close:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); background: var(--bad-dim); }
+.ec-close:disabled { opacity: .55; cursor: progress; }
+
+.flatten-btn { padding: 7px 13px; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  padding: 11px 18px; border-radius: 11px; font-size: 13px; font-weight: 650; z-index: 50;
+  box-shadow: var(--shadow); border: 1px solid var(--line-strong);
+  background: var(--card-solid); color: var(--text);
+  animation: toast-in .22s ease;
+}
+.toast.ok { border-color: rgba(52,211,153,0.4); color: var(--good); }
+.toast.err { border-color: rgba(248,113,113,0.45); color: var(--bad); }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }

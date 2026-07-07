@@ -49,6 +49,10 @@ export const api = {
   confirmLive: (on: boolean) => post<PanelState>(`/confirm-live?on=${on}`),
   updateConfig: (patch: Record<string, unknown>) =>
     post<{ accepted: Record<string, unknown> }>("/config", patch),
+  closeEntry: (entryId: string) =>
+    post<{ result: string }>(`/close/${encodeURIComponent(entryId)}`),
+  flatten: (confirmation: string) =>
+    post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
 };
 
 // Discrete stop-pct set (UI-04) — in production generated from the config
