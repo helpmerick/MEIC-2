@@ -20,9 +20,12 @@ class SqliteEventStore:
     """Append-only, per-stream ordered event log (EventStore port)."""
 
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False: the ASGI server touches the store from its
+        # threadpool; SQLite serializes writes and busy_timeout waits out locks.
+        self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")  # fsync before side effects
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS events ("
             " seq INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -61,8 +64,12 @@ class SqliteStateStore:
     """Durable KV backing the REC-07 inventory (StateStore port)."""
 
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False: the ASGI server reads/writes state from its
+        # request threadpool (see SqliteEventStore for the rationale).
+        self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )

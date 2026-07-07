@@ -47,8 +47,32 @@ does not write there; a live/persisted session wires the `SqliteEventStore` /
 (`/data`) so ARMED/Stop-Trading/schedule/ledger restore exactly on restart —
 this is the container-recovery story TC-ENT-07 asserts against the stores.
 
-## Live mode (later)
+## Live mode
 
-Live trading needs `tastytrade` installed and cert/production credentials in a
-gitignored `.env`. That is a deliberately separate composition and deployment
-step — not part of this paper image.
+The `live_app` entrypoint binds the real Tastytrade adapter + DXLink feed
+(never the simulator), persists REC-07 state to SQLite at `MEIC_DATA_DIR`, is
+token-gated (NFR-06), and boots with **safe defaults** (DISARMED, Confirm Live
+OFF) so nothing trades until you deliberately arm and confirm. It connects to
+the broker on startup but a connect failure never takes the panel down —
+`GET /broker/health` reports status and `POST /broker/connect` retries.
+
+```bash
+# CERT sandbox (default) — real broker session, fake money:
+MEIC_API_TOKEN=<pick-a-token> \
+  uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8000
+```
+
+Credentials live in a gitignored `.env` (BOM-tolerant, NFR-05), **never in the
+command line or source**. Keys by environment:
+
+- CERT (default, `MEIC_LIVE_IS_TEST=true`): `TT_CERT_PROVIDER_SECRET`,
+  `TT_CERT_REFRESH_TOKEN`, optional `TT_CERT_ACCOUNT`.
+- PRODUCTION (`MEIC_LIVE_IS_TEST=false`): `TT_PROD_PROVIDER_SECRET`,
+  `TT_PROD_REFRESH_TOKEN`, optional `TT_PROD_ACCOUNT`. The cert wiring refuses a
+  non-cert token locally before any network call; production is opt-in.
+
+Go-live order: pass the STP-05a cert drill (`pytest -m contract`) → run cert
+`live_app` for a track record → run the UC-12 outage drill on your account →
+promote to live (typed `LIVE`, flat book, next-day). `tastytrade` must be
+installed for live (`pip install -r backend/requirements.txt`); it is not in
+the paper image.

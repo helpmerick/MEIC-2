@@ -42,12 +42,13 @@ class LiveComposition:
     is_test: bool = True  # cert unless explicitly wired to production
     stop_basis: StopBasis = StopBasis.TOTAL_CREDIT
     events: list = field(default_factory=list)
+    state_store: object = None  # inject a SqliteStateStore for durable state (REC-07)
 
     def __post_init__(self) -> None:
         # BrokerGateway -> live adapter (SimulatedBroker is NOT constructed here)
         self.broker = TastytradeAdapter(self.provider_secret, self.refresh_token, is_test=self.is_test)
         self.feed = DXLinkAdapter(session=None, clock=self.clock)  # session set on connect()
-        self.state = PersistentState(InMemoryStateStore())
+        self.state = PersistentState(self.state_store or InMemoryStateStore())
         self.state.trading_mode = "live"  # DAY-05
         self.alerts = _NullAlerts()
         self.execute = ExecuteEntryAttempt(self.broker, self.clock, self.events, self.ticks,
