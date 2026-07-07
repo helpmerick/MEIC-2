@@ -69,6 +69,7 @@ class ExecuteEntryAttempt:
         stop_loss_pct: Decimal = Decimal("95"),
         stop_rebate_markup: Decimal = Decimal("0"),
         min_stop_distance_ticks: int = 2,
+        contracts_per_entry: int = 1,
     ) -> None:
         self._broker = broker
         self._clock = clock
@@ -81,6 +82,7 @@ class ExecuteEntryAttempt:
         self._pct = stop_loss_pct
         self._markup = stop_rebate_markup
         self._min_distance = min_stop_distance_ticks
+        self._contracts = contracts_per_entry  # ENT-04: contracts per leg
 
     def _skip(self, day: str, n: int, reason: str) -> EntryOutcome:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
@@ -136,6 +138,7 @@ class ExecuteEntryAttempt:
                 "type": "limit", "kind": "iron_condor", "legs": 4, "tif": "Day",
                 "net_credit": step.price, "entry_id": entry_id,
                 "action": "sell_to_open",  # net credit received
+                "contracts": self._contracts,  # ENT-04: contracts per leg
             }
             if working_id is None:
                 working_id = await self._broker.submit(intent)

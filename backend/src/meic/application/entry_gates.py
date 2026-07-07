@@ -13,6 +13,7 @@ acts on the verdict.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 
 @dataclass(frozen=True)
@@ -48,3 +49,44 @@ def evaluate_gates(s: GateSnapshot) -> str | None:
     if not s.buying_power_ok:
         return "insufficient_bp"          # worst-case margin
     return None
+
+
+# --- ENT-06 optional filters (each independently toggleable; None = off) ------
+
+@dataclass(frozen=True)
+class FilterSnapshot:
+    vix: Decimal | None = None
+    vix_max: Decimal | None = None
+    date: str | None = None
+    skip_dates: tuple[str, ...] = ()
+    total_credit: Decimal | None = None
+    min_total_credit: Decimal | None = None
+
+
+# Skips from optional filters are info-level (ENT-06 / TC-ENT-04) — an expected,
+# non-alarming "not today", not a failure.
+SKIP_LEVEL = {
+    "vix_above_max": "info",
+    "blackout_date": "info",
+    "below_min_credit": "info",
+}
+
+
+def evaluate_filters(f: FilterSnapshot) -> str | None:
+    """ENT-06: checked at ENT-03 time, each filter independently toggleable.
+    Returns the first triggered filter's skip reason (info-level), else None."""
+    if f.vix_max is not None and f.vix is not None and f.vix > f.vix_max:
+        return "vix_above_max"            # skip, info-level (ENT-06)
+    if f.date is not None and f.date in f.skip_dates:
+        return "blackout_date"            # explicit blackout (e.g. FOMC)
+    if (f.min_total_credit is not None and f.total_credit is not None
+            and f.total_credit < f.min_total_credit):
+        return "below_min_credit"         # STK-06
+    return None
+
+
+def clock_drift_blocks_entry(*, drift_ms: float, max_drift_ms: float) -> bool:
+    """RSK-07/DAY-03: clock drift beyond the configured max blocks NEW entries.
+    Resting stops and in-flight management are UNAFFECTED — they live at the
+    broker, which is why this is an entry-only gate."""
+    return abs(drift_ms) > max_drift_ms

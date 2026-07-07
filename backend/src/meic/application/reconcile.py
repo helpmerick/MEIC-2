@@ -15,8 +15,14 @@ other than the bot ⇒ operator intent, do NOT re-place (USER_UNPROTECTED);
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 
-from meic.domain.events import LongSaleStarted, ReconciliationMismatch, StopReplaced
+from meic.domain.events import (
+    LongSaleStarted,
+    ReconciliationMismatch,
+    ShortStopped,
+    StopReplaced,
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,8 @@ class TrackedShort:
     stop_order_id: str | None   # the stop the bot recorded placing (event log)
     stop_filled: bool           # its stop shows FILLED in the fills feed
     stop_cancelled_by_operator: bool = False  # OWN-11
+    stop_fill_price: Decimal | None = None     # EC-STP-06: fill from the fills feed
+    stop_trigger: Decimal | None = None        # to derive slippage on synthesis
 
 
 @dataclass
@@ -36,6 +44,15 @@ class RecoveryPlan:
     user_unprotected: list[tuple[str, str]] = field(default_factory=list)  # REC-04(2)
     cancel_orders: list[str] = field(default_factory=list)                 # ORD-06 stale
     mismatches: list[str] = field(default_factory=list)                    # REC-02 -> RSK-03
+    # EC-STP-06: stops that filled while the bot was down — the missed ShortStopped
+    # is synthesized on recovery so the projection/P&L reflects broker truth.
+    synthesize_stopped: list[tuple[str, str, Decimal, Decimal]] = field(default_factory=list)
+
+    @property
+    def blocks_entries(self) -> bool:
+        """REC-02/RSK-03: an unresolved reconciliation mismatch blocks NEW
+        entries until it is cleared (EC-API-04). Protection/recovery still runs."""
+        return bool(self.mismatches)
 
 
 class Reconcile:
@@ -55,6 +72,11 @@ class Reconcile:
         p = RecoveryPlan()
         for s in tracked_shorts:
             if s.stop_filled:  # REC-04(1): it stopped out — resume the long sale
+                if s.stop_fill_price is not None:  # EC-STP-06: synthesize the missed fill
+                    slippage = (s.stop_fill_price - s.stop_trigger
+                                if s.stop_trigger is not None else Decimal("0"))
+                    p.synthesize_stopped.append(
+                        (s.entry_id, s.side, s.stop_fill_price, slippage))
                 p.run_lex.append((s.entry_id, s.side))
             elif s.stop_order_id in broker_working_order_ids:
                 pass  # covered — re-attach to the resting stop, no new order (REC-03)
@@ -72,6 +94,13 @@ class Reconcile:
         recovered stop/cancel never duplicates a live order."""
         for detail in plan.mismatches:
             self._events.append(ReconciliationMismatch(detail=detail))  # RSK-03 gates trading
+
+        # EC-STP-06: record the stop-outs that happened while the bot was down,
+        # BEFORE resuming their LEX below (so the log reads stop-out → LEX).
+        for entry_id, side, fill, slippage in plan.synthesize_stopped:
+            self._events.append(ShortStopped(
+                entry_id=entry_id, side=side, fill=fill, slippage=slippage,
+                initiator="resting_stop"))
 
         for order_id in plan.cancel_orders:
             await self._broker.cancel(order_id)
