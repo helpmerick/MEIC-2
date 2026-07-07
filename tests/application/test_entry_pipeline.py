@@ -53,7 +53,7 @@ def test_ord03_floor_reached_unfilled_cancels_and_skips():
     clock = FakeClock(SCHEDULED)
     out = asyncio.run(_svc(broker, events, clock, entry_reprice_attempts=5).attempt(
         day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
-    assert out.status == "SKIPPED" and out.reason == "unfilled"
+    assert out.status == "SKIPPED" and out.reason == "unfilled_at_floor"  # EC-ENT-05
     assert any(isinstance(e, EntrySkipped) for e in events)
 
 
