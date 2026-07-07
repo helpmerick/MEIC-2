@@ -175,7 +175,7 @@ def _single_leg_stop(option: Option) -> NewOrder:
 # Item 1 — single-leg SPXW stop-market acceptance (THE build-blocking check)
 # ---------------------------------------------------------------------------
 
-async def test_item1_single_leg_spxw_stop_dry_run_acceptance(session, account, spxw_far_otm_put):
+async def test_tc_stp_13_item1_single_leg_spxw_stop_dry_run_acceptance(session, account, spxw_far_otm_put):
     """Dry-run a single-leg SPXW stop-market. Rejection as unsupported => STOP THE BUILD."""
     try:
         resp = await account.place_order(session, _single_leg_stop(spxw_far_otm_put), dry_run=True)
@@ -195,7 +195,7 @@ async def test_item1_single_leg_spxw_stop_dry_run_acceptance(session, account, s
     assert resp.order is not None, "dry-run returned no order object — inspect observation JSON"
 
 
-async def test_item1_and_3_stop_rests_and_survives_session_death(creds, session, account, spxw_far_otm_put):
+async def test_tc_stp_13_item1_3_stop_rests_and_survives_session_death(creds, session, account, spxw_far_otm_put):
     """Place a REAL cert resting stop (trigger far from market), then prove it is
     visible from a brand-new session (STP-05, TC-STP-08 basis). Cancels at the end."""
     placed = await account.place_order(session, _single_leg_stop(spxw_far_otm_put), dry_run=False)
@@ -234,7 +234,7 @@ async def test_item1_and_3_stop_rests_and_survives_session_death(creds, session,
 # Item 2 — trigger reference price (last trade vs NBBO/mark)
 # ---------------------------------------------------------------------------
 
-async def test_item2_trigger_reference_price_evidence(session, account, spxw_far_otm_put):
+async def test_tc_stp_13_item2_trigger_reference_price_evidence(session, account, spxw_far_otm_put):
     """Cert cannot force prints on demand, so this test captures every trigger-
     related field the API exposes on a placed stop. Determination logic:
     - explicit trigger-source field => record it verbatim
@@ -257,7 +257,7 @@ async def test_item2_trigger_reference_price_evidence(session, account, spxw_far
 # Item 4 — complex-order per-leg fill price allocation
 # ---------------------------------------------------------------------------
 
-async def test_item4_complex_order_per_leg_allocation(session, account):
+async def test_tc_stp_13_item4_complex_order_per_leg_allocation(session, account):
     """Place a marketable 4-leg SPXW iron condor in cert; record how the broker
     allocates per-leg fill prices against the net (STP-02 per_side caveat)."""
     chains = await NestedOptionChain.get(session, "SPXW")
@@ -306,7 +306,7 @@ async def test_item4_complex_order_per_leg_allocation(session, account):
 # Item 5 — DXLink keepalive + quote-token lifetime
 # ---------------------------------------------------------------------------
 
-async def test_item5_dxlink_keepalive_and_quote_token(session, caplog):
+async def test_tc_stp_13_item5_dxlink_keepalive_and_quote_token(session, caplog):
     """The DXLink SETUP frame carries the negotiated keepalive; the SDK logs it
     at DEBUG. Capture that plus any token-lifetime metadata the SDK exposes."""
     from tastytrade import DXLinkStreamer
