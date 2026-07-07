@@ -39,6 +39,18 @@ class SimLedger:
     def buying_power(self) -> Decimal:
         return self.cash - self._margin_held
 
+    def can_afford(self, margin: Decimal) -> bool:
+        """ENT-03 BP gate against simulated capital (SIM-04)."""
+        return self.buying_power >= margin
+
+    def to_dict(self) -> dict[str, str]:
+        """REC-07: the ledger is durable state — serialize it for restart."""
+        return {"cash": str(self.cash), "margin_held": str(self._margin_held)}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, str]) -> "SimLedger":
+        return cls(cash=Decimal(d["cash"]), _margin_held=Decimal(d["margin_held"]))
+
 
 def spread_margin(width: Decimal, net_credit: Decimal, *, contracts: int = 1) -> Decimal:
     """SIM-04 / RSK-04: SPX spread requirement = (width − credit) × 100 × qty,
@@ -126,13 +138,28 @@ class SimulatedBroker:
     async def submit(self, order: dict) -> str:
         oid = f"SIM-{next(self._ids)}"
         self._orders[oid] = SimOrder(order_id=oid, intent=dict(order), status="WORKING")
+
+        # SIM-04: an opening order may carry its worst-case margin. The ENT-03
+        # BP gate strains against simulated capital exactly as live — if the
+        # ledger can't afford it the entry is skipped (rejected_bp), never filled.
+        margin_req = order.get("margin_req")
+        if margin_req is not None:
+            margin_req = Decimal(str(margin_req))
+            if not self.ledger.can_afford(margin_req):
+                self._orders[oid].status = "REJECTED"
+                self.events.append({"type": "order_rejected", "reason": "rejected_bp",
+                                    "order_id": oid, "entry_id": order.get("entry_id", "")})
+                return oid
+
         # A limit order fills immediately iff the current real market trades
         # through it (SIM-02); stops rest until a mark reaches the trigger.
         if self._market is not None and order.get("type") in ("limit", "marketable_limit"):
             snap = self._market(order)
             if snap is not None:
                 natural, mid, is_credit = snap
-                self.try_fill_limit(oid, natural=natural, mid=mid, is_credit=is_credit)
+                if self.try_fill_limit(oid, natural=natural, mid=mid, is_credit=is_credit) \
+                        and margin_req is not None:
+                    self.ledger.hold_margin(margin_req)  # consumed until the entry closes
         return oid
 
     def tick_marks(self, marks: dict[str, Decimal], *, entry_id: str | None = None) -> list[tuple[str, Decimal]]:

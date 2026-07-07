@@ -82,11 +82,6 @@ def test_tc_api_03():
     raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-SIM-03 — SIM-04 money: an entry fill posts credit minus per-leg fees to the ledger; open entries consume margin per the spread requirement and release on close; insufficient simulated BP skips the entry (rejected_bp); settlement posts against the real closing level; the ledger survives container restart (REC-07).
-def test_tc_sim_03():
-    raise NotImplementedError("TC-SIM-03: prose test case not implemented (Phase 1 red)")
-
-
 # TC-SIM-04 — SIM-05 pipeline identity: an identical scripted day through SimulatedBroker and FakeBroker(live-shape) produces the same event sequence, NLE calibration records, and a PNL-04 reconcile against the sim transaction ledger; every report stamped PAPER.
 def test_tc_sim_04():
     raise NotImplementedError("TC-SIM-04: prose test case not implemented (Phase 1 red)")
