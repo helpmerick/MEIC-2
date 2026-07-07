@@ -1,76 +1,58 @@
-"""Runnable entrypoint — binds the paper composition to the FastAPI panel.
+"""Runnable entrypoint — a LIVE paper runtime behind the FastAPI panel.
 
     uvicorn meic.adapters.api.server:paper_app --factory --host 127.0.0.1 --port 8000
 
-Paper mode only (SIM-01): the live adapter is never constructed here. Seeds a
-short demo day into the event log so the read-model endpoints show real
-figures on first view.
+Paper mode only (SIM-01). On startup it launches PaperDemoRuntime, which drives
+a compressed paper day (arms, fires entries, protects, stops one side out,
+LEX-recovers, decays one, settles EOD) on a loop — so the read-model endpoints
+and the panel show a day unfold in real time. The React app is served at "/".
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
+from meic.application.clocks import MutableClock
 from meic.composition.paper import PaperComposition
-from meic.domain.events import (
-    CondorFilled,
-    DayArmed,
-    EntryClosed,
-    LongSold,
-    ShortStopped,
-    SideExpired,
-)
+from meic.composition.runtime import PaperDemoRuntime
 from meic.domain.ticks import TickRung, TickTable
 
 SPX = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")), TickRung(None, Decimal("0.10"))))
 
 
-class _SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(timezone.utc)
-
-
-def _seed_demo_day(comp: PaperComposition) -> None:
-    """A representative paper day so /state and /report aren't empty on load."""
-    comp.compose_and_arm(["09:32", "10:00", "10:30", "11:00", "11:30", "12:00"])
-    e = comp.events
-    e.append(DayArmed(date="2026-07-06", entry_count=6))
-    for n in range(1, 7):
-        e.append(CondorFilled(entry_id=f"2026-07-06#{n}", net_credit=Decimal("4.00")))
-    # entry 2: put stopped (SIM-03 slippage), long LEX-recovered
-    e.append(ShortStopped(entry_id="2026-07-06#2", side="PUT", fill=Decimal("3.95"), slippage=Decimal("0.15")))
-    e.append(LongSold(entry_id="2026-07-06#2", side="PUT", recovery=Decimal("0.40")))
-    # entry 3: decay buyback close
-    e.append(ShortStopped(entry_id="2026-07-06#3", side="CALL", fill=Decimal("0.05"), slippage=Decimal("0"), initiator="decay"))
-    e.append(EntryClosed(entry_id="2026-07-06#3", initiator="decay"))
-    # the rest expire worthless
-    for n in (1, 4, 5, 6):
-        for side in ("PUT", "CALL"):
-            e.append(SideExpired(entry_id=f"2026-07-06#{n}", side=side))
-
-
 def paper_app():
-    comp = PaperComposition(clock=_SystemClock(), ticks=SPX)
-    _seed_demo_day(comp)
-    from pathlib import Path
-
     from fastapi.responses import FileResponse, HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
     from meic.adapters.api.app import create_app
+
+    comp = PaperComposition(clock=MutableClock(datetime(2026, 7, 7, 9, 30, tzinfo=timezone.utc)), ticks=SPX)
+    runtime = PaperDemoRuntime(comp, step_seconds=3.0)
+
     app = create_app(comp.state, comp.events)  # no api_token on the localhost demo bind
 
-    root = Path(__file__).resolve().parents[5]
-    dist = root / "frontend" / "dist"          # the built React app
-    demo = root / "frontend" / "demo.html"     # zero-dependency fallback
+    @app.on_event("startup")
+    async def _start() -> None:
+        app.state.runtime = asyncio.create_task(runtime.run_forever())
 
+    @app.on_event("shutdown")
+    async def _stop() -> None:
+        task = getattr(app.state, "runtime", None)
+        if task:
+            task.cancel()
+
+    root = Path(__file__).resolve().parents[5]
+    dist = root / "frontend" / "dist"
+    demo = root / "frontend" / "demo.html"
     if (dist / "assets").exists():
         app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
 
     @app.get("/", response_class=HTMLResponse)
     def index():
         if (dist / "index.html").exists():
-            return FileResponse(str(dist / "index.html"))  # production React UI
+            return FileResponse(str(dist / "index.html"))
         return HTMLResponse(demo.read_text(encoding="utf-8") if demo.exists() else "<h1>MEIC</h1>")
 
     @app.get("/demo", response_class=HTMLResponse)
