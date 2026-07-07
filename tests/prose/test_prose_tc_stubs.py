@@ -7,11 +7,6 @@ stays honestly red. Titles are the spec's own words.
 """
 
 
-# TC-ENT-03 — ENT-04/ENT-05: quantity equals contracts_per_entry; a day never exceeds max_entries_per_day fills.
-def test_tc_ent_03():
-    raise NotImplementedError("TC-ENT-03: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
 def test_tc_stp_13():
     raise NotImplementedError("TC-STP-13: prose test case not implemented (Phase 1 red)")
