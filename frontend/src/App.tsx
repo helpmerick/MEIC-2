@@ -46,6 +46,30 @@ export function App() {
     }
   }, [flash, refresh]);
 
+  // UC-10 / DAY-05: stage a paper<->live switch. Live requires a typed LIVE; a
+  // flat book is required and the change takes effect next day (server-enforced).
+  const switchMode = useCallback(async () => {
+    if (!state) return;
+    const target = state.trading_mode === "paper" ? "live" : "paper";
+    let confirmation = "";
+    if (target === "live") {
+      const typed = window.prompt("Promoting to LIVE (real money). Type LIVE to stage it for next day:");
+      if (typed === null) return;
+      confirmation = typed;
+    }
+    try {
+      await api.modeSwitch(target, confirmation);
+      flash(`${target === "live" ? "LIVE" : "Paper"} mode staged — effective next trading day`, "ok");
+      refresh();
+    } catch (e) {
+      const reason = e instanceof ApiError ? String(e.detail) : String(e);
+      const msg = reason === "book_not_flat" ? "Book must be flat first (close every entry)"
+        : reason === "confirmation_required" ? "Type LIVE exactly to confirm"
+        : `Mode switch refused: ${reason}`;
+      flash(msg, "err");
+    }
+  }, [state, flash, refresh]);
+
   // UC-12: the stop-independence drill — simulate a bot outage and show the
   // evidence that resting stops stayed working throughout.
   const runOutageDrill = useCallback(async () => {
@@ -86,7 +110,12 @@ export function App() {
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
         <span className={`live-dot ${connected ? "" : "off"}`} title={connected ? "live" : "offline"} />
-        {state && <span className={`mode-tag ${state.trading_mode}`}>{state.trading_mode}</span>}
+        {state && (
+          <button className={`mode-tag mode-switch ${state.trading_mode}`} onClick={switchMode}
+                  title={`Stage a switch to ${state.trading_mode === "paper" ? "live" : "paper"} (next day)`}>
+            {state.trading_mode} ⇄
+          </button>
+        )}
       </header>
 
       {error && <div className="banner-error">Backend unreachable — {error}</div>}

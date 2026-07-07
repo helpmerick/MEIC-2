@@ -45,10 +45,20 @@ class PaperDemoRuntime:
 
     async def run_once(self) -> None:
         comp, e = self.comp, self.comp.events
-        # condors trade through their 4.00 credit limit; a LEX sale fills at 0.40
-        comp.broker.set_market(lambda intent: (D("4.00"), D("4.10"), True)
-                               if intent.get("kind") == "iron_condor"
-                               else ((D("0.40"), D("0.40"), True) if intent.get("action") == "sell_to_close" else None))
+
+        def market(intent):
+            # condors trade through their 4.00 credit limit
+            if intent.get("kind") == "iron_condor":
+                return (D("4.00"), D("4.10"), True)
+            action = intent.get("action")
+            if action == "sell_to_close":      # LEX long sale (credit)
+                return (D("0.40"), D("0.40"), True)
+            if action == "buy_to_close":       # manual/flatten close of a short (debit)
+                price = D(str(intent.get("price", "0.05")))
+                return (price, price, False)   # fills so the book actually goes flat
+            return None
+
+        comp.broker.set_market(market)
         comp.compose_and_arm(self._entry_times)
         day = "2026-07-07"
         e.append(DayArmed(date=day, entry_count=6))

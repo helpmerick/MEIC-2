@@ -80,6 +80,12 @@ class DayCompleted(Event):
     date: str
 
 
+@dataclass(frozen=True)
+class ModeSwitchStaged(Event):
+    target: str       # "paper" | "live"
+    effective: str    # DAY-05: "next_day" — never intraday (UC-10 audit trail)
+
+
 # --- CondorEntry (doc 05 §3) -------------------------------------------------
 
 @dataclass(frozen=True)

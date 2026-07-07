@@ -77,4 +77,25 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     expect(screen.getByText(/timestamps unbroken/i)).toBeInTheDocument();
     expect(screen.getByText(/SIM-06/)).toBeInTheDocument(); // honesty caveat shown
   });
+
+  it("Promote to live prompts for the typed LIVE and stages for next day", async () => {
+    const spy = vi.spyOn(api, "modeSwitch").mockResolvedValue({ staged: true, target: "live", effective: "next_day" });
+    vi.spyOn(window, "prompt").mockReturnValue("LIVE");
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /paper ⇄/i }));
+
+    expect(spy).toHaveBeenCalledWith("live", "LIVE");
+    await waitFor(() => expect(screen.getByText(/live mode staged — effective next trading day/i)).toBeInTheDocument());
+  });
+
+  it("Promote to live does nothing if the confirmation prompt is cancelled", async () => {
+    const spy = vi.spyOn(api, "modeSwitch").mockResolvedValue({ staged: true, target: "live", effective: "next_day" });
+    vi.spyOn(window, "prompt").mockReturnValue(null); // cancelled
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /paper ⇄/i }));
+
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

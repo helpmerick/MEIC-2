@@ -41,12 +41,13 @@ def _describe(ev: Any) -> dict[str, str] | None:
         "EntrySkipped": ("⚠️", "Entry skipped"),
         "WatchdogEscalated": ("🚨", "Watchdog escalated"),
         "DayCompleted": ("🏁", "Day completed"),
+        "ModeSwitchStaged": ("🔀", "Mode switch staged"),
     }
     if name not in table:
         return None
     icon, label = table[name]
     bits = []
-    for attr in ("side", "initiator", "reason", "action"):
+    for attr in ("side", "initiator", "reason", "action", "target", "effective"):
         v = getattr(ev, attr, None)
         if v:
             bits.append(str(v))
@@ -209,5 +210,15 @@ def create_app(
             stops stayed working (with unbroken timestamps) throughout."""
             seconds = float((body or {}).get("outage_seconds", 2.0))
             return await commands.run_outage_drill(seconds)
+
+        @app.post("/mode-switch")
+        async def mode_switch(body: dict[str, Any]) -> dict[str, Any]:
+            """UC-10/DAY-05: stage a paper/live switch (flat book + typed LIVE for
+            live). Effective next day; rejected requests return 400 with a reason."""
+            result = await commands.switch_mode(
+                str(body.get("target", "")), str(body.get("confirmation", "")))
+            if not result["staged"]:
+                raise HTTPException(status_code=400, detail=result["reason"])
+            return result
 
     return app
