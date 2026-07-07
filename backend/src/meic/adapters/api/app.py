@@ -17,7 +17,44 @@ from fastapi.responses import JSONResponse
 from meic.application.persistent_state import PersistentState
 from meic.config.validation import ConfigRejected, validate_config
 from meic.config.stop_basis import StopBasisRejected
-from meic.domain.projection import day_report
+from meic.domain.projection import day_report, fold
+
+
+def _describe(ev: Any) -> dict[str, str] | None:
+    """Turn a domain event into one activity-feed line (icon, label, entry,
+    detail). Presentation only — the UI renders whatever it's given."""
+    name = type(ev).__name__
+    entry = getattr(ev, "entry_id", "") or ""
+    table: dict[str, tuple[str, str]] = {
+        "DayArmed": ("🟢", "Day armed"),
+        "EntryWindowOpened": ("⏱️", "Entry window opened"),
+        "CondorProposed": ("📐", "Condor proposed"),
+        "CondorFilled": ("✅", "Entry filled"),
+        "StopPlaced": ("🛡️", "Stop placed"),
+        "StopConfirmed": ("🔒", "Stop confirmed"),
+        "ShortStopped": ("🔴", "Short stopped out"),
+        "LongSaleStarted": ("↩️", "LEX recovery started"),
+        "LongSold": ("💰", "Long sold (LEX)"),
+        "SideClosed": ("➖", "Side closed"),
+        "SideExpired": ("⌛", "Side expired worthless"),
+        "EntryClosed": ("📕", "Entry closed"),
+        "EntrySkipped": ("⚠️", "Entry skipped"),
+        "WatchdogEscalated": ("🚨", "Watchdog escalated"),
+        "DayCompleted": ("🏁", "Day completed"),
+    }
+    if name not in table:
+        return None
+    icon, label = table[name]
+    bits = []
+    for attr in ("side", "initiator", "reason", "action"):
+        v = getattr(ev, attr, None)
+        if v:
+            bits.append(str(v))
+    for attr, sym in (("net_credit", "cr "), ("fill", "@ "), ("recovery", "rec ")):
+        v = getattr(ev, attr, None)
+        if v is not None and str(v) != "0":
+            bits.append(f"{sym}${v}")
+    return {"icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits)}
 
 
 def create_app(
@@ -56,7 +93,8 @@ def create_app(
         }
 
     def _snapshot() -> dict[str, Any]:
-        return {"state": get_state(), "report": get_report()}
+        return {"state": get_state(), "report": get_report(),
+                "entries": get_entries(), "activity": get_activity()}
 
     @app.websocket("/ws")
     async def ws(sock: WebSocket) -> None:
@@ -86,6 +124,34 @@ def create_app(
             "day_pnl": str(r.day_pnl), "skips": [list(s) for s in r.skips],
             "per_entry_pnl": {k: str(v) for k, v in r.per_entry_pnl.items()},
         }
+
+    @app.get("/entries")
+    def get_entries() -> list[dict[str, Any]]:
+        """Per-entry cards (doc 05 §8): one card per armed entry with its
+        lifecycle status and running P&L. Pure read model — no logic."""
+        day = fold(events)
+        cards = []
+        for e in day.entries.values():
+            cards.append({
+                "entry_id": e.entry_id,
+                "status": e.status,
+                "net_credit": str(e.net_credit),
+                "pnl": str(e.pnl),
+                "sides_stopped": list(e.sides_stopped),
+                "sides_expired": list(e.sides_expired),
+                "recovered": e.recoveries != 0,
+                "close_initiator": e.close_initiator,
+            })
+        cards.sort(key=lambda c: c["entry_id"])
+        return cards
+
+    @app.get("/activity")
+    def get_activity() -> list[dict[str, str]]:
+        """A human-readable feed of the most recent events (newest first),
+        so the operator can watch the day unfold. Presentation only."""
+        feed = [_describe(ev) for ev in events]
+        feed = [f for f in feed if f is not None]
+        return list(reversed(feed))[:25]
 
     # --- commands (mutating; secured above) -----------------------------------
     @app.post("/arm")

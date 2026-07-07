@@ -25,3 +25,32 @@ export interface DayReport {
   skips: [number, string][];
   per_entry_pnl: Record<string, string>;
 }
+
+export type EntryStatus =
+  | "PENDING" | "PROTECTED" | "STOPPED" | "LEX_RECOVERED"
+  | "EXPIRED" | "DECAY_CLOSED" | "CLOSED";
+
+export interface EntryCard {
+  entry_id: string;
+  status: EntryStatus;
+  net_credit: string;
+  pnl: string;
+  sides_stopped: string[];
+  sides_expired: string[];
+  recovered: boolean;
+  close_initiator: string | null;
+}
+
+export interface ActivityLine {
+  icon: string;
+  label: string;
+  entry: string;
+  detail: string;
+}
+
+export interface Snapshot {
+  state: PanelState;
+  report: DayReport;
+  entries: EntryCard[];
+  activity: ActivityLine[];
+}
