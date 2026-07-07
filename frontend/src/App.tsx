@@ -4,9 +4,11 @@ import { Dashboard } from "./components/Dashboard";
 import { DayReportView } from "./components/DayReportView";
 import { EntryCards } from "./components/EntryCards";
 import { useLiveBot } from "./useLiveBot";
+import { useTheme } from "./useTheme";
 
 export function App() {
   const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
+  const [theme, toggleTheme] = useTheme();
 
   return (
     <div className="app">
@@ -16,6 +18,14 @@ export function App() {
           <span className="muted">control panel</span>
         </div>
         <div className="spacer" />
+        <button
+          className="theme-toggle"
+          onClick={toggleTheme}
+          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        >
+          {theme === "dark" ? "☀️" : "🌙"}
+        </button>
         <span className={`live-dot ${connected ? "" : "off"}`} title={connected ? "live" : "offline"} />
         {state && <span className={`mode-tag ${state.trading_mode}`}>{state.trading_mode}</span>}
       </header>
