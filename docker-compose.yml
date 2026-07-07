@@ -1,0 +1,24 @@
+# MEIC bot — paper-mode panel.
+#
+#   docker compose up --build      # build + run; panel at http://127.0.0.1:8000/
+#   docker compose down            # stop (the meic-data volume persists)
+#
+# The port is published to host 127.0.0.1 ONLY — the panel is never exposed to
+# the network unauthenticated (NFR-06). Durable state lives in the named volume
+# so it survives `down`/`up` and container recreation (REC-07).
+
+services:
+  meic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: meic-bot:latest
+    container_name: meic-panel
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - meic-data:/data
+    restart: unless-stopped
+
+volumes:
+  meic-data:

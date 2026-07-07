@@ -1,0 +1,16 @@
+# keep the build context lean — only ship what the image needs
+.git/
+.github/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+tests/
+*.md
+.env
+.claude/
+tests/contract/observations/
