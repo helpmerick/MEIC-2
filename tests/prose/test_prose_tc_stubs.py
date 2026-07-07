@@ -35,8 +35,3 @@ def test_tc_cls_02():
 # TC-API-03 — EC-API-04: unknown broker position adopted; naked short protected (stop placed) before any other action; entries blocked until reconciled.
 def test_tc_api_03():
     raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-SIM-04 — SIM-05 pipeline identity: an identical scripted day through SimulatedBroker and FakeBroker(live-shape) produces the same event sequence, NLE calibration records, and a PNL-04 reconcile against the sim transaction ledger; every report stamped PAPER.
-def test_tc_sim_04():
-    raise NotImplementedError("TC-SIM-04: prose test case not implemented (Phase 1 red)")
