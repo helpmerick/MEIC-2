@@ -12,19 +12,9 @@ def test_tc_ent_03():
     raise NotImplementedError("TC-ENT-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-ORD-04 — EC-ENT-06 partial fill: (a) balanced partial — 1 of 2 condors filled at cancel ⇒ filled condor kept and protected (stops placed), quantity recorded; (b) unbalanced-leg anomaly injected via fake broker ⇒ completion attempted for partial_fix_seconds, else filled legs flattened; no unbalanced position remains; critical alert fired.
-def test_tc_ord_04():
-    raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-08 — STP-05/UC-12 stop independence: with a working stop, simulate bot disconnect; on reconnect the stop order is still working at the (fake, then paper-integration) broker with unbroken timestamps.
 def test_tc_stp_08():
     raise NotImplementedError("TC-STP-08: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STP-09 — STP-03/EC-STP-08: with stop_limit configured, a triggered-unfilled stop is cancelled/replaced with market after stop_limit_escalation_seconds.
-def test_tc_stp_09():
-    raise NotImplementedError("TC-STP-09: prose test case not implemented (Phase 1 red)")
 
 
 # TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
