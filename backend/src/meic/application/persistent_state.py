@@ -129,6 +129,11 @@ class PersistentState:
         self._set("paper_cash_ledger", v)
 
     # --- entry gate (ENT-01/01a/01b): the three durable enabling states -------
+    def may_arm(self) -> bool:
+        """ENT-01a: arming requires at least one composed entry — arming an empty
+        schedule is rejected (never a silent no-op)."""
+        return bool(self.entry_schedule)
+
     def entries_enabled(self) -> bool:
         """Entries fire iff ARMED ∧ Stop Trading OFF ∧ Confirm Live ON
         (ENT-01b). Names the blocking state for the dashboard via
