@@ -27,11 +27,13 @@ def paper_app():
     from fastapi.staticfiles import StaticFiles
 
     from meic.adapters.api.app import create_app
+    from meic.composition.panel_commands import PanelCommands
 
     comp = PaperComposition(clock=MutableClock(datetime(2026, 7, 7, 9, 30, tzinfo=timezone.utc)), ticks=SPX)
     runtime = PaperDemoRuntime(comp, step_seconds=3.0)
 
-    app = create_app(comp.state, comp.events)  # no api_token on the localhost demo bind
+    # no api_token on the localhost demo bind; Close/Flatten act on the live book
+    app = create_app(comp.state, comp.events, commands=PanelCommands(comp))
 
     @app.on_event("startup")
     async def _start() -> None:

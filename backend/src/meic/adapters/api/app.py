@@ -63,6 +63,7 @@ def create_app(
     *,
     api_token: str | None = None,
     panel_origin: str = "http://127.0.0.1",
+    commands: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -184,5 +185,22 @@ def create_app(
             raise HTTPException(status_code=422, detail={"key": getattr(e, "key", "stop_basis"),
                                                          "reason": e.reason})
         return {"accepted": patch}
+
+    # --- trade actions (UC-14/UI-16) — only when a command surface is wired ----
+    if commands is not None:
+        @app.post("/close/{entry_id}")
+        async def close_entry(entry_id: str) -> dict[str, Any]:
+            """CLS-02: close one entry instantly via CLS (initiator manual).
+            Idempotent — a double-click yields exactly one close."""
+            return await commands.close(entry_id)
+
+        @app.post("/flatten")
+        async def flatten(body: dict[str, Any]) -> dict[str, Any]:
+            """RSK-01a/TC-FLT-01: flatten every open entry — requires a typed
+            FLATTEN confirmation (contrast: Close is instant)."""
+            result = await commands.flatten(str(body.get("confirmation", "")))
+            if result.get("result") == "confirmation_required":
+                raise HTTPException(status_code=400, detail="confirmation_required")
+            return result
 
     return app
