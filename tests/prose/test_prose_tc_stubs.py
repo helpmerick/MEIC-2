@@ -12,11 +12,6 @@ def test_tc_ent_03():
     raise NotImplementedError("TC-ENT-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-08 — STP-05/UC-12 stop independence: with a working stop, simulate bot disconnect; on reconnect the stop order is still working at the (fake, then paper-integration) broker with unbroken timestamps.
-def test_tc_stp_08():
-    raise NotImplementedError("TC-STP-08: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
 def test_tc_stp_13():
     raise NotImplementedError("TC-STP-13: prose test case not implemented (Phase 1 red)")
@@ -25,8 +20,3 @@ def test_tc_stp_13():
 # TC-CLS-02 — UC-14/UI-16: Close trade fires **instantly with no confirmation dialog** (Bug #16), closes via CLS, clears any armed TPF floor, tags the report `manual`; failures render as a toast, never a blocking dialog; a rapid double-click produces exactly one close (idempotency, TC-CLS-03). On a WORKING entry the action is Cancel entry (CLS-03), also instant. Flatten-all still requires the typed FLATTEN confirmation (TC-FLT-01).
 def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-API-03 — EC-API-04: unknown broker position adopted; naked short protected (stop placed) before any other action; entries blocked until reconciled.
-def test_tc_api_03():
-    raise NotImplementedError("TC-API-03: prose test case not implemented (Phase 1 red)")

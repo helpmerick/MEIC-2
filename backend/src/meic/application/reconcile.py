@@ -48,6 +48,12 @@ class RecoveryPlan:
     # is synthesized on recovery so the projection/P&L reflects broker truth.
     synthesize_stopped: list[tuple[str, str, Decimal, Decimal]] = field(default_factory=list)
 
+    @property
+    def blocks_entries(self) -> bool:
+        """REC-02/RSK-03: an unresolved reconciliation mismatch blocks NEW
+        entries until it is cleared (EC-API-04). Protection/recovery still runs."""
+        return bool(self.mismatches)
+
 
 class Reconcile:
     def __init__(self, broker, events: list) -> None:
