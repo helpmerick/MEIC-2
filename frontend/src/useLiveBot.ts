@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { DayReport, PanelState } from "./types";
+import type { ActivityLine, DayReport, EntryCard, PanelState, Snapshot } from "./types";
 
 // Reactive read-model feed over the /ws snapshot stream (doc 05 §8). The server
 // pushes a {state, report} snapshot on connect and on each ping; we ping fast
@@ -9,6 +9,8 @@ import type { DayReport, PanelState } from "./types";
 export function useLiveBot() {
   const [state, setState] = useState<PanelState | null>(null);
   const [report, setReport] = useState<DayReport | null>(null);
+  const [entries, setEntries] = useState<EntryCard[]>([]);
+  const [activity, setActivity] = useState<ActivityLine[]>([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
@@ -16,9 +18,11 @@ export function useLiveBot() {
   const poll = useRef<number | null>(null);
   const alive = useRef(true);
 
-  const applySnapshot = useCallback((snap: { state: PanelState; report: DayReport }) => {
+  const applySnapshot = useCallback((snap: Partial<Snapshot> & { state: PanelState; report: DayReport }) => {
     setState(snap.state);
     setReport(snap.report);
+    if (snap.entries) setEntries(snap.entries);
+    if (snap.activity) setActivity(snap.activity);
     setConnected(true);
     setError(null);
   }, []);
@@ -30,8 +34,10 @@ export function useLiveBot() {
 
   const restPoll = useCallback(async () => {
     try {
-      const [s, r] = await Promise.all([api.getState(), api.getReport()]);
-      applySnapshot({ state: s, report: r });
+      const [s, r, en, act] = await Promise.all([
+        api.getState(), api.getReport(), api.getEntries(), api.getActivity(),
+      ]);
+      applySnapshot({ state: s, report: r, entries: en, activity: act });
     } catch (e) {
       setConnected(false);
       setError(e instanceof Error ? e.message : String(e));
@@ -93,5 +99,5 @@ export function useLiveBot() {
     else restPoll();
   }, [restPoll]);
 
-  return { state, report, connected, error, optimistic, refresh };
+  return { state, report, entries, activity, connected, error, optimistic, refresh };
 }

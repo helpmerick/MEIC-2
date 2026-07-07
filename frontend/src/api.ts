@@ -2,7 +2,7 @@
 // No trading logic lives here or anywhere in the frontend (UI-03): it reads
 // state and sends commands; the backend validates everything.
 
-import type { DayReport, PanelState } from "./types";
+import type { ActivityLine, DayReport, EntryCard, PanelState } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
 // it. Read it from a meta tag or localStorage; empty on a plain localhost bind.
@@ -41,6 +41,8 @@ export class ApiError extends Error {
 export const api = {
   getState: () => get<PanelState>("/state"),
   getReport: () => get<DayReport>("/report"),
+  getEntries: () => get<EntryCard[]>("/entries"),
+  getActivity: () => get<ActivityLine[]>("/activity"),
   arm: () => post<PanelState>("/arm"),
   disarm: () => post<PanelState>("/disarm"),
   stopTrading: (on: boolean) => post<PanelState>(`/stop-trading?on=${on}`),

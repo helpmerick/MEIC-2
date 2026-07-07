@@ -57,6 +57,21 @@ class EntryProjection:
     def pnl(self) -> Decimal:
         return self.net_credit - self.stop_fills + self.recoveries - self.fees
 
+    @property
+    def status(self) -> str:
+        """A single label for the entry's lifecycle stage (UI read model)."""
+        if self.close_initiator == "decay" or "decay" in self.stop_initiators:
+            return "DECAY_CLOSED"
+        if self.close_initiator:
+            return "CLOSED"
+        if self.sides_stopped:
+            return "LEX_RECOVERED" if self.recoveries else "STOPPED"
+        if len(self.sides_expired) >= 2:
+            return "EXPIRED"
+        if self.net_credit:
+            return "PROTECTED"
+        return "PENDING"
+
 
 @dataclass(frozen=True)
 class DayState:

@@ -1,10 +1,12 @@
+import { ActivityFeed } from "./components/ActivityFeed";
 import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
 import { DayReportView } from "./components/DayReportView";
+import { EntryCards } from "./components/EntryCards";
 import { useLiveBot } from "./useLiveBot";
 
 export function App() {
-  const { state, report, connected, error, optimistic, refresh } = useLiveBot();
+  const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
 
   return (
     <div className="app">
@@ -24,6 +26,8 @@ export function App() {
         <Dashboard state={state} connected={connected} />
         <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
         <div className="report"><DayReportView report={report} /></div>
+        <div className="entries-col"><EntryCards entries={entries} /></div>
+        <div className="feed-col"><ActivityFeed activity={activity} /></div>
       </main>
 
       <footer className="app-footer">
