@@ -17,16 +17,6 @@ def test_tc_ord_04():
     raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-02 — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas (per_side formulas stay verified in the domain even while gated); values outside the pct set or basis set are rejected by config validation (doc 06); SELECTING per_side is rejected `allocation_unverified` per STP-02d (v1.43).
-def test_tc_stp_02():
-    raise NotImplementedError("TC-STP-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STP-03 — STP-02 intraday change / EC-STP-07: pct changed 95→150 (and basis per_side→total_credit) after entry 1 ⇒ entry 1 stops unchanged, entry 2 uses the new values.
-def test_tc_stp_03():
-    raise NotImplementedError("TC-STP-03: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-08 — STP-05/UC-12 stop independence: with a working stop, simulate bot disconnect; on reconnect the stop order is still working at the (fake, then paper-integration) broker with unbroken timestamps.
 def test_tc_stp_08():
     raise NotImplementedError("TC-STP-08: prose test case not implemented (Phase 1 red)")
