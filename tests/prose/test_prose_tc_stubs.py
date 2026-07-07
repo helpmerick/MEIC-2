@@ -5,8 +5,3 @@ gherkin block. Each becomes a real test in its build phase; the stub
 keeps scripts/check_traceability.py green on coverage while pytest
 stays honestly red. Titles are the spec's own words.
 """
-
-
-# TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
-def test_tc_stp_13():
-    raise NotImplementedError("TC-STP-13: prose test case not implemented (Phase 1 red)")
