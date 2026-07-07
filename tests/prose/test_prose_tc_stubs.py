@@ -12,11 +12,6 @@ def test_tc_ent_03():
     raise NotImplementedError("TC-ENT-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-ENT-04 — ENT-06/EC-ENT-10: VIX above vix_max ⇒ skip, info-level only; blackout date ⇒ skip.
-def test_tc_ent_04():
-    raise NotImplementedError("TC-ENT-04: prose test case not implemented (Phase 1 red)")
-
-
 # TC-ORD-04 — EC-ENT-06 partial fill: (a) balanced partial — 1 of 2 condors filled at cancel ⇒ filled condor kept and protected (stops placed), quantity recorded; (b) unbalanced-leg anomaly injected via fake broker ⇒ completion attempted for partial_fix_seconds, else filled legs flattened; no unbalanced position remains; critical alert fired.
 def test_tc_ord_04():
     raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
@@ -80,16 +75,6 @@ def test_tc_lex_09():
 # TC-CLS-02 — UC-14/UI-16: Close trade fires **instantly with no confirmation dialog** (Bug #16), closes via CLS, clears any armed TPF floor, tags the report `manual`; failures render as a toast, never a blocking dialog; a rapid double-click produces exactly one close (idempotency, TC-CLS-03). On a WORKING entry the action is Cancel entry (CLS-03), also instant. Flatten-all still requires the typed FLATTEN confirmation (TC-FLT-01).
 def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-EOD-03 — EOD-03: after settlement/close, zero working orders remain; an uncancellable order produces a named critical alert.
-def test_tc_eod_03():
-    raise NotImplementedError("TC-EOD-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-RSK-05 — RSK-07/EC-RSK-06: injected clock drift blocks entries; existing management continues.
-def test_tc_rsk_05():
-    raise NotImplementedError("TC-RSK-05: prose test case not implemented (Phase 1 red)")
 
 
 # TC-API-01 — EC-API-01/REC-06: token expiry renewed proactively; forced auth failure ⇒ backoff, entries blocked, alert.
