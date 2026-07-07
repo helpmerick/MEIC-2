@@ -22,11 +22,6 @@ def test_tc_ord_04():
     raise NotImplementedError("TC-ORD-04: prose test case not implemented (Phase 1 red)")
 
 
-# TC-ORD-05 — EC-ENT-07/08: BP rejection skips with lockout after 2 consecutive; other rejection retried once then skipped.
-def test_tc_ord_05():
-    raise NotImplementedError("TC-ORD-05: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-02 — STP-02 parametrization: for each pct in {95, 100, ..., 300} × each stop_basis ∈ {short_premium, total_credit, per_side}, triggers match the formulas (per_side formulas stay verified in the domain even while gated); values outside the pct set or basis set are rejected by config validation (doc 06); SELECTING per_side is rejected `allocation_unverified` per STP-02d (v1.43).
 def test_tc_stp_02():
     raise NotImplementedError("TC-STP-02: prose test case not implemented (Phase 1 red)")
@@ -42,11 +37,6 @@ def test_tc_stp_05():
     raise NotImplementedError("TC-STP-05: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-07 — EC-STP-03: scripted gap fills stop 8 ticks past trigger ⇒ slippage recorded, alert fired at threshold.
-def test_tc_stp_07():
-    raise NotImplementedError("TC-STP-07: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-08 — STP-05/UC-12 stop independence: with a working stop, simulate bot disconnect; on reconnect the stop order is still working at the (fake, then paper-integration) broker with unbroken timestamps.
 def test_tc_stp_08():
     raise NotImplementedError("TC-STP-08: prose test case not implemented (Phase 1 red)")
@@ -57,19 +47,9 @@ def test_tc_stp_09():
     raise NotImplementedError("TC-STP-09: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-10 — EC-STP-05 partial stop fill: LEX starts only on full short close (default config).
-def test_tc_stp_10():
-    raise NotImplementedError("TC-STP-10: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-11 — EC-STP-06: stop filled while bot down ⇒ on restart the missed event is synthesized and LEX begins.
 def test_tc_stp_11():
     raise NotImplementedError("TC-STP-11: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STP-12 — EC-STP-10: duplicate stops found on reconcile ⇒ surplus cancelled first.
-def test_tc_stp_12():
-    raise NotImplementedError("TC-STP-12: prose test case not implemented (Phase 1 red)")
 
 
 # TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
@@ -100,11 +80,6 @@ def test_tc_lex_09():
 # TC-CLS-02 — UC-14/UI-16: Close trade fires **instantly with no confirmation dialog** (Bug #16), closes via CLS, clears any armed TPF floor, tags the report `manual`; failures render as a toast, never a blocking dialog; a rapid double-click produces exactly one close (idempotency, TC-CLS-03). On a WORKING entry the action is Cancel entry (CLS-03), also instant. Flatten-all still requires the typed FLATTEN confirmation (TC-FLT-01).
 def test_tc_cls_02():
     raise NotImplementedError("TC-CLS-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-FLT-03 — RSK-01b combined control: one press (typed FLATTEN) activates Stop Trading BEFORE the first close order is submitted (event order asserted), then flattens every bot entry; afterwards no scheduled entry fires and the stopped state persists across restart; the implementation invokes the two existing controls (architecture assertion: no third close/block path exists).
-def test_tc_flt_03():
-    raise NotImplementedError("TC-FLT-03: prose test case not implemented (Phase 1 red)")
 
 
 # TC-FLT-02 — RSK-01a concurrency + rails: entries flatten concurrently; under injected 429s all flatten orders are exit-priority (EC-API-02); flatten orders are never blocked by the daily order cap (RSK-08).
@@ -165,28 +140,3 @@ def test_tc_sim_03():
 # TC-SIM-04 — SIM-05 pipeline identity: an identical scripted day through SimulatedBroker and FakeBroker(live-shape) produces the same event sequence, NLE calibration records, and a PNL-04 reconcile against the sim transaction ledger; every report stamped PAPER.
 def test_tc_sim_04():
     raise NotImplementedError("TC-SIM-04: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NFR-02 — NFR-02: probe runs every session_probe_seconds during market hours only (zero probes outside); a probe hitting a token error triggers immediate refresh; proactive refresh occurs every session_refresh_seconds; the account stream survives a full simulated token rotation without losing a fill event.
-def test_tc_nfr_02():
-    raise NotImplementedError("TC-NFR-02: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NFR-03 — NFR-03: architecture test — no HTTP client is constructed without explicit timeouts; a warm-up primed against a black-hole endpoint aborts at its hard cap and the entry fires on schedule with gates deciding normally.
-def test_tc_nfr_03():
-    raise NotImplementedError("TC-NFR-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-NFR-05 — NFR-05 (Bug #21 regression): a BOM-prefixed `.env` loads correctly (key names intact); a config file whose hash changed outside the bot's own writes blocks arming with a named-file error until operator confirmation; a truncated file is refused, never silently defaulted.
-def test_tc_nfr_05():
-    raise NotImplementedError("TC-NFR-05: prose test case not implemented (Phase 1 red)")
-
-
-# TC-UI-03 — UC-08/UI-11: manual actions are tagged `manual` in the event log; automated management pauses for that entry until manual mode exit.
-def test_tc_ui_03():
-    raise NotImplementedError("TC-UI-03: prose test case not implemented (Phase 1 red)")
-
-
-# TC-UI-04 — UC-10: mode switch requires flat book and takes effect next day.
-def test_tc_ui_04():
-    raise NotImplementedError("TC-UI-04: prose test case not implemented (Phase 1 red)")
