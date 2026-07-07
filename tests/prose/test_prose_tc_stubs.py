@@ -27,11 +27,6 @@ def test_tc_stp_03():
     raise NotImplementedError("TC-STP-03: prose test case not implemented (Phase 1 red)")
 
 
-# TC-STP-05 — EC-STP-02 crash between fill and stop placement: restart ⇒ REC-04 places stops; assert idempotency (no duplicates if one stop had actually been accepted).
-def test_tc_stp_05():
-    raise NotImplementedError("TC-STP-05: prose test case not implemented (Phase 1 red)")
-
-
 # TC-STP-08 — STP-05/UC-12 stop independence: with a working stop, simulate bot disconnect; on reconnect the stop order is still working at the (fake, then paper-integration) broker with unbroken timestamps.
 def test_tc_stp_08():
     raise NotImplementedError("TC-STP-08: prose test case not implemented (Phase 1 red)")
@@ -40,11 +35,6 @@ def test_tc_stp_08():
 # TC-STP-09 — STP-03/EC-STP-08: with stop_limit configured, a triggered-unfilled stop is cancelled/replaced with market after stop_limit_escalation_seconds.
 def test_tc_stp_09():
     raise NotImplementedError("TC-STP-09: prose test case not implemented (Phase 1 red)")
-
-
-# TC-STP-11 — EC-STP-06: stop filled while bot down ⇒ on restart the missed event is synthesized and LEX begins.
-def test_tc_stp_11():
-    raise NotImplementedError("TC-STP-11: prose test case not implemented (Phase 1 red)")
 
 
 # TC-STP-13 — STP-05a (contract test, sandbox): document the observed trigger source (last trade vs NBBO/mark) for a single-leg SPXW stop; test fails with an actionable message if single-leg option stops are rejected — build MUST NOT proceed past this failure.
