@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.48 — 2026-07-08
+- v1.48 changes (operator-ratified after A/B/C debate): **DAY-03 clock source = broker `Date` header (option B)** — drift measured continuously on the ~60 s session probes against tastytrade's own clock; no new dependency or network path; threshold default 1000→2000 ms (range 1000–10000) respecting ~1 s header resolution; unmeasured or >300 s-stale reading = blocked (`clock_drift`), preserving the agent's unmeasured=unverified=blocked default while removing the manual env-var step that fought the indefinitely-armed design. NTP (new blockable dependency) and manual readings (operator-as-component, stale over long uptimes) rejected with reasons pinned in DAY-03.
 - Version: 1.47 — 2026-07-08
 - v1.47 changes (operator-ratified, agent's ScheduleService question): **pin-at-Save row semantics** — every schedule row stores concrete values for ALL parameters at Save; globals are pre-fills for new rows only, never retro-applied (no action at a distance: changing a global on Tuesday can never silently change Wednesday's saved entries; extends the v1.44 contracts precedent to target_premium, wing_width, and all row fields). Consistent with STP-02's subsequent-entries-only pattern and replay determinism. Also approved: live_app wired to parity with paper + a test asserting on the REAL wiring function (no rail may be None); read-only market-open selection verification.
 - Version: 1.46 — 2026-07-08

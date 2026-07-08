@@ -134,7 +134,7 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 | `alert_channels` | list (ui, webhook, email) | [ui] | immediate | RSK-06 |
 | `recovery_sla_seconds` | 10–300 | 60 | immediate | EC-RSK-05 |
 | `external_close_grace_seconds` | 10–600 | 60 | immediate | OWN-09 — min age of a stop before position-feed absence can mean external close |
-| `max_clock_drift_ms` | 100–5000 | 1000 | immediate | DAY-03, RSK-07 |
+| `max_clock_drift_ms` | 1000–10000 | 2000 | immediate | DAY-03, RSK-07 — v1.48: measured vs broker Date header (~1 s resolution), so sub-1000 values are noise and rejected |
 | `daily_order_cap` | 50–389 | 380 | immediate | RSK-08 |
 | `order_cap_buffer` | 5–50 | 10 | immediate | RSK-08 |
 
