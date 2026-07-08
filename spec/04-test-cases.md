@@ -54,7 +54,37 @@ Scenario Outline: Pre-entry gate blocks entry
     | insufficient buying power | insufficient_bp     |
 ```
 
-**TC-ENT-03** — ENT-04/ENT-05: quantity equals contracts_per_entry; a day never exceeds max_entries_per_day fills.
+**TC-ENT-03** — ENT-04/ENT-05: each fill's quantity equals its OWN row's `contracts` (v1.44: schedule rows 2 and 1 ⇒ fills of 2 and 1); values outside 1–10 rejected; RSK-04 evaluates Σ(per-entry worst case) — 2 × wc₁ + 1 × wc₂, never 3 × max(wc); a day never exceeds max_entries_per_day fills.
+
+**TC-ENT-08** — ENT-09/UI-22 manual entry
+```gherkin
+Scenario: Manual fire passes every gate except the window
+  Given the operator presses the manual fire button at 10:07, outside any scheduled window
+  And all ENT-03 gates pass
+  When the OK-confirmation dialog is acknowledged
+  Then exactly one entry attempt runs through the identical pipeline
+  And the entry is recorded with initiator "manual_entry"
+  And it counts toward max_entries_per_day
+
+Scenario: No fire without the OK dialog
+  Given the operator presses the manual fire button
+  When the dialog is dismissed or times out
+  Then no order is submitted and no attempt is recorded
+
+Scenario: Gates are never bypassed
+  Given Stop Trading is ON
+  When the operator presses the manual fire button and acknowledges OK
+  Then the attempt is refused with skip reason "blocked" shown on the card
+
+Scenario: RSK-04 vetoes a manual entry like any other
+  Given open entries whose summed worst case leaves less headroom than the manual entry needs
+  When the manual entry is confirmed
+  Then it is skipped with reason "max_day_risk"
+
+Scenario: Double-click is one attempt
+  When the operator presses the button twice and confirms once
+  Then exactly one order exists (idempotency key per press-confirmation)
+```
 
 **TC-ENT-04** — ENT-06/EC-ENT-10: VIX above vix_max ⇒ skip, info-level only; blackout date ⇒ skip.
 
@@ -931,6 +961,7 @@ Scenario: Decision moment - give up safely
 | ENT-06 | TC-ENT-04 | | STP-09 | TC-EOD-01 |
 | ENT-07 | TC-ENT-05 | | LEX-01→09 | TC-LEX-01→09 |
 | ENT-08 | TC-ENT-06 | | ENT-01a | TC-ENT-07 |
+| ENT-09 / UI-22 | TC-ENT-08 | | ENT-01b | TC-ENT-07 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
