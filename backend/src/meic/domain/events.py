@@ -28,16 +28,42 @@ class Event:
     type: ClassVar[str]
     _registry: ClassVar[dict[str, type["Event"]]] = {}
 
+    # v1.44 (operator-ratified: build now, not debt). The config version in force
+    # when this event was recorded. It is NOT a dataclass field: making it one
+    # would force every event's __eq__ and every constructor to carry it, and two
+    # events that differ only in the config version are still the same fact. It
+    # round-trips through to_dict/from_dict, so a replayed log knows which rules
+    # produced each event.
+    config_version: str = ""
+
     def __init_subclass__(cls, **kw: Any) -> None:
         super().__init_subclass__(**kw)
         cls.type = cls.__name__
         Event._registry[cls.__name__] = cls
 
+    def stamped(self, config_version: str) -> "Event":
+        """Return this event carrying `config_version`. Frozen, so set it through
+        object.__setattr__ on a copy — the caller's event is never mutated."""
+        import copy
+
+        out = copy.copy(self)
+        object.__setattr__(out, "config_version", config_version)
+        return out
+
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": self.type}
         for f in fields(self):  # type: ignore[arg-type]
             v = getattr(self, f.name)
-            out[f.name] = str(v) if isinstance(v, Decimal) else v
+            if isinstance(v, Decimal):
+                out[f.name] = str(v)
+            elif isinstance(v, tuple) and v and isinstance(v[0], FilledLeg):
+                out[f.name] = [leg.to_dict() for leg in v]   # ORD-09 legs
+            elif isinstance(v, tuple):
+                out[f.name] = list(v)
+            else:
+                out[f.name] = v
+        if self.config_version:
+            out["config_version"] = self.config_version
         return out
 
     @staticmethod
@@ -50,8 +76,16 @@ class Event:
                 # (schema evolution: e.g. `fee` added after early events).
                 continue
             raw = data[f.name]
-            kwargs[f.name] = Decimal(raw) if f.type in ("Decimal", Decimal) else raw
-        return cls(**kwargs)
+            if f.name == "legs":
+                kwargs[f.name] = tuple(FilledLeg.from_dict(d) for d in raw)
+            elif f.type in ("Decimal", Decimal):
+                kwargs[f.name] = Decimal(raw)
+            else:
+                kwargs[f.name] = raw
+        event = cls(**kwargs)
+        if data.get("config_version"):
+            object.__setattr__(event, "config_version", data["config_version"])
+        return event
 
 
 # --- TradingDay (doc 05 §3) --------------------------------------------------
@@ -103,11 +137,53 @@ class CondorProposed(Event):
 # produces each fill (stop fills: slice 2; entry fills: slice 3).
 
 @dataclass(frozen=True)
+class FilledLeg:
+    """ORD-09 (v1.45): one leg of a fill, AS THE BROKER REPORTED IT.
+
+    `symbol` is the broker's own instrument symbol, byte-identical to its payload.
+    Every later order action on this leg — stop, LEX, decay buyback, close,
+    flatten, watchdog escalation — uses THIS string. Nothing re-derives it from
+    strike/expiry/right at action time: re-running symbology math on every use is
+    the same drift class as the intent-translation defect. Reconstruction is only
+    ever a cross-check that alerts on mismatch (see `crosscheck_leg_symbols`).
+
+    `price` is the broker-ALLOCATED fill price for this leg — the data source for
+    the STP-02d reconciliation records and the OWN fill-derived ledger. Paper
+    records simulator-assigned symbols and prices in the same fields (SIM-05).
+    """
+
+    symbol: str
+    right: str                    # "P" | "C"
+    role: str                     # "short" | "long"
+    qty: int
+    # Broker-ALLOCATED price for this leg — never the net credit divided by four.
+    # None means the broker reported no allocation, which is the honest paper case:
+    # a simulator has none, and fabricating one would poison the exact field
+    # STP-02d exists to reconcile (hence "real fills only").
+    price: Decimal | None = None
+
+    @property
+    def side(self) -> str:
+        return "PUT" if self.right == "P" else "CALL"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"symbol": self.symbol, "right": self.right, "role": self.role,
+                "qty": self.qty, "price": None if self.price is None else str(self.price)}
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> "FilledLeg":
+        raw = d.get("price")
+        return FilledLeg(symbol=d["symbol"], right=d["right"], role=d["role"],
+                         qty=int(d["qty"]), price=None if raw is None else Decimal(raw))
+
+
+@dataclass(frozen=True)
 class CondorFilled(Event):
     entry_id: str
     net_credit: Decimal  # actual net fill credit (STK-02a) — the P&L basis
     fee: Decimal = Decimal("0")  # entry fees, all four legs (PNL-01)
     short_premium: Decimal = Decimal("0")  # gross premium on the shorts (UI-14 label)
+    legs: tuple[FilledLeg, ...] = ()  # ORD-09: broker-reported identity + allocations
 
 
 @dataclass(frozen=True)

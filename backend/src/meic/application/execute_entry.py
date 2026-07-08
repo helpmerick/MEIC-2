@@ -29,6 +29,7 @@ from meic.domain.ticks import TickTable
 from meic.domain.risk import worst_case_loss
 
 from .entry_gates import GateSnapshot, RiskSnapshot, evaluate_gates, evaluate_risk
+from .leg_book import crosscheck_leg_symbols
 from .order_intent import OrderIntent, condor_legs
 
 
@@ -106,6 +107,7 @@ class ExecuteEntryAttempt:
         stop_rebate_markup: Decimal = Decimal("0"),
         min_stop_distance_ticks: int = 2,
         underlying: str = "SPXW",
+        alerts=None,   # ORD-09 cross-check mismatches are alert-only
     ) -> None:
         # NOTE (v1.44): there is deliberately no `contracts_per_entry` here. ENT-04
         # made contracts a PER-ENTRY value — it rides on the Condor (the schedule
@@ -123,6 +125,7 @@ class ExecuteEntryAttempt:
         self._markup = stop_rebate_markup
         self._min_distance = min_stop_distance_ticks
         self._underlying = underlying
+        self._alerts = alerts
         # The GLOBAL stop settings, used by any row that overrides none of them.
         self.default_stop = StopParams(stop_basis, stop_loss_pct, stop_rebate_markup)
 
@@ -224,7 +227,9 @@ class ExecuteEntryAttempt:
 
             if await self._filled(working_id):
                 fill_credit = step.price
-                self._events.append(CondorFilled(entry_id=entry_id, net_credit=fill_credit))
+                legs = await self._fill_legs(working_id, condor, expiration)
+                self._events.append(CondorFilled(
+                    entry_id=entry_id, net_credit=fill_credit, legs=legs))
                 return EntryOutcome("FILLED", fill_credit=fill_credit)
             await self._clock.wait_until(self._clock.now())  # advance-controlled reprice gap
 
@@ -232,6 +237,28 @@ class ExecuteEntryAttempt:
         if working_id is not None:
             await self._broker.cancel(working_id)
         return self._skip(day, n, "unfilled_at_floor")
+
+    async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:
+        """ORD-09: record what the BROKER said it filled.
+
+        The cross-check reconstructs each symbol from the strikes we asked for and
+        ALERTS on mismatch — it never overwrites. A disagreement means our
+        symbology, or our idea of the strikes, has drifted from the broker's; the
+        one thing we must not do is silently "correct" the broker and then send
+        stops to an instrument it never filled.
+        """
+        legs = await self._broker.fill_legs(order_id)
+        if not legs:
+            return ()
+
+        problems = crosscheck_leg_symbols(
+            legs, underlying=self._underlying, expiration=expiration,
+            strikes={("P", "short"): condor.put_short, ("P", "long"): condor.put_wing,
+                     ("C", "short"): condor.call_short, ("C", "long"): condor.call_wing})
+        if problems and self._alerts is not None:
+            self._alerts.alert("critical", "ORD-09 leg symbol mismatch (using the broker's)",
+                               entry_id=f"{order_id}", detail="; ".join(problems))
+        return legs
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):

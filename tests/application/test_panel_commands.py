@@ -6,11 +6,21 @@ from decimal import Decimal as D
 
 from meic.composition.paper import PaperComposition
 from meic.composition.panel_commands import PanelCommands
-from meic.domain.events import CondorFilled, EntryClosed
+from meic.domain.events import CondorFilled, FilledLeg, EntryClosed
 from meic.domain.projection import fold
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
 from tests.harness.intents import stop_intent
+
+
+def _legs(prefix="SPXW  260706"):
+    """ORD-09: the broker-reported legs a real fill would have recorded."""
+    return (FilledLeg(f"{prefix}P05940000", "P", "long", 1),
+            FilledLeg(f"{prefix}P05990000", "P", "short", 1),
+            FilledLeg(f"{prefix}C06060000", "C", "short", 1),
+            FilledLeg(f"{prefix}C06110000", "C", "long", 1))
+
+
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 
@@ -21,7 +31,7 @@ def _comp():
 
 def test_close_closes_open_entry_cancels_stops_clears_tpf_idempotent():
     comp = _comp()
-    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00")))
+    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
     comp.state.tpf_floors = {"e1": "6.00"}
     stop_id = asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id="e1")))
 
@@ -47,8 +57,8 @@ def test_close_unknown_entry():
 
 def test_flatten_requires_typed_confirmation_then_closes_open_entries():
     comp = _comp()
-    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00")))
-    comp.events.append(CondorFilled(entry_id="e2", net_credit=D("4.00")))
+    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.events.append(CondorFilled(entry_id="e2", net_credit=D("4.00"), legs=_legs()))
     cmd = PanelCommands(comp)
 
     assert asyncio.run(cmd.flatten("")) == {"result": "confirmation_required"}

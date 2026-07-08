@@ -21,6 +21,8 @@ from meic.adapters.tastytrade.adapter import TastytradeAdapter
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
+from meic.application.event_log import EventLog
+from meic.application.leg_book import LegBook
 from meic.application.protect_position import ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
@@ -41,7 +43,8 @@ class LiveComposition:
     refresh_token: str
     is_test: bool = True  # cert unless explicitly wired to production
     stop_basis: StopBasis = StopBasis.TOTAL_CREDIT
-    events: list = field(default_factory=list)
+    # v1.44: an EventLog stamps every appended event with config_version.
+    events: list = field(default_factory=EventLog)
     state_store: object = None  # inject a SqliteStateStore for durable state (REC-07)
 
     def __post_init__(self) -> None:
@@ -63,6 +66,23 @@ class LiveComposition:
         await self.broker.connect(account_number)
         self.feed._session = self.broker._session  # share the authenticated session
 
+    def _shorts(self, entry_id: str, condor) -> list[ShortLeg]:
+        """ORD-09: the stops name the symbols the BROKER reported filling.
+
+        Falls back to the selected strikes only when the broker reported no legs
+        (an offline/legacy fill). Reconstruction at action time is exactly what
+        ORD-09 forbids as a source, so the recorded symbol always wins when present.
+        """
+        book = LegBook.from_events(self.events)
+        out = []
+        for side, mid, strike in (("PUT", condor.put_short_mid, condor.put_short),
+                                  ("CALL", condor.call_short_mid, condor.call_short)):
+            symbol = book.symbol(entry_id, side, "short")
+            out.append(ShortLeg(side, mid, Decimal("0.50"),
+                                symbol=symbol) if symbol else
+                       ShortLeg(side, mid, Decimal("0.50"), strike=strike))
+        return out
+
     async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
         await self.protect.protect(
             entry_id=entry_id,
@@ -70,8 +90,7 @@ class LiveComposition:
             basis=(stop.basis if stop else self.stop_basis),
             pct=(stop.pct if stop else self.execute.default_stop.pct),
             markup=(stop.markup if stop else self.execute.default_stop.markup),
-            shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50"), strike=condor.put_short),
-                    ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"), strike=condor.call_short)],
+            shorts=self._shorts(entry_id, condor),
             total_net_credit=condor.mid_credit,
             # ENT-04 (v1.44): each stop is sized to the condor it protects.
             contracts=condor.contracts,

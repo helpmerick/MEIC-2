@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from meic.application.close_entry import LiveLeg
 from meic.application.manual_close import FLATTEN_CONFIRMATION
+from meic.application.leg_book import LegBook
 from meic.domain.projection import EntryProjection, fold
 
 _SIDES = ("PUT", "CALL")
@@ -39,7 +40,19 @@ class PanelCommands:
         if e.close_initiator or not open_sides:
             return {"result": "already_closed"}
 
-        legs = [LiveLeg(f"{entry_id}:{s}", s, "short", -1) for s in open_sides]
+        # ORD-09: close the instruments the BROKER said it filled. This used to
+        # build LiveLeg(f"{entry_id}:{s}", ...) — a placeholder that paper ignored
+        # and cert would have rejected, because no such instrument exists. If no
+        # legs were recorded we refuse rather than invent a symbol.
+        book = LegBook.from_events(self._comp.events)
+        recorded = book.of(entry_id)
+        if not recorded:
+            return {"result": "legs_unrecorded", "entry_id": entry_id}
+        legs = [
+            LiveLeg(leg.symbol, leg.side, leg.role,
+                    -leg.qty if leg.role == "short" else leg.qty)
+            for leg in recorded if leg.side in open_sides
+        ]
         stop_ids = [
             o.order_id for o in await self._comp.broker.working_orders()
             if getattr(getattr(o, "intent", None), "entry_id", None) == entry_id

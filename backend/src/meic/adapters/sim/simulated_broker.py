@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from meic.adapters.occ import simulated_fill_legs
 from meic.application.order_intent import OrderIntent
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
 
@@ -230,3 +231,11 @@ class SimulatedBroker:
     async def fills_since(self, cursor):
         return [{"order_id": o.order_id, "price": str(o.fill_price)} for o in self._orders.values()
                 if o.status == "FILLED"]
+
+    async def fill_legs(self, order_id):
+        """ORD-09: report the filled legs' symbols, as a real broker does.
+        Simulator-assigned, in the same fields (TC-ORD-07)."""
+        o = self._orders.get(order_id)
+        if o is None or o.status != "FILLED":
+            return ()
+        return simulated_fill_legs(o.intent)

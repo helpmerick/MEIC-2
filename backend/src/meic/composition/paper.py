@@ -21,6 +21,8 @@ from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
+from meic.application.event_log import EventLog
+from meic.application.leg_book import LegBook
 from meic.application.protect_position import ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
@@ -39,7 +41,8 @@ class PaperComposition:
     ticks: TickTable
     starting_cash: Decimal = Decimal("100000")
     stop_basis: StopBasis = StopBasis.TOTAL_CREDIT
-    events: list = field(default_factory=list)
+    # v1.44: an EventLog stamps every appended event with config_version.
+    events: list = field(default_factory=EventLog)
 
     def __post_init__(self) -> None:
         self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events)  # SIM-01
@@ -54,6 +57,23 @@ class PaperComposition:
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
 
+    def _shorts(self, entry_id: str, condor) -> list[ShortLeg]:
+        """ORD-09: the stops name the symbols the BROKER reported filling.
+
+        Falls back to the selected strikes only when the broker reported no legs
+        (an offline/legacy fill). Reconstruction at action time is exactly what
+        ORD-09 forbids as a source, so the recorded symbol always wins when present.
+        """
+        book = LegBook.from_events(self.events)
+        out = []
+        for side, mid, strike in (("PUT", condor.put_short_mid, condor.put_short),
+                                  ("CALL", condor.call_short_mid, condor.call_short)):
+            symbol = book.symbol(entry_id, side, "short")
+            out.append(ShortLeg(side, mid, Decimal("0.50"),
+                                symbol=symbol) if symbol else
+                       ShortLeg(side, mid, Decimal("0.50"), strike=strike))
+        return out
+
     async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
         """STP-01 hand-off: place the two resting stops for a filled condor.
         Shorts carry their fills; total_credit uses the entry's net credit."""
@@ -63,8 +83,7 @@ class PaperComposition:
             basis=(stop.basis if stop else self.stop_basis),
             pct=(stop.pct if stop else self.execute.default_stop.pct),
             markup=(stop.markup if stop else self.execute.default_stop.markup),
-            shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50"), strike=condor.put_short),
-                    ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"), strike=condor.call_short)],
+            shorts=self._shorts(entry_id, condor),
             total_net_credit=condor.mid_credit,
             # ENT-04 (v1.44): each stop is sized to the condor it protects.
             contracts=condor.contracts,

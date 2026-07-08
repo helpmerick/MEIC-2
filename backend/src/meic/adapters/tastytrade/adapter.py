@@ -221,6 +221,51 @@ class TastytradeAdapter:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]
 
+    async def fill_legs(self, order_id) -> tuple:
+        """ORD-09: report each filled leg's BROKER-REPORTED symbol and
+        BROKER-ALLOCATED fill price, byte-identical to the payload.
+
+        Nothing here reconstructs a symbol; we copy `leg.symbol` through verbatim.
+        The allocated price is the broker's own per-leg fill price — the input the
+        STP-02d reconciler compares against the net fill. Where the SDK reports no
+        allocation for a leg, we record None rather than guess: a fabricated
+        allocation would make the reconciler agree with itself.
+        """
+        from meic.domain.events import FilledLeg
+
+        live = await self._account.get_live_orders(self._session)
+        order = next((o for o in live if str(getattr(o, "id", "")) == str(order_id)), None)
+        if order is None:
+            return ()
+
+        legs: list[FilledLeg] = []
+        for leg in getattr(order, "legs", ()) or ():
+            action = str(getattr(leg, "action", "")).lower().replace(" ", "_").split(".")[-1]
+            symbol = str(leg.symbol)
+            legs.append(FilledLeg(
+                symbol=symbol,                       # verbatim, never reconstructed
+                right="P" if symbol[12:13] == "P" else "C",
+                role="short" if "sell_to_open" in action else "long",
+                qty=int(Decimal(str(getattr(leg, "quantity", 0)))),
+                price=self._allocated_price(leg),
+            ))
+        return tuple(legs)
+
+    @staticmethod
+    def _allocated_price(leg) -> Decimal | None:
+        """The broker's allocated fill price for one leg, or None if it reported
+        none. Cert showed these do not always reconcile to the net (assumption 5),
+        which is precisely why they are recorded rather than derived."""
+        fills = getattr(leg, "fills", None) or ()
+        prices = [Decimal(str(f.fill_price)) for f in fills if getattr(f, "fill_price", None) is not None]
+        if not prices:
+            return None
+        quantities = [Decimal(str(getattr(f, "quantity", 1) or 1)) for f in fills]
+        total_qty = sum(quantities)
+        if total_qty == 0:
+            return None
+        return sum(p * q for p, q in zip(prices, quantities)) / total_qty  # vwap of partials
+
     async def order_events(self) -> AsyncIterator[dict[str, Any]]:
         """Account order-status stream (STP-04/ORD-05/LEX-01). Uses the
         AlertStreamer (account WebSocket) — NOT DXLink — yielding normalized

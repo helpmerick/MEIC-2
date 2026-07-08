@@ -19,6 +19,7 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from meic.adapters.occ import simulated_fill_legs
 from meic.application.order_intent import OrderIntent
 
 
@@ -140,6 +141,14 @@ class FakeBroker:
     async def fills_since(self, cursor: int | None) -> list[dict[str, Any]]:
         start = 0 if cursor is None else cursor
         return self._fills[start:]
+
+    async def fill_legs(self, order_id: str):
+        """ORD-09: a BrokerGateway reports the legs it filled. The fake must too,
+        or the services under test would take a path production never takes."""
+        rec = self._orders.get(order_id)
+        if rec is None or rec.status not in ("FILLED", "PARTIAL"):
+            return ()
+        return simulated_fill_legs(rec.intent)
 
     def order_events(self) -> AsyncIterator[Any]:
         q: asyncio.Queue[Any] = asyncio.Queue()
