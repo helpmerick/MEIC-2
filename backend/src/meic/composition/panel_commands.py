@@ -10,6 +10,7 @@ this mirrors is unit-tested in test_tc_cls_02.
 """
 from __future__ import annotations
 
+import itertools
 from decimal import Decimal
 
 from meic.application.close_entry import LiveLeg
@@ -30,6 +31,7 @@ class PanelCommands:
         self._comp = comp
         self._manual = manual_entry               # ENT-09; None => the ▶ button is inert
         self.preflight_checks = preflight_checks  # UC-02 checklist providers
+        self._presses = itertools.count(1)        # ENT-09: one id per PRESS
 
     # --- ENT-09 manual fire (UI-22) ---------------------------------------------
     def can_fire(self) -> bool:
@@ -42,7 +44,12 @@ class PanelCommands:
             raise RuntimeError("manual entry is not wired (ENT-09)")
         # The press id is minted here and echoed back on confirm, so the OK dialog
         # confirms the press it was opened for — a double-click cannot become two.
-        press_id = f"fire:{entry_number}:{self._comp.clock.now().isoformat()}"
+        #
+        # It must be unique PER PRESS. Deriving it from the clock was wrong: two
+        # separate presses inside one clock tick collided, and the operator's second,
+        # entirely legitimate press came back `duplicate_press`. A counter cannot
+        # collide, and unlike a timestamp it does not depend on clock resolution.
+        press_id = f"fire:{entry_number}:{next(self._presses)}"
         return self._manual.preview(press_id, entry_number, row)
 
     async def fire(self, *, press_id: str, entry_number: int, row, confirmed: bool) -> dict:

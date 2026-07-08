@@ -88,14 +88,46 @@ def _serve_panel(app) -> None:
 
 def paper_app():
     """Paper-mode demo: a compressed day loops so the panel shows activity."""
+    from decimal import Decimal
+
     from meic.adapters.api.app import create_app
+    from meic.application.entry_gates import GateSnapshot, RiskSnapshot
+    from meic.application.manual_entry import ManualEntry
     from meic.composition.panel_commands import PanelCommands
+    from meic.domain.projection import fold
 
     comp = PaperComposition(clock=MutableClock(datetime(2026, 7, 7, 9, 30, tzinfo=timezone.utc)), ticks=SPX)
     runtime = PaperDemoRuntime(comp, step_seconds=3.0)
 
+    async def selector(when, n, config=None):
+        """The demo's stand-in for live selection. A real day selects from the
+        DXLink chain; the shape — and the row's contracts — is identical."""
+        return runtime._condor(n, config.contracts if config else 1), None
+
+    async def gates():
+        """ENT-03 market/session portion. The durable states (ARMED / Stop Trading /
+        Confirm Live) come from PersistentState and are NOT overridden here."""
+        return GateSnapshot(
+            armed=comp.state.armed, confirm_live=comp.state.confirm_live,
+            stop_trading=comp.state.stop_trading, flatten_in_progress=False,
+            market_open=True, market_halted=False, data_fresh=True,
+            session_valid=True, buying_power_ok=True)
+
+    def risk():
+        """RSK-04 with REAL inputs: only entries still open count, and the ceiling
+        is whatever the operator typed into the schedule panel."""
+        open_ids = {eid for eid, e in fold(comp.events).entries.items() if not e.close_initiator}
+        ceiling = comp.state.max_day_risk
+        return RiskSnapshot(
+            new_worst_case=Decimal("0"),   # attempt() re-prices it from the condor
+            open_worst_cases=tuple(wc for eid, wc in comp.worst_case.items() if eid in open_ids),
+            max_day_risk=None if ceiling in (None, "") else Decimal(str(ceiling)),
+            buying_power=comp.broker.ledger.buying_power)   # SIM-04
+    manual = ManualEntry(comp, selector, gates, max_entries_per_day=6,
+                         risk=risk, day=lambda: "2026-07-07")
+
     # no api_token on the localhost demo bind; Close/Flatten act on the live book
-    app = create_app(comp.state, comp.events, commands=PanelCommands(comp))
+    app = create_app(comp.state, comp.events, commands=PanelCommands(comp, manual_entry=manual))
 
     @app.on_event("startup")
     async def _start() -> None:

@@ -1,6 +1,7 @@
 """PanelCommands — the Close/Flatten glue behind the control panel (UC-14/UI-16,
 RSK-01a). Drives it against a real PaperComposition."""
 import asyncio
+from types import SimpleNamespace
 from datetime import datetime
 from decimal import Decimal as D
 
@@ -68,3 +69,29 @@ def test_flatten_requires_typed_confirmation_then_closes_open_entries():
     assert res["result"] == "flattened" and set(res["entries"]) == {"e1", "e2"}
     closed = {e.entry_id for e in comp.events if isinstance(e, EntryClosed)}
     assert closed == {"e1", "e2"}
+
+
+def test_each_press_gets_its_own_id_so_a_second_press_is_not_a_duplicate():
+    """ENT-09 is idempotent PER PRESS. The press id was once derived from
+    clock.now(), so two separate presses inside one clock tick collided and the
+    operator's second, entirely legitimate press came back `duplicate_press`.
+    Found by driving the running panel, not by a test — hence this one."""
+    from meic.composition.panel_commands import PanelCommands
+
+    class _Manual:
+        """Records the id it was handed; the clock never ticks between presses."""
+        def preview(self, press_id, entry_number, row):
+            return SimpleNamespace(press_id=press_id)
+
+    cmds = PanelCommands(_comp(), manual_entry=_Manual())
+    ids = [cmds.fire_preview(1, None).press_id for _ in range(3)]
+    assert len(set(ids)) == 3, f"presses shared an id: {ids}"
+
+
+def test_a_panel_without_manual_entry_wiring_can_never_fire():
+    from meic.composition.panel_commands import PanelCommands
+
+    cmds = PanelCommands(_comp())
+    assert cmds.can_fire() is False
+    out = asyncio.run(cmds.fire(press_id="p1", entry_number=1, row=None, confirmed=True))
+    assert out["result"] == "unavailable"

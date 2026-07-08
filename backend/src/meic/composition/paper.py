@@ -43,6 +43,8 @@ class PaperComposition:
     stop_basis: StopBasis = StopBasis.TOTAL_CREDIT
     # v1.44: an EventLog stamps every appended event with config_version.
     events: list = field(default_factory=EventLog)
+    # RSK-04: entry_id -> structural worst case of each FILLED entry.
+    worst_case: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events)  # SIM-01
@@ -73,6 +75,8 @@ class PaperComposition:
         return [ShortLeg(l.side, mids[l.side], Decimal("0.50"), symbol=l.symbol) for l in shorts]
 
     async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
+        # RSK-04: record what this entry can lose, so later entries see the headroom.
+        self.worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
         """STP-01 hand-off: place the two resting stops for a filled condor.
         Shorts carry their fills; total_credit uses the entry's net credit."""
         await self.protect.protect(

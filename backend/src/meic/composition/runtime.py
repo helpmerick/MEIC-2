@@ -32,10 +32,13 @@ class PaperDemoRuntime:
         self.step = step_seconds
         self._entry_times = ["09:32", "10:00", "10:30", "11:00", "11:30", "12:00"]
 
-    def _condor(self, n: int) -> Condor:
-        return Condor(entry_number=n, put_short=D(str(5990 - n)), call_short=D(str(6060 + n)),
+    def _condor(self, n: int, contracts: int = 1) -> Condor:
+        put_short, call_short = D(str(5990 - n)), D(str(6060 + n))
+        return Condor(entry_number=n, put_short=put_short, call_short=call_short,
+                      put_long=put_short - 50, call_long=call_short + 50,
                       put_short_mid=D("3.00"), call_short_mid=D("2.00"),
-                      mid_credit=D("4.00"), min_total_credit=D("2.00"))
+                      mid_credit=D("4.00"), min_total_credit=D("2.00"),
+                      expiration=self.comp.clock.now().date(), contracts=contracts)
 
     def _reset(self) -> None:
         self.comp.events.clear()
