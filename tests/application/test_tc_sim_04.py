@@ -47,7 +47,7 @@ async def _run_scripted_entry(broker) -> list:
     if outcome.status == "FILLED":
         await protect.protect(
             entry_id="2026-07-06#1", basis=StopBasis.TOTAL_CREDIT,
-            shorts=[ShortLeg("PUT", D("3.00"), D("0.50")), ShortLeg("CALL", D("2.00"), D("0.50"))],
+            shorts=[ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("0.50"), symbol="SPXW  260707C06060000")],
             total_net_credit=D("4.00"))
     return events
 
@@ -55,13 +55,13 @@ async def _run_scripted_entry(broker) -> list:
 def _sim_broker():
     b = SimulatedBroker(SimLedger(cash=D("100000")))
     # the injected "real market" trades through the credit limit at its price
-    b.set_market(lambda o: (D(str(o["net_credit"])), D(str(o["net_credit"])), True))
+    b.set_market(lambda o: (o.price, o.price, True))
     return b
 
 
 def _fake_live_shape_broker():
     b = FakeBroker()
-    b.autofill(lambda o: isinstance(o, dict) and o.get("kind") == "iron_condor")
+    b.autofill(lambda o: o.kind == "iron_condor")
     return b
 
 

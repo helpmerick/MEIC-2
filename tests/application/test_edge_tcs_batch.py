@@ -18,6 +18,7 @@ from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
 from tests.harness.fake_clock import ET, FakeClock
+from tests.harness.intents import condor_intent, stop_intent
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 
@@ -35,13 +36,13 @@ def test_tc_ord_03_cancel_fill_race_treats_condor_open_and_places_stops():
     # the entry order actually filled; a cancel arriving after comes back
     # terminal (ORD-08) — broker truth wins, the condor is OPEN
     broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
-    order_id = asyncio.run(broker.submit({"type": "limit", "kind": "iron_condor", "legs": 4}))
+    order_id = asyncio.run(broker.submit(condor_intent()))
     outcome = asyncio.run(broker.cancel(order_id))  # order already FILLED
     assert outcome["result"] == "terminal" and outcome["status"] == "FILLED"
     # -> the entry is treated as filled; ProtectPosition places the stops
     p = ProtectPosition(broker, clock, _Alerts(), events, SPX)
     r = asyncio.run(p.protect(entry_id="e1", basis=StopBasis.TOTAL_CREDIT,
-                              shorts=[ShortLeg("PUT", D("3.00"), D("0.50")), ShortLeg("CALL", D("2.00"), D("0.50"))],
+                              shorts=[ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("0.50"), symbol="SPXW  260707C06060000")],
                               total_net_credit=D("4.00")))
     assert r.outcome == "PROTECTED"
     assert len(asyncio.run(broker.working_orders())) == 2
@@ -75,9 +76,10 @@ def test_tc_tpf_05_race_one_buyback_per_leg():
     asyncio.run(CloseEntry(broker, events).close(
         "e1", "take_profit", resting_stop_ids=["call_stop"], live_legs=live, close_price=D("0.05")))
     orders = list(broker._orders.values())
-    put_short_closes = [o for o in orders if o.intent.get("leg") == "short_put"]
+    is_short_close = lambda o, r: o.intent.legs[0].right == r and o.intent.legs[0].action == "buy_to_close"
+    put_short_closes = [o for o in orders if is_short_close(o, "P")]
     assert put_short_closes == []  # put short bought exactly once (by its stop), not again
-    call_short_closes = [o for o in orders if o.intent.get("leg") == "short_call"]
+    call_short_closes = [o for o in orders if is_short_close(o, "C")]
     assert len(call_short_closes) == 1  # exactly one buy-back for the closed side
 
 

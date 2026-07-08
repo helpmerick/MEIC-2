@@ -19,6 +19,8 @@ from decimal import Decimal
 from meic.domain.events import EntryClosed, SideClosed
 from meic.domain.ownership import OwnershipLedger
 
+from .order_intent import OrderIntent, OrderLeg, right_of
+
 VALID_INITIATORS = frozenset({
     "manual", "manual_flatten", "take_profit", "eod", "decay", "infeasible_stop", "unprotected",
 })
@@ -59,12 +61,12 @@ class CloseEntry:
         for leg in sorted(live_legs, key=lambda l: (l.side, l.role)):
             qty = self._ledger.cap_exit_qty(leg.symbol, abs(leg.signed_qty)) or abs(leg.signed_qty)
             action = "buy_to_close" if leg.signed_qty < 0 else "sell_to_close"
-            await self._broker.submit({
-                "action": action, "type": "limit", "tif": "Day",
-                "symbol": leg.symbol, "leg": f"{leg.role}_{leg.side.lower()}",
-                "qty": qty, "price": close_price,
-                "idempotency_key": f"close:{entry_id}:{leg.symbol}",  # ORD-04
-            })
+            await self._broker.submit(OrderIntent(
+                order_type="limit", tif="Day", kind="close", entry_id=entry_id,
+                contracts=qty, price=close_price,
+                idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
+                legs=(OrderLeg(right=right_of(leg.side), action=action,
+                               qty=qty, symbol=leg.symbol),)))
             self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
 
         # CLS-04: record the close with its initiator (the ONLY per-initiator diff)

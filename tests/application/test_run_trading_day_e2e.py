@@ -44,7 +44,7 @@ def _schedule(n: int, *, same_time: bool = False) -> list[ScheduledEntry]:
     return [ScheduledEntry(OPEN + timedelta(minutes=step * i), _condor(i + 1)) for i in range(n)]
 
 
-IS_CONDOR = lambda o: isinstance(o, dict) and o.get("kind") == "iron_condor"
+IS_CONDOR = lambda o: o.kind == "iron_condor"
 
 
 class _Alerts:
@@ -94,7 +94,7 @@ def test_full_scripted_day_capstone():
         # STP-01 hand-off: place the two resting stops (total_credit @95 -> 3.80)
         await protect.protect(
             entry_id=entry_id, basis=StopBasis.TOTAL_CREDIT,
-            shorts=[ShortLeg("PUT", D("3.00"), D("0.50")), ShortLeg("CALL", D("2.00"), D("0.50"))],
+            shorts=[ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("0.50"), symbol="SPXW  260707C06060000")],
             total_net_credit=D("4.00"))
 
     day = RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX),

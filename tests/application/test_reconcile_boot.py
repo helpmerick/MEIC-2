@@ -10,6 +10,7 @@ from meic.application.reconcile_boot import (
     reconcile_on_boot,
 )
 from meic.domain.events import ReconciliationMismatch, StopReplaced
+from decimal import Decimal as D
 
 
 class FakeBroker:
@@ -26,7 +27,7 @@ class FakeBroker:
         return self._working
 
     async def submit(self, order):
-        self.submitted.append(order.get("idempotency_key"))
+        self.submitted.append(order.idempotency_key)
         return f"ord-{len(self.submitted)}"
 
     async def cancel(self, id):
@@ -87,7 +88,7 @@ def test_crash_restart_adopts_own_positions_and_replaces_missing_stop():
 
     r = _run(broker=broker, events=events, state=state, alerts=alerts,
              tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P",
-                                          stop_order_id=None, stop_filled=False)])
+                                          stop_order_id=None, stop_filled=False, stop_trigger=D("3.80"))])
 
     assert r.adopted == ["SPXW_5990P"] and r.foreign == []
     assert r.entries_blocked is False and alerts.alerts == []

@@ -4,6 +4,8 @@ import asyncio
 from meic.application.reconcile import Reconcile, TrackedShort
 from meic.domain.events import LongSaleStarted, ReconciliationMismatch, StopReplaced
 from tests.harness.fake_broker import FakeBroker
+from tests.harness.intents import condor_intent, stop_intent
+from decimal import Decimal as D
 
 
 def _rec():
@@ -26,7 +28,7 @@ def test_tc_rec_03_reattaches_confirmed_stops_no_reorder():
     """TC-REC-03: a short whose stop is still working is re-attached, not
     re-placed."""
     broker, events = FakeBroker(), []
-    stop_id = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put", "entry_id": "e1"}))
+    stop_id = asyncio.run(broker.submit(stop_intent("PUT", entry_id="e1")))
     rec = Reconcile(broker, events)
     plan = rec.plan(
         tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=stop_id, stop_filled=False)],
@@ -61,7 +63,7 @@ def test_tc_rec_04_3_genuinely_unprotected_replaces_stop():
     broker, events = FakeBroker(), []
     rec = Reconcile(broker, events)
     plan = rec.plan(
-        tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False)],
+        tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80"))],
         broker_working_order_ids=set(), mid_lex_sides=[], stale_entry_order_ids=[])
     asyncio.run(rec.execute(plan))
     assert plan.place_stops == [("e1", "PUT")]
@@ -73,8 +75,8 @@ def test_rec_05_recovery_never_duplicates_a_stop():
     broker, events = FakeBroker(), []
     rec = Reconcile(broker, events)
     plan = rec.plan(
-        tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False),
-                        TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False)],
+        tracked_shorts=[TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80")),
+                        TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80"))],
         broker_working_order_ids=set(), mid_lex_sides=[], stale_entry_order_ids=[])
     asyncio.run(rec.execute(plan))
     assert sum(isinstance(e, StopReplaced) for e in events) == 1

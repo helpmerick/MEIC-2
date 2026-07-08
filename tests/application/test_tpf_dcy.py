@@ -10,6 +10,7 @@ from meic.application.decay_watcher import DecayWatcher
 from meic.application.tpf_monitor import TPFMonitor
 from meic.domain.events import EntryClosed, LongSold, ShortStopped
 from tests.harness.fake_broker import FakeBroker, Scripted
+from tests.harness.intents import condor_intent, stop_intent
 
 
 # --- TPFMonitor --------------------------------------------------------------
@@ -65,11 +66,11 @@ def test_tc_dcy_01_happy_path():
     """TC-DCY-01 (DCY-01/02/03): ask<=0.05 x2 -> cancel stop -> buy at trigger
     -> fill -> SIDE_CLOSED_DECAY, P&L realized, long RETAINED (no LEX sale)."""
     broker, events = FakeBroker(), []
-    resting = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put"}))
+    resting = asyncio.run(broker.submit(stop_intent("PUT")))
     w = DecayWatcher(broker, events)
     assert w.evaluate(ask=D("0.05")) is False
     assert w.evaluate(ask=D("0.05")) is True
-    result = asyncio.run(w.buyback(entry_id="e1", side="PUT", resting_stop_id=resting))
+    result = asyncio.run(w.buyback(entry_id="e1", side="PUT", resting_stop_id=resting, symbol="SPXW  260707P05990000"))
     assert result != "STOP_FILLED_RUN_LEX"
     asyncio.run(w.complete(entry_id="e1", side="PUT"))
     assert any(isinstance(e, ShortStopped) and e.initiator == "decay" for e in events)
@@ -81,20 +82,21 @@ def test_tc_dcy_02_reinflation_guard():
     """TC-DCY-02 (DCY-02.3): ask jumps to 0.30 before fill -> cancel buyback,
     re-place the resting stop; a stop that actually FILLED runs LEX."""
     broker, events = FakeBroker(), []
-    resting = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put"}))
+    resting = asyncio.run(broker.submit(stop_intent("PUT")))
     w = DecayWatcher(broker, events)
-    buyback_id = asyncio.run(w.buyback(entry_id="e1", side="PUT", resting_stop_id=resting))
+    buyback_id = asyncio.run(w.buyback(entry_id="e1", side="PUT", resting_stop_id=resting, symbol="SPXW  260707P05990000"))
     outcome = asyncio.run(w.reinflation_guard(
         entry_id="e1", side="PUT", buyback_id=buyback_id, resting_stop_id=resting,
-        current_ask=D("0.30"), unfilled=True))
+        current_ask=D("0.30"), unfilled=True,
+        symbol="SPXW  260707P05990000", trigger=D("3.80")))
     assert outcome.startswith("REPROTECTED:")  # protection restored
 
     # if the resting stop had actually filled, the buyback aborts to LEX
     b2, e2 = FakeBroker(), []
-    rid = asyncio.run(b2.submit({"type": "stop_market", "leg": "short_put"}))
+    rid = asyncio.run(b2.submit(stop_intent("PUT")))
     b2._orders[rid].status = "FILLED"
     w2 = DecayWatcher(b2, e2)
-    assert asyncio.run(w2.buyback(entry_id="e2", side="PUT", resting_stop_id=rid)) == "STOP_FILLED_RUN_LEX"
+    assert asyncio.run(w2.buyback(entry_id="e2", side="PUT", resting_stop_id=rid, symbol="SPXW  260707P05990000")) == "STOP_FILLED_RUN_LEX"
 
 
 def test_tc_dcy_04_routes_through_canonical_close_initiator_decay():

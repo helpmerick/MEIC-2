@@ -32,7 +32,7 @@ def _(world):
 @then('a limit sell at 2.15 is placed within lex_start_latency_ms')
 def _(world):
     assert world["result"].prices_tried[0] == D("2.15")  # mid of 2.00/2.30
-    assert any(i["type"] == "limit" and i["price"] == D("2.15") for i in world["sells"])
+    assert any(i.order_type == "limit" and i.price == D("2.15") for i in world["sells"])
 
 
 @when('lex_reprice_seconds elapses without fill')
@@ -48,4 +48,4 @@ def _(world):
 @then('after lex_reprice_attempts unfilled replacements the fallback places a marketable limit at the current bid  # LEX-05')
 def _(world):
     assert world["result"].outcome == "FALLBACK_WORKING"
-    assert any(i["type"] == "marketable_limit" and i["price"] == D("2.00") for i in world["sells"])
+    assert any(i.order_type == "marketable_limit" and i.price == D("2.00") for i in world["sells"])

@@ -69,7 +69,7 @@ def _(world):
         unprotected_action="flatten_side", close_entry=close)
     world["result"] = asyncio.run(protect.protect(
         entry_id="e1", basis=StopBasis.TOTAL_CREDIT,
-        shorts=[ShortLeg("PUT", D("3.00"), D("0.50")), ShortLeg("CALL", D("2.00"), D("0.50"))],
+        shorts=[ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("0.50"), symbol="SPXW  260707C06060000")],
         total_net_credit=D("4.00")))
 
 

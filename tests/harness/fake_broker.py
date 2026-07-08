@@ -7,8 +7,10 @@ instance and boot a new one against the SAME FakeBroker object — working
 orders, positions and fills survive, exactly like a real broker across a
 process crash (REC-02/03 scenarios).
 
-Order payloads are opaque in Phase 1 (no domain types yet); everything is
-keyed by broker order ids this fake issues.
+Order payloads are NOT opaque: submit() takes the canonical `OrderIntent`, the
+same type the real TastytradeAdapter and SimulatedBroker take. A fake that
+accepted a looser shape than the real adapter is precisely how the paper/live
+dialect fork survived 483 green tests. See tests/adapters/test_broker_intent_contract.py.
 """
 from __future__ import annotations
 
@@ -16,6 +18,8 @@ import asyncio
 import itertools
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+
+from meic.application.order_intent import OrderIntent
 
 
 @dataclass
@@ -30,9 +34,16 @@ class Scripted:
 @dataclass
 class FakeOrder:
     order_id: str
-    intent: Any
+    intent: OrderIntent
     status: str  # WORKING | FILLED | PARTIAL | REJECTED | CANCELLED | REPLACED
     fills: list[dict[str, Any]] = field(default_factory=list)
+    received_at: str | None = None  # broker-recorded placement time (TC-STP-08/UC-12)
+
+    @property
+    def stop_leg_key(self) -> str:
+        """`short_put` / `short_call` — same accessor SimOrder exposes, so tests
+        read an order the same way whichever broker produced it."""
+        return "short_put" if self.intent.legs[0].right == "P" else "short_call"
 
 
 class FakeBroker:
@@ -69,11 +80,16 @@ class FakeBroker:
             q.put_nowait(event)
 
     # ------------------------------------------------------------- BrokerGateway
-    async def submit(self, order: Any) -> str:
+    async def submit(self, order: OrderIntent) -> str:
+        # One schema, all brokers (v1.44). The FakeBroker is a BrokerGateway like
+        # any other: if it accepted a dialect the real adapter can't consume, the
+        # whole suite could stay green while every live order crashed.
+        if not isinstance(order, OrderIntent):
+            raise TypeError(f"FakeBroker.submit expects an OrderIntent, got {type(order).__name__}")
         if self._submit_script:
             reaction = self._submit_script.pop(0)
         elif getattr(self, "_autofill", None) is not None and self._autofill(order):
-            reaction = Scripted("fill", payload={"price": order.get("net_credit") if isinstance(order, dict) else None})
+            reaction = Scripted("fill", payload={"price": order.price})
         else:
             reaction = Scripted("work")
         if reaction.latency_s:
@@ -81,7 +97,8 @@ class FakeBroker:
         if reaction.action == "timeout":
             raise TimeoutError("scripted broker timeout")
         order_id = f"FB-{next(self._ids)}"
-        rec = FakeOrder(order_id=order_id, intent=order, status="WORKING")
+        rec = FakeOrder(order_id=order_id, intent=order, status="WORKING",
+                        received_at=self._now())
         self._orders[order_id] = rec
         if reaction.action == "reject":
             rec.status = "REJECTED"
@@ -135,6 +152,11 @@ class FakeBroker:
         return _stream()
 
     # ---------------------------------------------------------------- internals
+    @staticmethod
+    def _now() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
     def _record_fill(self, rec: FakeOrder, payload: dict[str, Any], *, partial: bool) -> None:
         rec.status = "PARTIAL" if partial else "FILLED"
         fill = {"order_id": rec.order_id, "cursor": len(self._fills) + 1, "partial": partial, **payload}

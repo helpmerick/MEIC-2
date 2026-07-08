@@ -13,6 +13,7 @@ post-fill infeasible path routes the close through an injected close callback
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Awaitable, Callable, Iterable
 
@@ -25,12 +26,37 @@ from meic.domain.events import (
 from meic.domain.stop_policy import StopBasis, clears, stop_trigger
 from meic.domain.ticks import TickTable
 
+from .order_intent import OrderIntent, protective_stop
+
 
 @dataclass(frozen=True)
 class ShortLeg:
+    """A filled short, carrying the identity needed to protect it.
+
+    A stop must name the *instrument* it closes. Identity is mandatory, and is
+    exactly one of `strike` (our own selection — the ACL resolves symbology,
+    doc 05 §121) or `symbol` (broker-sourced, already resolved). Before v1.44
+    this carried only `side`, so no stop could be translated into a real order.
+    """
+
     side: str            # "PUT" | "CALL"
     fill: Decimal        # actual short fill (STP-02 uses actual fills)
     long_fill: Decimal   # allocated long fill (per_side basis only)
+    strike: Decimal | None = None
+    symbol: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.side not in ("PUT", "CALL"):
+            raise ValueError(f"side must be PUT or CALL, got {self.side!r}")
+        if (self.strike is None) == (self.symbol is None):
+            raise ValueError(
+                f"short {self.side} needs exactly one of `strike` or `symbol` — a stop "
+                "with no instrument identity cannot be placed")
+
+    @property
+    def right(self) -> str:
+        """OCC right: PUT -> P, CALL -> C."""
+        return "P" if self.side == "PUT" else "C"
 
 
 @dataclass(frozen=True)
@@ -83,7 +109,12 @@ class ProtectPosition:
         pct: Decimal = Decimal("95"),
         markup: Decimal = Decimal("0"),
         total_net_credit: Decimal | None = None,
+        contracts: int = 1,
+        expiration: date | None = None,
+        underlying: str = "SPXW",
     ) -> ProtectResult:
+        """`contracts` (v1.44, ENT-04) sizes each stop at the position it
+        protects — a 2-contract condor gets 2-contract stops."""
         shorts = list(shorts)
         triggers = {
             leg.side: self._trigger_for(basis, leg, pct=pct, markup=markup, total_net_credit=total_net_credit)
@@ -103,19 +134,23 @@ class ProtectPosition:
 
         # STP-01/06: one broker-resting buy-to-close stop-market per SHORT.
         for leg in shorts:
-            if not await self._place_and_verify(entry_id, leg.side, triggers[leg.side]):
+            intent = protective_stop(
+                entry_id=entry_id, right=leg.right, contracts=contracts,
+                trigger=triggers[leg.side], strike=leg.strike, symbol=leg.symbol,
+                underlying=underlying, expiration=expiration,
+                idempotency_key=f"stop:{entry_id}:{leg.side}",  # ORD-04
+            )
+            if not await self._place_and_verify(entry_id, leg.side, triggers[leg.side], intent):
                 await self._go_unprotected(entry_id, leg.side)
                 return ProtectResult("UNPROTECTED_FLATTENED", triggers)
         return ProtectResult("PROTECTED", triggers)
 
-    async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal) -> bool:
+    async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal,
+                                intent: OrderIntent) -> bool:
         """STP-04: place, then confirm working; retry up to attempts."""
         for attempt in range(self._retry_attempts):
             try:
-                order_id = await self._broker.submit({
-                    "action": "buy_to_close", "type": "stop_market", "tif": "Day",
-                    "leg": f"short_{side.lower()}", "trigger": trigger, "entry_id": entry_id,
-                })
+                order_id = await self._broker.submit(intent)
             except Exception:
                 order_id = None
             if order_id is not None and await self._confirmed(order_id):

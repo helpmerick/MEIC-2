@@ -20,7 +20,7 @@ class RecordingBroker:
         self.account_level_calls: list[str] = []
 
     async def submit(self, order: dict) -> str:
-        self.submitted_symbols.append(order["symbol"])
+        self.submitted_symbols.append(order.legs[0].symbol)
         return f"ord-{len(self.submitted_symbols)}"
 
     async def cancel(self, id: str) -> dict:

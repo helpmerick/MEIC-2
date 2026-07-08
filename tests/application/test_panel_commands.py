@@ -10,6 +10,7 @@ from meic.domain.events import CondorFilled, EntryClosed
 from meic.domain.projection import fold
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
+from tests.harness.intents import stop_intent
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 
@@ -22,8 +23,7 @@ def test_close_closes_open_entry_cancels_stops_clears_tpf_idempotent():
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00")))
     comp.state.tpf_floors = {"e1": "6.00"}
-    stop_id = asyncio.run(comp.broker.submit(
-        {"type": "stop_market", "entry_id": "e1", "leg": "short_put", "trigger": "3.80"}))
+    stop_id = asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id="e1")))
 
     cmd = PanelCommands(comp)
     res = asyncio.run(cmd.close("e1"))

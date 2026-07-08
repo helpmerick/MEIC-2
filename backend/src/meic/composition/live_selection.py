@@ -105,6 +105,9 @@ class LiveCondorSelector:
         return Condor(
             entry_number=entry_number,
             put_short=legs["put"].short_strike, call_short=legs["call"].short_strike,
+            # STK-03 wings — the ACL needs all four strikes to build the order.
+            put_long=legs["put"].long_strike, call_long=legs["call"].long_strike,
             put_short_mid=mids["put_short"], call_short_mid=mids["call_short"],
             mid_credit=net_credit, min_total_credit=c.min_total_credit,
+            expiration=when.date(),  # 0DTE
         ), None

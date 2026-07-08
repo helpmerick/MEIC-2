@@ -15,6 +15,7 @@ from .event_store import InMemoryEventStore
 from .fake_broker import FakeBroker, Scripted
 from .fake_clock import ET, FakeClock
 from .fake_market_data import FakeMarketData
+from tests.harness.intents import any_intent
 
 START = datetime(2026, 7, 6, 9, 30, tzinfo=ET)
 
@@ -43,7 +44,7 @@ async def test_fake_broker_scripted_fill_reaches_account_stream():
     broker = FakeBroker()
     events = broker.order_events()
     broker.script_submit(Scripted("fill", payload={"price": -2.15}))
-    order_id = await broker.submit({"kind": "4-leg-condor"})
+    order_id = await broker.submit(any_intent())
     evt = await asyncio.wait_for(anext(events), timeout=1)
     assert evt["type"] == "order_filled" and evt["order_id"] == order_id
     assert await broker.fills_since(None) == [evt | {}] or evt["order_id"] == order_id
@@ -57,11 +58,11 @@ async def test_fake_broker_scripted_reject_timeout_and_partial():
         Scripted("timeout"),
         Scripted("partial", payload={"filled_qty": 1}),
     )
-    rejected_id = await broker.submit({})
+    rejected_id = await broker.submit(any_intent())
     assert not any(o.order_id == rejected_id for o in await broker.working_orders())
     with pytest.raises(TimeoutError):
-        await broker.submit({})
-    partial_id = await broker.submit({})
+        await broker.submit(any_intent())
+    partial_id = await broker.submit(any_intent())
     assert [o.order_id for o in await broker.working_orders()] == [partial_id]
 
 
@@ -71,7 +72,7 @@ async def test_fake_broker_state_survives_simulated_bot_restart():
     broker = FakeBroker()
     store = InMemoryEventStore()
     broker.script_submit(Scripted("fill", payload={"price": -2.00}))
-    await broker.submit({"entry": 1})
+    await broker.submit(any_intent())
     store.append("day-2026-07-06", [{"type": "CondorFilled", "entry": 1}])
     # --- simulated crash: the "bot" is discarded; broker + store live on ---
     fills_seen_by_new_instance = await broker.fills_since(None)

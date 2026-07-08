@@ -19,6 +19,8 @@ from decimal import Decimal
 
 from meic.domain.events import ShortStopped, WatchdogEscalated
 
+from .order_intent import marketable_close, right_of
+
 
 @dataclass
 class _Breach:
@@ -76,9 +78,13 @@ class StopWatchdog:
             return "alert"
         return None
 
-    async def escalate(self, *, entry_id: str, side: str, mark_at_breach: Decimal, ask: Decimal) -> None:
+    async def escalate(self, *, entry_id: str, side: str, mark_at_breach: Decimal, ask: Decimal,
+                       symbol: str, contracts: int = 1) -> None:
         """STP-03b escalation: marketable buy-to-close + cancel the sleeping
-        stop, with the ORD-08 race guard. Records calibration evidence."""
+        stop, with the ORD-08 race guard. Records calibration evidence.
+
+        `symbol`/`contracts` identify and size the buy-back: it must close the
+        WHOLE short it replaces, or the escalation leaves a naked remainder."""
         key = (entry_id, side)
         self._escalated.add(key)
         b = self._breaches.get(key, _Breach())
@@ -90,10 +96,10 @@ class StopWatchdog:
             self._reset(key)
             return
 
-        order_id = await self.broker.submit({
-            "action": "buy_to_close", "type": "marketable_limit", "tif": "Day",
-            "leg": f"short_{side.lower()}", "price": ask, "entry_id": entry_id,
-        })
+        order_id = await self.broker.submit(marketable_close(
+            entry_id=entry_id, right=right_of(side), contracts=contracts,
+            price=ask, symbol=symbol, kind="escalation",
+            idempotency_key=f"escalate:{entry_id}:{side}"))
         if resting_id is not None:
             await self.broker.cancel(resting_id)  # cancel the sleeping stop
 

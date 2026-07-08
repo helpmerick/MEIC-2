@@ -8,6 +8,7 @@ from pytest_bdd import given, scenarios, then, when
 from meic.application.reconcile import Reconcile, TrackedShort
 from meic.domain.events import LongSaleStarted, StopReplaced
 from tests.harness.fake_broker import FakeBroker
+from tests.harness.intents import condor_intent, stop_intent
 
 scenarios("../features/TC-RSK-07.feature")
 
@@ -23,9 +24,9 @@ def _(world):
     up: condor A both shorts protected (stops resting); side B short stopped,
     long-sale mid-LEX; a stale working entry order C whose window elapsed."""
     broker = FakeBroker()
-    a_put_stop = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put", "entry_id": "A"}))
-    a_call_stop = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_call", "entry_id": "A"}))
-    stale_order = asyncio.run(broker.submit({"type": "limit", "kind": "iron_condor", "legs": 4, "entry_id": "C"}))
+    a_put_stop = asyncio.run(broker.submit(stop_intent("PUT", entry_id="A")))
+    a_call_stop = asyncio.run(broker.submit(stop_intent("CALL", entry_id="A")))
+    stale_order = asyncio.run(broker.submit(condor_intent(entry_id="C")))
     working = {o.order_id for o in asyncio.run(broker.working_orders())}
 
     world["broker"] = broker
@@ -76,6 +77,6 @@ def _(world):
 def _(world):
     assert not any(isinstance(e, StopReplaced) for e in world["events"])
     stops = [o for o in world["broker"]._orders.values()
-             if o.intent.get("type") == "stop_market" and o.status != "CANCELLED"]
-    keys = [(o.intent.get("entry_id"), o.intent.get("leg")) for o in stops]
+             if o.intent.order_type == "stop_market" and o.status != "CANCELLED"]
+    keys = [(o.intent.entry_id, o.stop_leg_key) for o in stops]
     assert len(keys) == len(set(keys))  # no duplicate (entry, leg) stop

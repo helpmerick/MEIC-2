@@ -9,6 +9,7 @@ from pytest_bdd import given, scenarios, then, when
 from meic.application.close_entry import CloseEntry, LiveLeg
 from meic.domain.events import EntryClosed
 from tests.harness.fake_broker import FakeBroker
+from dataclasses import replace
 
 scenarios("../features/TC-CLS-01.feature")
 
@@ -30,7 +31,7 @@ class RecordingBroker:
 
     async def submit(self, intent):
         # exclude the recorded initiator's effect: intents carry no initiator
-        self.requests.append(("submit", dict(intent)))
+        self.requests.append(("submit", intent))
         return await self._fake.submit(intent)
 
 
@@ -64,7 +65,9 @@ def _(world):
         out = []
         for method, payload in reqs:
             if method == "submit":
-                p = {k: v for k, v in payload.items() if k != "idempotency_key"}
+                # every field of the intent except the ORD-04 key and the entry
+                # id, both of which differ by construction (A vs B)
+                p = replace(payload, idempotency_key="", entry_id="")
                 out.append(("submit", p))
             else:
                 out.append((method, payload))

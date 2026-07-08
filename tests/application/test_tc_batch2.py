@@ -16,6 +16,7 @@ from meic.domain.staleness import StampedQuote
 from meic.domain.stop_policy import StopBasis, stop_trigger
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker
+from tests.harness.intents import condor_intent, stop_intent
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 T0 = datetime(2026, 7, 6, 14, 0, 0)
@@ -114,7 +115,7 @@ def test_tc_cls_03_idempotent_close_one_order_per_leg():
             return {"result": "cancelled"}
 
         async def submit(self, intent):
-            key = intent["idempotency_key"]
+            key = intent.idempotency_key
             submitted[key] = submitted.get(key, 0) + 1  # a real broker dedupes by key
             return key
 
@@ -131,7 +132,7 @@ def test_tc_cls_04_completeness_stops_cancelled_legs_closed():
     """TC-CLS-04: after a close, the entry's stops are cancelled and legs closed
     — nothing left resting."""
     broker, events = FakeBroker(), []
-    s1 = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put", "entry_id": "e1"}))
+    s1 = asyncio.run(broker.submit(stop_intent("PUT", entry_id="e1")))
     legs = [LiveLeg("SPXW_5990P", "PUT", "short", -1), LiveLeg("SPXW_5940P", "PUT", "long", 1)]
     asyncio.run(CloseEntry(broker, events).close("e1", "manual", resting_stop_ids=[s1],
                                                  live_legs=legs, close_price=D("0.05")))
@@ -199,7 +200,7 @@ def test_tc_sim_02_stop_sim_slippage_and_event():
     from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker
     events: list = []
     b = SimulatedBroker(SimLedger(), tick=D("0.05"), stop_slippage_ticks=3, events=events)
-    oid = asyncio.run(b.submit({"type": "stop_market", "trigger": "3.80", "leg": "short_put", "entry_id": "e"}))
+    oid = asyncio.run(b.submit(stop_intent("PUT", "3.80", entry_id="e")))
     price = b.try_fill_stop(oid, mark=D("3.85"))
     assert price == D("3.95")  # 3.80 + 3 ticks
     assert any(isinstance(e, ShortStopped) and e.entry_id == "e" for e in events)  # -> LEX path

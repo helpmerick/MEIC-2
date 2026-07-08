@@ -18,7 +18,7 @@ scheduling, the gate chain, the order ladder, and partial handling.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from meic.domain.events import CondorFilled, CondorProposed, EntrySkipped, EntryWindowOpened
@@ -27,11 +27,18 @@ from meic.domain.stop_policy import StopBasis, feasible
 from meic.domain.ticks import TickTable
 
 from .entry_gates import GateSnapshot, evaluate_gates
+from .order_intent import OrderIntent, condor_legs
 
 
 @dataclass(frozen=True)
 class Condor:
-    """A fully selected condor ready to work (domain selection already ran)."""
+    """A fully selected condor ready to work (domain selection already ran).
+
+    Carries everything the ACL needs to build the 4-leg order: both shorts, both
+    wings, the expiration, and this row's own size (ENT-04, per-entry since
+    v1.44). Wings default to short ± 50 for the offline/legacy cases that only
+    supply shorts; live selection always sets them explicitly.
+    """
 
     entry_number: int
     put_short: Decimal
@@ -40,6 +47,18 @@ class Condor:
     call_short_mid: Decimal
     mid_credit: Decimal       # net credit at mid (ORD-02 start price)
     min_total_credit: Decimal  # ORD-03 floor
+    put_long: Decimal | None = None   # STK-03 wing; defaults to put_short - 50
+    call_long: Decimal | None = None  # defaults to call_short + 50
+    expiration: date | None = None    # 0DTE; the ACL resolves legs to OCC symbols
+    contracts: int = 1                # ENT-04: this row's own size (v1.44)
+
+    @property
+    def put_wing(self) -> Decimal:
+        return self.put_long if self.put_long is not None else self.put_short - Decimal("50")
+
+    @property
+    def call_wing(self) -> Decimal:
+        return self.call_long if self.call_long is not None else self.call_short + Decimal("50")
 
 
 @dataclass(frozen=True)
@@ -69,8 +88,12 @@ class ExecuteEntryAttempt:
         stop_loss_pct: Decimal = Decimal("95"),
         stop_rebate_markup: Decimal = Decimal("0"),
         min_stop_distance_ticks: int = 2,
-        contracts_per_entry: int = 1,
+        underlying: str = "SPXW",
     ) -> None:
+        # NOTE (v1.44): there is deliberately no `contracts_per_entry` here. ENT-04
+        # made contracts a PER-ENTRY value — it rides on the Condor (the schedule
+        # row), never on the service. `contracts_per_entry` survives in config only
+        # as the UI's row pre-fill.
         self._broker = broker
         self._clock = clock
         self._events = events
@@ -82,7 +105,7 @@ class ExecuteEntryAttempt:
         self._pct = stop_loss_pct
         self._markup = stop_rebate_markup
         self._min_distance = min_stop_distance_ticks
-        self._contracts = contracts_per_entry  # ENT-04: contracts per leg
+        self._underlying = underlying
 
     def _skip(self, day: str, n: int, reason: str) -> EntryOutcome:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
@@ -132,14 +155,22 @@ class ExecuteEntryAttempt:
         if not rungs:  # mid already below the floor
             return self._skip(day, n, "insufficient_credit")
 
+        # 0DTE: the expiration IS today unless selection named one explicitly.
+        expiration = condor.expiration or self._clock.now().date()
+
         working_id = None
         for step in rungs:
-            intent = {
-                "type": "limit", "kind": "iron_condor", "legs": 4, "tif": "Day",
-                "net_credit": step.price, "entry_id": entry_id,
-                "action": "sell_to_open",  # net credit received
-                "contracts": self._contracts,  # ENT-04: contracts per leg
-            }
+            # ENT-04 (v1.44): the size is THIS ROW's `contracts`, not a global knob.
+            intent = OrderIntent(
+                order_type="limit", tif="Day", kind="iron_condor", entry_id=entry_id,
+                contracts=condor.contracts, price=step.price,
+                underlying=self._underlying, expiration=expiration,
+                idempotency_key=f"entry:{entry_id}",  # ORD-04
+                legs=condor_legs(
+                    put_short=condor.put_short, put_long=condor.put_wing,
+                    call_short=condor.call_short, call_long=condor.call_wing,
+                    contracts=condor.contracts),
+            )
             if working_id is None:
                 working_id = await self._broker.submit(intent)
             else:

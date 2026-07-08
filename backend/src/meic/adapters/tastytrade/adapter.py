@@ -181,12 +181,14 @@ class TastytradeAdapter:
         return rec
 
     # ---- BrokerGateway surface (real SDK calls; proven by contract tests) -----
-    async def submit(self, order: dict[str, Any]) -> str:
+    async def submit(self, order: OrderIntent) -> str:
+        if not isinstance(order, OrderIntent):  # one schema, all brokers
+            raise TypeError(f"TastytradeAdapter.submit expects an OrderIntent, got {type(order).__name__}")
         new = await self._build_order(order)
-        resp = await self._account.place_order(self._session, new, dry_run=order.get("dry_run", False))
+        resp = await self._account.place_order(self._session, new, dry_run=False)
         return str(resp.order.id) if resp.order else ""
 
-    async def dry_run(self, order: dict[str, Any]):
+    async def dry_run(self, order: OrderIntent):
         """Assumption 1/2/7: validate an order against cert without placing it."""
         new = await self._build_order(order)
         return await self._account.place_order(self._session, new, dry_run=True)

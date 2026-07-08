@@ -24,6 +24,8 @@ from meic.domain.events import (
     StopReplaced,
 )
 
+from .order_intent import protective_stop, right_of
+
 
 @dataclass(frozen=True)
 class TrackedShort:
@@ -34,7 +36,12 @@ class TrackedShort:
     stop_filled: bool           # its stop shows FILLED in the fills feed
     stop_cancelled_by_operator: bool = False  # OWN-11
     stop_fill_price: Decimal | None = None     # EC-STP-06: fill from the fills feed
-    stop_trigger: Decimal | None = None        # to derive slippage on synthesis
+    # Doubles as (a) the trigger to derive slippage on EC-STP-06 synthesis, and
+    # (b) the trigger REC-04(3) re-places at. The caller supplies it: recorded from
+    # StopPlaced when the stop existed, or recomputed via stop_policy when the bot
+    # crashed before ever placing one (EC-STP-02).
+    stop_trigger: Decimal | None = None
+    contracts: int = 1                         # ENT-04: size the re-placed stop to the position
 
 
 @dataclass
@@ -47,6 +54,10 @@ class RecoveryPlan:
     # EC-STP-06: stops that filled while the bot was down — the missed ShortStopped
     # is synthesized on recovery so the projection/P&L reflects broker truth.
     synthesize_stopped: list[tuple[str, str, Decimal, Decimal]] = field(default_factory=list)
+    # REC-04(3): the shorts behind `place_stops`, keyed (entry_id, side). A stop is
+    # an order for a specific instrument at a specific trigger — recovery cannot
+    # re-place one from a bare (entry_id, side) pair.
+    stop_specs: dict[tuple[str, str], TrackedShort] = field(default_factory=dict)
 
     @property
     def blocks_entries(self) -> bool:
@@ -84,6 +95,7 @@ class Reconcile:
                 p.user_unprotected.append((s.entry_id, s.side))
             else:  # REC-04(3): genuinely unprotected — re-place
                 p.place_stops.append((s.entry_id, s.side))
+                p.stop_specs[(s.entry_id, s.side)] = s
         p.run_lex.extend(mid_lex_sides)          # REC-03: resume in-flight LEX ladders
         p.cancel_orders.extend(stale_entry_order_ids)
         p.mismatches.extend(position_mismatches or [])
@@ -111,9 +123,23 @@ class Reconcile:
             if key in placed_keys:
                 continue  # REC-05: never duplicate within one recovery pass
             placed_keys.add(key)
-            await self._broker.submit({
-                "action": "buy_to_close", "type": "stop_market", "tif": "Day",
-                "leg": f"short_{side.lower()}", "entry_id": entry_id, "idempotency_key": key})
+
+            # The trigger comes from the caller on TrackedShort: either the one the
+            # bot recorded placing (REC-02: the log is authoritative for intent), or
+            # — for EC-STP-02, a crash BEFORE placement, where no StopPlaced exists —
+            # one recomputed from the recorded fills via stop_policy, exactly as
+            # ProtectPosition would have. A short we cannot price a stop for is a
+            # mismatch: surface it (RSK-03 blocks entries) rather than emit a
+            # trigger-less order the broker rejects, which would leave the short
+            # naked with no signal at all.
+            spec = plan.stop_specs.get((entry_id, side))
+            if spec is None or spec.stop_trigger is None:
+                self._events.append(ReconciliationMismatch(
+                    detail=f"cannot re-place stop for {entry_id}/{side}: no stop trigger"))
+                continue
+            await self._broker.submit(protective_stop(
+                entry_id=entry_id, right=right_of(side), contracts=spec.contracts,
+                trigger=spec.stop_trigger, symbol=spec.symbol, idempotency_key=key))
             self._events.append(StopReplaced(entry_id=entry_id, side=side))
 
         for entry_id, side in plan.run_lex:

@@ -37,8 +37,8 @@ class RecordingBroker(FakeBroker):
         self.cancels: list[str] = []
 
     async def submit(self, order):
-        if isinstance(order, dict) and order.get("kind") == "iron_condor":
-            self.prices.append(D(str(order["net_credit"])))
+        if order.kind == "iron_condor":
+            self.prices.append(order.price)
         return await super().submit(order)
 
     async def cancel(self, id):

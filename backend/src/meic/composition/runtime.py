@@ -48,13 +48,13 @@ class PaperDemoRuntime:
 
         def market(intent):
             # condors trade through their 4.00 credit limit
-            if intent.get("kind") == "iron_condor":
+            if intent.kind == "iron_condor":
                 return (D("4.00"), D("4.10"), True)
-            action = intent.get("action")
+            action = intent.legs[0].action
             if action == "sell_to_close":      # LEX long sale (credit)
                 return (D("0.40"), D("0.40"), True)
             if action == "buy_to_close":       # manual/flatten close of a short (debit)
-                price = D(str(intent.get("price", "0.05")))
+                price = intent.price or D("0.05")
                 return (price, price, False)   # fills so the book actually goes flat
             return None
 

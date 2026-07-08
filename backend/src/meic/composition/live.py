@@ -66,6 +66,10 @@ class LiveComposition:
     async def _on_filled(self, entry_id: str, condor) -> None:
         await self.protect.protect(
             entry_id=entry_id, basis=self.stop_basis,
-            shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50")),
-                    ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"))],
-            total_net_credit=condor.mid_credit)
+            shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50"), strike=condor.put_short),
+                    ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"), strike=condor.call_short)],
+            total_net_credit=condor.mid_credit,
+            # ENT-04 (v1.44): each stop is sized to the condor it protects.
+            contracts=condor.contracts,
+            # 0DTE: the expiration IS today unless selection named one explicitly.
+            expiration=condor.expiration or self.clock.now().date())

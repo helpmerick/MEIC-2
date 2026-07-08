@@ -8,6 +8,7 @@ from pytest_bdd import given, scenarios, then, when
 from meic.application.watchdog import StopWatchdog
 from meic.domain.events import ShortStopped, WatchdogEscalated
 from tests.harness.fake_broker import FakeBroker, Scripted
+from tests.harness.intents import condor_intent, stop_intent
 
 scenarios("../features/TC-STP-17.feature")
 
@@ -59,7 +60,7 @@ def _(world):
     broker = FakeBroker()
     wd = StopWatchdog(broker=broker, alerts=RecordingAlerts(), events=[])
     # place the resting stop (stays WORKING/unfilled)
-    resting_id = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put"}))
+    resting_id = asyncio.run(broker.submit(stop_intent("PUT")))
     wd.resting_stop_ids[(ENTRY, SIDE)] = resting_id
     # 10s breach -> alert; another 10s (=20 total) -> escalate
     world["at10"] = wd.observe(entry_id=ENTRY, side=SIDE, mark=D("3.90"), trigger=TRIGGER,
@@ -67,7 +68,7 @@ def _(world):
     world["at20"] = wd.observe(entry_id=ENTRY, side=SIDE, mark=D("3.90"), trigger=TRIGGER,
                                seconds_since_last=D("10"), stop_filled=False, stale=False)
     if world["at20"] == "escalate":
-        asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.90"), ask=D("3.95")))
+        asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.90"), ask=D("3.95"), symbol="SPXW  260707P05990000"))
     world["wd"], world["broker"], world["resting_id"] = wd, broker, resting_id
 
 
@@ -81,8 +82,8 @@ def _(world):
 def _(world):
     assert world["at20"] == "escalate"
     orders = list(world["broker"]._orders.values())
-    marketable = [o for o in orders if o.intent.get("type") == "marketable_limit"
-                  and o.intent.get("action") == "buy_to_close"]
+    marketable = [o for o in orders if o.intent.order_type == "marketable_limit"
+                  and o.intent.legs[0].action == "buy_to_close"]
     assert len(marketable) == 1
     resting = world["broker"]._orders[world["resting_id"]]
     assert resting.status == "CANCELLED"
@@ -102,14 +103,14 @@ def _(world):
     wd = StopWatchdog(broker=broker, alerts=RecordingAlerts(), events=[])
     # resting stop submitted AND already filled (not in working orders) — the
     # stop won the race
-    resting_id = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put"}))
+    resting_id = asyncio.run(broker.submit(stop_intent("PUT")))
     broker.script_submit()  # (no-op guard)
     broker._orders[resting_id].status = "FILLED"  # the broker stop filled
     wd.resting_stop_ids[(ENTRY, SIDE)] = resting_id
     # drive to escalation threshold, then attempt escalation
     wd.observe(entry_id=ENTRY, side=SIDE, mark=D("3.90"), trigger=TRIGGER,
                seconds_since_last=D("20"), stop_filled=False, stale=False)
-    asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.90"), ask=D("3.95")))
+    asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.90"), ask=D("3.95"), symbol="SPXW  260707P05990000"))
     world["broker"], world["wd"] = broker, wd
 
 
@@ -117,9 +118,9 @@ def _(world):
 def _(world):
     # escalation submitted no marketable order; the resting stop is the single buy-back
     marketable = [o for o in world["broker"]._orders.values()
-                  if o.intent.get("type") == "marketable_limit"]
+                  if o.intent.order_type == "marketable_limit"]
     assert marketable == []
-    buybacks = [o for o in world["broker"]._orders.values() if o.intent.get("leg") == "short_put"]
+    buybacks = [o for o in world["broker"]._orders.values() if o.stop_leg_key == "short_put"]
     assert len(buybacks) == 1
     assert world["wd"].events == []  # no ShortStopped/escalation recorded
 
@@ -152,11 +153,11 @@ def _(world):
 def _():
     broker = FakeBroker()
     wd = StopWatchdog(broker=broker, alerts=RecordingAlerts(), events=[])
-    resting_id = asyncio.run(broker.submit({"type": "stop_market", "leg": "short_put"}))
+    resting_id = asyncio.run(broker.submit(stop_intent("PUT")))
     wd.resting_stop_ids[(ENTRY, SIDE)] = resting_id
     wd.observe(entry_id=ENTRY, side=SIDE, mark=D("3.92"), trigger=TRIGGER,
                seconds_since_last=D("20"), stop_filled=False, stale=False)
-    asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.92"), ask=D("3.97")))
+    asyncio.run(wd.escalate(entry_id=ENTRY, side=SIDE, mark_at_breach=D("3.92"), ask=D("3.97"), symbol="SPXW  260707P05990000"))
     rec = [e for e in wd.events if isinstance(e, WatchdogEscalated)]
     assert len(rec) == 1
     assert rec[0].mark_at_breach == D("3.92")

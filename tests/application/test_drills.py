@@ -7,6 +7,7 @@ from meic.application.drills import run_stop_independence_drill
 from meic.composition.paper import PaperComposition
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
+from tests.harness.intents import condor_intent, stop_intent
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 
@@ -18,8 +19,8 @@ def _comp():
 def test_drill_shows_stops_survived_with_unbroken_timestamps():
     comp = _comp()
     # two resting stops in place (as ProtectPosition would leave them)
-    asyncio.run(comp.broker.submit({"type": "stop_market", "entry_id": "e1", "leg": "short_put", "trigger": "3.80"}))
-    asyncio.run(comp.broker.submit({"type": "stop_market", "entry_id": "e1", "leg": "short_call", "trigger": "3.60"}))
+    asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id="e1")))
+    asyncio.run(comp.broker.submit(stop_intent("CALL", "3.60", entry_id="e1")))
 
     ev = asyncio.run(run_stop_independence_drill(comp.broker, outage_seconds=0))
 
@@ -38,8 +39,7 @@ def test_drill_survived_false_when_no_resting_stops():
 
 def test_drill_detects_a_stop_that_vanished_during_the_outage():
     comp = _comp()
-    oid = asyncio.run(comp.broker.submit(
-        {"type": "stop_market", "entry_id": "e1", "leg": "short_put", "trigger": "3.80"}))
+    oid = asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id="e1")))
     # a broker-side disappearance mid-outage would break the independence claim
     asyncio.run(comp.broker.cancel(oid))
     ev = asyncio.run(run_stop_independence_drill(comp.broker, outage_seconds=0))

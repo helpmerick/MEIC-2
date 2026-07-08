@@ -8,6 +8,7 @@ from pytest_bdd import given, scenarios, then, when
 
 from meic.application.partial_fill import resolve_balanced_partial
 from tests.harness.fake_broker import FakeBroker
+from tests.harness.intents import condor_intent
 
 scenarios("../features/TC-ENT-05.feature")
 
@@ -21,8 +22,7 @@ def world():
 def _(world):
     broker = FakeBroker()  # default: submits stay WORKING (never fill)
     world["broker"] = broker
-    world["order_id"] = asyncio.run(broker.submit(
-        {"kind": "iron_condor", "type": "limit", "net_credit": "4.00", "entry_id": "2026-07-06#2"}))
+    world["order_id"] = asyncio.run(broker.submit(condor_intent("4.00", entry_id="2026-07-06#2")))
     assert [o.order_id for o in asyncio.run(broker.working_orders())] == [world["order_id"]]
 
 

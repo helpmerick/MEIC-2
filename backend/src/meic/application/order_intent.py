@@ -65,6 +65,7 @@ class OrderIntent:
     expiration: date | None = None
     price: Decimal | None = None        # limit / marketable_limit / stop_limit
     stop_trigger: Decimal | None = None  # stop_market / stop_limit
+    replaced_from: str = ""         # DCY-04: the resting stop this one supersedes
 
     def __post_init__(self) -> None:
         if self.order_type not in ORDER_TYPES:
@@ -116,3 +117,71 @@ def condor_legs(*, put_short: Decimal, put_long: Decimal, call_short: Decimal,
         OrderLeg(right="C", action="sell_to_open", qty=contracts, strike=call_short),
         OrderLeg(right="C", action="buy_to_open", qty=contracts, strike=call_long),
     )
+
+
+def buy_to_close_leg(*, right: str, contracts: int, strike: Decimal | None = None,
+                     symbol: str | None = None) -> OrderLeg:
+    """The single leg every protective/closing order is built from."""
+    return OrderLeg(right=right, action="buy_to_close", qty=contracts, strike=strike, symbol=symbol)
+
+
+def protective_stop(
+    *,
+    entry_id: str,
+    right: str,
+    contracts: int,
+    trigger: Decimal,
+    strike: Decimal | None = None,
+    symbol: str | None = None,
+    underlying: str = "SPXW",
+    expiration: date | None = None,
+    idempotency_key: str = "",
+    replaced_from: str = "",
+    kind: str = "stop",
+) -> OrderIntent:
+    """STP-01/06: the broker-resting buy-to-close stop-market on ONE short.
+
+    Every service that rests a stop (ProtectPosition, the STP-03b watchdog, the
+    DCY re-protect, boot reconciliation) goes through here, so `qty == contracts`
+    and Day-TIF hold by construction rather than by four separate conventions.
+    """
+    return OrderIntent(
+        order_type="stop_market", tif="Day", contracts=contracts, kind=kind,
+        entry_id=entry_id, stop_trigger=trigger, underlying=underlying,
+        expiration=expiration, idempotency_key=idempotency_key, replaced_from=replaced_from,
+        legs=(buy_to_close_leg(right=right, contracts=contracts, strike=strike, symbol=symbol),),
+    )
+
+
+def marketable_close(
+    *,
+    entry_id: str,
+    right: str,
+    contracts: int,
+    price: Decimal,
+    strike: Decimal | None = None,
+    symbol: str | None = None,
+    underlying: str = "SPXW",
+    expiration: date | None = None,
+    idempotency_key: str = "",
+    kind: str = "close",
+) -> OrderIntent:
+    """A marketable buy-to-close on ONE leg (CLS-01 legs, STP-03b escalation,
+    DCY buy-back, LEX long recovery)."""
+    return OrderIntent(
+        order_type="marketable_limit", tif="Day", contracts=contracts, kind=kind,
+        entry_id=entry_id, price=price, underlying=underlying, expiration=expiration,
+        idempotency_key=idempotency_key,
+        legs=(buy_to_close_leg(right=right, contracts=contracts, strike=strike, symbol=symbol),),
+    )
+
+
+def right_of(side: str) -> str:
+    """`"PUT"`/`"short_put"` -> `"P"`. The old string-keyed leg names, translated
+    once, here — nowhere else."""
+    s = side.lower()
+    if "put" in s:
+        return "P"
+    if "call" in s:
+        return "C"
+    raise IntentError(f"cannot derive an option right from side {side!r}")

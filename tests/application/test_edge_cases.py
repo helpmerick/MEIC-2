@@ -71,7 +71,7 @@ def test_tc_tpf_04_close_cancels_stops_before_close_orders():
             return await self._f.cancel(oid)
 
         async def submit(self, intent):
-            calls.append(("submit", intent.get("leg")))
+            calls.append(("submit", intent.legs[0].right))
             return await self._f.submit(intent)
 
     broker, events = RecordingBroker(), []

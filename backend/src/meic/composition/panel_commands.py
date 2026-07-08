@@ -42,8 +42,8 @@ class PanelCommands:
         legs = [LiveLeg(f"{entry_id}:{s}", s, "short", -1) for s in open_sides]
         stop_ids = [
             o.order_id for o in await self._comp.broker.working_orders()
-            if getattr(o, "intent", {}).get("entry_id") == entry_id
-            and getattr(o, "intent", {}).get("type") == "stop_market"
+            if getattr(getattr(o, "intent", None), "entry_id", None) == entry_id
+            and getattr(getattr(o, "intent", None), "order_type", None) == "stop_market"
         ]
         await self._comp.close.close(
             entry_id, "manual", resting_stop_ids=stop_ids,

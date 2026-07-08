@@ -35,13 +35,13 @@ class DrillEvidence:
 def _snapshot_stops(orders) -> list[dict]:
     out = []
     for o in orders:
-        intent = getattr(o, "intent", {}) or {}
-        if intent.get("type") == "stop_market":
+        intent = getattr(o, "intent", None)
+        if getattr(intent, "order_type", None) == "stop_market":
             out.append({
                 "order_id": getattr(o, "order_id", None),
                 "received_at": getattr(o, "received_at", None),
-                "entry_id": intent.get("entry_id"),
-                "leg": intent.get("leg"),
+                "entry_id": intent.entry_id,
+                "leg": "short_put" if intent.legs[0].right == "P" else "short_call",
             })
     return out
 

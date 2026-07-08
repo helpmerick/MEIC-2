@@ -18,7 +18,7 @@ from tests.harness.fake_clock import ET
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 OPEN = datetime(2026, 7, 7, 9, 32, tzinfo=ET)
-IS_CONDOR = lambda o: isinstance(o, dict) and o.get("kind") == "iron_condor"
+IS_CONDOR = lambda o: o.kind == "iron_condor"
 
 
 class FastClock:

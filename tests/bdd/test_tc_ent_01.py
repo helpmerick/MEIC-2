@@ -53,7 +53,7 @@ def _(world):
 @then('a 4-leg condor limit order is submitted per ORD-01/ORD-02')
 def _(world):
     orders = list(world["broker"]._orders.values())
-    condor_orders = [o for o in orders if o.intent.get("legs") == 4 and o.intent.get("type") == "limit"]
+    condor_orders = [o for o in orders if len(o.intent.legs) == 4 and o.intent.order_type == "limit"]
     assert len(condor_orders) == 1
     assert world["outcome"].status == "FILLED"
 

@@ -6,11 +6,12 @@ import asyncio
 from decimal import Decimal as D
 
 from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker, spread_margin
+from tests.harness.intents import condor_intent
 
 
 def _fill_credit(order):
     """A real-market snapshot that trades through a credit entry limit."""
-    limit = D(str(order["net_credit"]))
+    limit = order.price
     return (limit, limit + D("0.05"), True)  # natural meets the limit -> fills
 
 
@@ -18,7 +19,7 @@ def test_tc_sim_03_entry_fill_posts_credit_minus_per_leg_fees():
     ledger = SimLedger(cash=D("100000"))
     b = SimulatedBroker(ledger, fee_per_leg=D("0.65"))
     b.set_market(_fill_credit)
-    asyncio.run(b.submit({"type": "limit", "legs": 4, "net_credit": "4.00", "entry_id": "e1"}))
+    asyncio.run(b.submit(condor_intent("4.00")))
     # credit 4.00 × 100 − (4 legs × 0.65) = 400.00 − 2.60
     assert ledger.cash == D("100397.40")
 
@@ -38,8 +39,7 @@ def test_tc_sim_03_insufficient_bp_skips_entry_rejected_bp():
     poor = SimLedger(cash=D("1000"))                    # cannot afford a 4600 margin
     b = SimulatedBroker(poor, fee_per_leg=D("0.65"))
     b.set_market(_fill_credit)
-    asyncio.run(b.submit({"type": "limit", "legs": 4, "net_credit": "4.00",
-                          "entry_id": "e1", "margin_req": "4600"}))
+    asyncio.run(b.submit(condor_intent("4.00")))
     assert poor.cash == D("1000")                       # never filled — cash untouched
     assert any(isinstance(e, dict) and e.get("reason") == "rejected_bp" for e in b.events)
 
@@ -47,8 +47,7 @@ def test_tc_sim_03_insufficient_bp_skips_entry_rejected_bp():
     rich = SimLedger(cash=D("100000"))
     b2 = SimulatedBroker(rich, fee_per_leg=D("0"))
     b2.set_market(_fill_credit)
-    asyncio.run(b2.submit({"type": "limit", "legs": 4, "net_credit": "4.00",
-                           "entry_id": "e1", "margin_req": "4600"}))
+    asyncio.run(b2.submit(condor_intent("4.00")))
     assert rich.buying_power == D("100000") + D("400") - D("4600")  # credit in, margin held
 
 

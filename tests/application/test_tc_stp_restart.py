@@ -15,7 +15,7 @@ class RecordingBroker:
         self.cancelled = []
 
     async def submit(self, order):
-        self.submitted.append(order["idempotency_key"])
+        self.submitted.append(order.idempotency_key)
         return f"ord-{len(self.submitted)}"
 
     async def cancel(self, id):
@@ -33,8 +33,8 @@ def test_tc_stp_05_crash_between_fill_and_stop_places_stops_idempotently():
     # neither short has a resting stop and neither filled -> place both (REC-04(3))
     plan = rec.plan(
         tracked_shorts=[
-            TrackedShort("e1", "PUT", "SPXW_P", stop_order_id=None, stop_filled=False),
-            TrackedShort("e1", "CALL", "SPXW_C", stop_order_id=None, stop_filled=False),
+            TrackedShort("e1", "PUT", "SPXW_P", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80")),
+            TrackedShort("e1", "CALL", "SPXW_C", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80")),
         ],
         broker_working_order_ids=set(),
         mid_lex_sides=[], stale_entry_order_ids=[],
@@ -52,7 +52,7 @@ def test_tc_stp_05_crash_between_fill_and_stop_places_stops_idempotently():
     plan2 = Reconcile(RecordingBroker(), events2).plan(
         tracked_shorts=[
             TrackedShort("e1", "PUT", "SPXW_P", stop_order_id="stopPUT", stop_filled=False),
-            TrackedShort("e1", "CALL", "SPXW_C", stop_order_id=None, stop_filled=False),
+            TrackedShort("e1", "CALL", "SPXW_C", stop_order_id=None, stop_filled=False, stop_trigger=D("3.80")),
         ],
         broker_working_order_ids={"stopPUT"},  # broker already holds the PUT stop
         mid_lex_sides=[], stale_entry_order_ids=[],

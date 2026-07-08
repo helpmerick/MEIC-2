@@ -16,6 +16,8 @@ from decimal import Decimal
 
 from meic.domain.events import EntryClosed, ShortStopped
 
+from .order_intent import OrderIntent, buy_to_close_leg, protective_stop, right_of
+
 
 @dataclass
 class DecayWatcher:
@@ -64,7 +66,8 @@ class DecayWatcher:
         return False
 
     # --- DCY-02 procedure (short-only close, initiator decay) ------------------
-    async def buyback(self, *, entry_id: str, side: str, resting_stop_id: str) -> str:
+    async def buyback(self, *, entry_id: str, side: str, resting_stop_id: str,
+                      symbol: str, contracts: int = 1) -> str:
         """Cancel the short's resting stop (ORD-08 classified), then place a
         limit buy-to-close at the trigger. If the cancel reveals the stop
         already FILLED, abort and signal the LEX path."""
@@ -72,10 +75,11 @@ class DecayWatcher:
         if isinstance(cancel, dict) and cancel.get("status") == "FILLED":
             return "STOP_FILLED_RUN_LEX"  # it was a real stop-out (DCY-02.1)
 
-        order_id = await self.broker.submit({
-            "action": "buy_to_close", "type": "limit", "tif": "Day",
-            "leg": f"short_{side.lower()}", "price": self.decay_buyback_trigger,
-            "entry_id": entry_id, "idempotency_key": f"decay:{entry_id}:{side}"})
+        order_id = await self.broker.submit(OrderIntent(
+            order_type="limit", tif="Day", kind="decay", entry_id=entry_id,
+            contracts=contracts, price=self.decay_buyback_trigger,
+            idempotency_key=f"decay:{entry_id}:{side}",
+            legs=(buy_to_close_leg(right=right_of(side), contracts=contracts, symbol=symbol),)))
         self._buyback_id = order_id
         return order_id
 
@@ -90,16 +94,22 @@ class DecayWatcher:
     # --- DCY-02.3 re-inflation guard ------------------------------------------
     async def reinflation_guard(
         self, *, entry_id: str, side: str, buyback_id: str, resting_stop_id: str,
-        current_ask: Decimal, unfilled: bool,
+        current_ask: Decimal, unfilled: bool, symbol: str, trigger: Decimal,
+        contracts: int = 1,
     ) -> str:
         """If the buyback is unfilled past the timeout OR the ask rose above
         the trigger: cancel the buyback and RE-PLACE the resting stop. Returns
-        the outcome. The re-placed stop id lets ProtectPosition/STP-04 confirm."""
+        the outcome. The re-placed stop id lets ProtectPosition/STP-04 confirm.
+
+        `trigger` is the short's ORIGINAL stop trigger — re-protecting restores
+        the stop that was cancelled, it does not invent a new one. (Before v1.44
+        this emitted a stop-market with no trigger at all, which no broker
+        accepts: the guard would have left the short unprotected.)"""
         if not unfilled and current_ask <= self.decay_buyback_trigger:
             return "BUYBACK_STILL_LIVE"
         await self.broker.cancel(buyback_id)
-        new_stop = await self.broker.submit({
-            "action": "buy_to_close", "type": "stop_market", "tif": "Day",
-            "leg": f"short_{side.lower()}", "entry_id": entry_id, "replaced_from": resting_stop_id,
-            "idempotency_key": f"reprotect:{entry_id}:{side}"})
+        new_stop = await self.broker.submit(protective_stop(
+            entry_id=entry_id, right=right_of(side), contracts=contracts,
+            trigger=trigger, symbol=symbol, replaced_from=resting_stop_id,
+            idempotency_key=f"reprotect:{entry_id}:{side}"))
         return f"REPROTECTED:{new_stop}"

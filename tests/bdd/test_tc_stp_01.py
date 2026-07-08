@@ -42,7 +42,7 @@ def world():
 def _run(world, basis, **kw):
     broker, events = FakeBroker(), []
     p = _protect(broker, events)
-    shorts = [ShortLeg("PUT", D("1.35"), D("0.15")), ShortLeg("CALL", D("1.25"), D("0.15"))]
+    shorts = [ShortLeg("PUT", D("1.35"), D("0.15"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("1.25"), D("0.15"), symbol="SPXW  260707C06060000")]
     result = asyncio.run(p.protect(entry_id="e1", basis=basis, shorts=shorts, **kw))
     world.update(broker=broker, events=events, triggers=result.triggers)
 
@@ -66,8 +66,8 @@ def _(world):
 def _(world):
     placed = asyncio.run(world["broker"].working_orders())
     assert len(placed) == 2
-    assert all(o.intent["action"] == "buy_to_close" and o.intent["type"] == "stop_market"
-               and o.intent["tif"] == "Day" for o in placed)
+    assert all(o.intent.legs[0].action == "buy_to_close" and o.intent.order_type == "stop_market"
+               and o.intent.tif == "Day" for o in placed)
 
 
 @then('each trigger price = floor_to_tick(0.95 * 2.30)   # -> 2.15, not 2.20')
@@ -80,7 +80,7 @@ def _(world):
 @then('no stop exists on either long leg   # STP-06')
 def _(world):
     placed = asyncio.run(world["broker"].working_orders())
-    assert all(o.intent["leg"].startswith("short_") for o in placed)
+    assert all(o.stop_leg_key.startswith("short_") for o in placed)
 
 
 # --- Scenario: outcome contract (the 400-dollar example) ---------------------
@@ -128,7 +128,7 @@ def _(world):
 def _(world):
     broker, events = FakeBroker(), []
     p = _protect(broker, events)
-    shorts = [ShortLeg("PUT", D("1.35"), D("9.99"))]  # perturb the long fill
+    shorts = [ShortLeg("PUT", D("1.35"), D("9.99"), symbol="SPXW  260707P05990000")]  # perturb the long fill
     r = asyncio.run(p.protect(entry_id="x", basis=StopBasis.SHORT_PREMIUM, shorts=shorts))
     assert r.triggers["PUT"] == world["triggers"]["PUT"]  # unchanged
 

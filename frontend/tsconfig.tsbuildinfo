@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/uselivebot.ts","./src/components/commandpanel.tsx","./src/components/dashboard.tsx","./src/components/dayreportview.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/uselivebot.ts","./src/usetheme.ts","./src/components/activityfeed.tsx","./src/components/commandpanel.tsx","./src/components/dashboard.tsx","./src/components/dayreportview.tsx","./src/components/entrycards.tsx"],"version":"5.9.3"}

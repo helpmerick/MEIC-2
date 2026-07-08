@@ -24,7 +24,7 @@ class RecordingBroker:
         self.close_keys = []
 
     async def submit(self, order):
-        self.close_keys.append(order.get("idempotency_key", ""))
+        self.close_keys.append(order.idempotency_key)
         return "ok"
 
     async def cancel(self, id):

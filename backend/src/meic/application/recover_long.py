@@ -19,6 +19,8 @@ from meic.domain.events import LongSaleRepriced, LongSaleStarted, LongSold, Side
 from meic.domain.ladder import RepriceLadder, lex_floor
 from meic.domain.ticks import TickTable
 
+from .order_intent import OrderIntent, OrderLeg, right_of
+
 
 @dataclass(frozen=True)
 class Quote:
@@ -81,9 +83,11 @@ class RecoverLong:
         order_id = None
         for rung in ladder.prices():
             tried.append(rung.price)
-            intent = {"action": "sell_to_close", "type": "limit", "tif": "Day",
-                      "symbol": long_symbol, "price": rung.price, "qty": qty,
-                      "idempotency_key": f"lex:{entry_id}:{side}"}
+            intent = OrderIntent(
+                order_type="limit", tif="Day", kind="lex", entry_id=entry_id,
+                contracts=qty, price=rung.price, idempotency_key=f"lex:{entry_id}:{side}",
+                legs=(OrderLeg(right=right_of(side), action="sell_to_close",
+                               qty=qty, symbol=long_symbol),))
             order_id = await self._broker.submit(intent) if order_id is None \
                 else await self._broker.replace(order_id, intent)
             self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt, price=rung.price))
@@ -97,10 +101,11 @@ class RecoverLong:
         return LexResult("FALLBACK_WORKING", tuple(tried))
 
     async def _fallback(self, entry_id, side, long_symbol, bid, qty) -> None:
-        await self._broker.submit({
-            "action": "sell_to_close", "type": "marketable_limit", "tif": "Day",
-            "symbol": long_symbol, "price": bid, "qty": qty,
-            "idempotency_key": f"lex-fallback:{entry_id}:{side}"})
+        await self._broker.submit(OrderIntent(
+            order_type="marketable_limit", tif="Day", kind="lex", entry_id=entry_id,
+            contracts=qty, price=bid, idempotency_key=f"lex-fallback:{entry_id}:{side}",
+            legs=(OrderLeg(right=right_of(side), action="sell_to_close",
+                           qty=qty, symbol=long_symbol),)))
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):

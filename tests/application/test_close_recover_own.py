@@ -67,7 +67,7 @@ class TestRecoverLong:
         assert r.outcome == "FALLBACK_WORKING"
         assert r.prices_tried == (D("2.15"), D("2.10"), D("2.05"), D("2.00"))
         # a marketable-limit fallback at the bid exists
-        assert any(o.intent.get("type") == "marketable_limit" and o.intent["price"] == D("2.00")
+        assert any(o.intent.order_type == "marketable_limit" and o.intent.price == D("2.00")
                    for o in broker._orders.values())
 
     def test_lex_sells_and_records_recovery_on_fill(self):

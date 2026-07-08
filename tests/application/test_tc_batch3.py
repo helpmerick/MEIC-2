@@ -49,7 +49,7 @@ def test_tc_lex_04_fallback_unfilled_keeps_retrying():
     r = asyncio.run(_lex(broker, events).recover(entry_id="e", side="PUT", long_symbol="P",
                                                  quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
     assert r.outcome == "FALLBACK_WORKING"
-    assert any(o.intent.get("type") == "marketable_limit" for o in broker._orders.values())
+    assert any(o.intent.order_type == "marketable_limit" for o in broker._orders.values())
 
 
 def test_tc_lex_05_always_sells_side_flat_after():
@@ -70,7 +70,7 @@ def test_tc_lex_08_zero_bid_long_rests_at_min_tick():
     r = asyncio.run(_lex(broker, events).recover(entry_id="e", side="PUT", long_symbol="P",
                                                  quote=Quote(bid=D("0.00"), ask=D("0.05")), intrinsic=D("0")))
     # ladder starts at the mid (0.025 -> rounds to a tick); never a raw market order
-    assert all(o.intent.get("type") in ("limit", "marketable_limit") for o in broker._orders.values())
+    assert all(o.intent.order_type in ("limit", "marketable_limit") for o in broker._orders.values())
 
 
 # --- OWN ---------------------------------------------------------------------
