@@ -61,12 +61,12 @@ class _Comp:
         self.execute = ExecuteEntryAttempt(broker, clock, self.events, SPX)
         self.protected: list[str] = []
 
-    async def _on_filled(self, entry_id, condor):
+    async def _on_filled(self, entry_id, condor, stop=None):
         self.protected.append(entry_id)
 
 
 def _runtime(comp, *, selector=None, gates=GATES_PASS, **kw):
-    async def default_selector(when, n):
+    async def default_selector(when, n, config=None):
         return _condor(n), None
 
     async def gates_provider():
@@ -150,7 +150,7 @@ def test_selector_returning_none_skips_with_its_reason_and_submits_nothing():
     broker = FakeBroker(); broker.autofill(IS_CONDOR)
     comp = _Comp(FastClock(OPEN), broker)
 
-    async def no_selection(when, n):
+    async def no_selection(when, n, config=None):
         return None, "incomplete_chain"
 
     filled = asyncio.run(_runtime(comp, selector=no_selection).run_day("2026-07-07", _times(2)))

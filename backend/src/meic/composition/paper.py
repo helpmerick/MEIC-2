@@ -54,11 +54,15 @@ class PaperComposition:
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
 
-    async def _on_filled(self, entry_id: str, condor) -> None:
+    async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
         """STP-01 hand-off: place the two resting stops for a filled condor.
         Shorts carry their fills; total_credit uses the entry's net credit."""
         await self.protect.protect(
-            entry_id=entry_id, basis=self.stop_basis,
+            entry_id=entry_id,
+            # doc 06 section 37: this row's stop settings, falling back to the globals.
+            basis=(stop.basis if stop else self.stop_basis),
+            pct=(stop.pct if stop else self.execute.default_stop.pct),
+            markup=(stop.markup if stop else self.execute.default_stop.markup),
             shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50"), strike=condor.put_short),
                     ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"), strike=condor.call_short)],
             total_net_credit=condor.mid_credit,

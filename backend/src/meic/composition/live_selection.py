@@ -31,6 +31,21 @@ class SelectionConfig:
     min_short_premium: Decimal = Decimal("1.00")
     min_total_credit: Decimal = Decimal("2.00")
     completeness_pct: Decimal = Decimal("90")
+    contracts: int = 1                        # ENT-04 (v1.44): this row's own size
+
+    @classmethod
+    def for_entry(cls, entry, *, completeness_pct: Decimal = Decimal("90")) -> "SelectionConfig":
+        """Build a per-ROW selection config from a ResolvedEntry (doc 06 §37).
+
+        Every one of these is a per-entry override, so selection MUST run against
+        the row's values — a row asking for a 30-wide wing at $2.00 must not be
+        selected against the global 50-wide/$3.00 defaults and then traded.
+        `completeness_pct` is not per-entry (it describes the chain, not the row).
+        """
+        return cls(target_premium=entry.target_premium, wing_width=entry.wing_width,
+                   min_short_premium=entry.min_short_premium,
+                   min_total_credit=entry.min_total_credit,
+                   completeness_pct=completeness_pct, contracts=entry.contracts)
 
 
 @dataclass
@@ -39,19 +54,21 @@ class LiveCondorSelector:
     config: SelectionConfig = SelectionConfig()
     occupancy_provider: Callable[[], Occupancy] = dict
 
-    def _side(self, chain: ChainSide, direction: Decimal):
-        c = self.config
+    def _side(self, chain: ChainSide, direction: Decimal, c: SelectionConfig):
         return select_side(chain, target_premium=c.target_premium, wing_width=c.wing_width,
                            otm_direction=direction, min_short_premium=c.min_short_premium)
 
-    def _resolve(self, sel: Selected, chain: ChainSide, direction: Decimal, occ: Occupancy):
+    def _resolve(self, sel: Selected, chain: ChainSide, direction: Decimal, occ: Occupancy,
+                 c: SelectionConfig):
         return resolve_collisions(
             short_strike=sel.short_strike, long_strike=sel.long_strike, occupancy=occ,
             listed_strikes_toward_otm=chain.strikes_toward_otm,
-            wing_width=self.config.wing_width, otm_direction=direction)
+            wing_width=c.wing_width, otm_direction=direction)
 
-    async def __call__(self, when: datetime, entry_number: int) -> tuple[Condor | None, str | None]:
-        c = self.config
+    async def __call__(self, when: datetime, entry_number: int,
+                       config: SelectionConfig | None = None) -> tuple[Condor | None, str | None]:
+        """`config` overrides the global one for THIS row (ENT-04 / doc 06 §37)."""
+        c = config or self.config
         snap = await self.snapshot_provider()
 
         if snap.stale:                                    # DAT-02: never trade stale data
@@ -62,8 +79,8 @@ class LiveCondorSelector:
             if not completeness_ok(chain, band_strikes=band, completeness_pct=c.completeness_pct):
                 return None, "incomplete_chain"
 
-        put = self._side(snap.put_side, Decimal(-1))
-        call = self._side(snap.call_side, Decimal(1))
+        put = self._side(snap.put_side, Decimal(-1), c)
+        call = self._side(snap.call_side, Decimal(1), c)
         for r in (put, call):
             if isinstance(r, Skip):
                 return None, r.reason
@@ -76,7 +93,7 @@ class LiveCondorSelector:
             ("put", put, snap.put_side, Decimal(-1)),
             ("call", call, snap.call_side, Decimal(1)),
         ):
-            resolved = self._resolve(sel, chain, direction, occ)
+            resolved = self._resolve(sel, chain, direction, occ, c)
             if isinstance(resolved, Abort):
                 return None, resolved.reason             # strike_collision
             legs[name] = resolved
@@ -110,4 +127,5 @@ class LiveCondorSelector:
             put_short_mid=mids["put_short"], call_short_mid=mids["call_short"],
             mid_credit=net_credit, min_total_credit=c.min_total_credit,
             expiration=when.date(),  # 0DTE
+            contracts=c.contracts,   # ENT-04 (v1.44): the ROW's size, not a global knob
         ), None

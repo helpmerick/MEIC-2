@@ -64,6 +64,21 @@ class Condor:
 
 
 @dataclass(frozen=True)
+class StopParams:
+    """The stop settings of ONE schedule row (doc 06 §37 per-entry overrides).
+
+    `stop_basis`, `stop_loss_pct` and `stop_rebate_markup` are per-entry since
+    v1.44, so they cannot live on the service — a row that overrides them must
+    have its OWN feasibility check (STP-02c) and its OWN stop triggers, or the
+    override would be silently ignored everywhere it mattered.
+    """
+
+    basis: StopBasis
+    pct: Decimal
+    markup: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
 class EntryOutcome:
     status: str            # "FILLED" | "SKIPPED"
     reason: str | None = None
@@ -108,6 +123,8 @@ class ExecuteEntryAttempt:
         self._markup = stop_rebate_markup
         self._min_distance = min_stop_distance_ticks
         self._underlying = underlying
+        # The GLOBAL stop settings, used by any row that overrides none of them.
+        self.default_stop = StopParams(stop_basis, stop_loss_pct, stop_rebate_markup)
 
     def _skip(self, day: str, n: int, reason: str) -> EntryOutcome:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
@@ -132,6 +149,7 @@ class ExecuteEntryAttempt:
         gates: GateSnapshot,
         risk: RiskSnapshot | None = None,
         bypass_window: bool = False,
+        stop: StopParams | None = None,
     ) -> EntryOutcome:
         """THE entry path. Scheduled entries and manual ENT-09 fires both come
         through here, and `bypass_window` is the ONLY thing a manual fire changes
@@ -157,11 +175,12 @@ class ExecuteEntryAttempt:
             if reason is not None:
                 return self._skip(day, n, reason)
 
-        # 4. STP-02c pre-entry feasibility (estimated trigger vs shorts)
+        # 4. STP-02c pre-entry feasibility, against THIS ROW's stop settings
+        s = stop or self.default_stop
         if not feasible(
-            self._basis, ticks=self._ticks,
+            s.basis, ticks=self._ticks,
             short_prices={"PUT": condor.put_short_mid, "CALL": condor.call_short_mid},
-            pct=self._pct, markup=self._markup, total_net_credit=condor.mid_credit,
+            pct=s.pct, markup=s.markup, total_net_credit=condor.mid_credit,
             min_distance_ticks=self._min_distance,
         ):
             return self._skip(day, n, "infeasible_stop")

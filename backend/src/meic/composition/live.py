@@ -63,9 +63,13 @@ class LiveComposition:
         await self.broker.connect(account_number)
         self.feed._session = self.broker._session  # share the authenticated session
 
-    async def _on_filled(self, entry_id: str, condor) -> None:
+    async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
         await self.protect.protect(
-            entry_id=entry_id, basis=self.stop_basis,
+            entry_id=entry_id,
+            # doc 06 section 37: this row's stop settings, falling back to the globals.
+            basis=(stop.basis if stop else self.stop_basis),
+            pct=(stop.pct if stop else self.execute.default_stop.pct),
+            markup=(stop.markup if stop else self.execute.default_stop.markup),
             shorts=[ShortLeg("PUT", condor.put_short_mid, Decimal("0.50"), strike=condor.put_short),
                     ShortLeg("CALL", condor.call_short_mid, Decimal("0.50"), strike=condor.call_short)],
             total_net_credit=condor.mid_credit,
