@@ -26,7 +26,7 @@ from meic.domain.events import (
 from meic.domain.stop_policy import StopBasis, clears, stop_trigger
 from meic.domain.ticks import TickTable
 
-from .order_intent import OrderIntent, protective_stop
+from .order_intent import OrderIntent, protective_stop, working_order_qty
 
 
 @dataclass(frozen=True)
@@ -140,36 +140,60 @@ class ProtectPosition:
                 underlying=underlying, expiration=expiration,
                 idempotency_key=f"stop:{entry_id}:{leg.side}",  # ORD-04
             )
-            if not await self._place_and_verify(entry_id, leg.side, triggers[leg.side], intent):
-                await self._go_unprotected(entry_id, leg.side)
+            placed = await self._place_and_verify(
+                entry_id, leg.side, triggers[leg.side], intent, contracts)
+            if placed is not True:
+                await self._go_unprotected(entry_id, leg.side, naked=placed or None)
                 return ProtectResult("UNPROTECTED_FLATTENED", triggers)
         return ProtectResult("PROTECTED", triggers)
 
     async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal,
-                                intent: OrderIntent) -> bool:
-        """STP-04: place, then confirm working; retry up to attempts."""
+                                intent: OrderIntent, contracts: int) -> bool | int:
+        """STP-04: place, then confirm working; retry up to attempts.
+
+        Returns True on confirmation, False if it never confirmed, or the NAKED
+        QUANTITY if it confirmed at the wrong size (STP-01 quantity invariant,
+        v1.45). A short-sized stop is not retried and never silently resized — it
+        is an UNPROTECTED condition immediately.
+        """
         for attempt in range(self._retry_attempts):
             try:
                 order_id = await self._broker.submit(intent)
             except Exception:
                 order_id = None
-            if order_id is not None and await self._confirmed(order_id):
-                self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger))
-                self._events.append(StopConfirmed(entry_id=entry_id, side=side))
-                return True
+            if order_id is not None:
+                qty = await self._confirmed_qty(order_id)
+                if qty == contracts:
+                    self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger))
+                    self._events.append(StopConfirmed(entry_id=entry_id, side=side))
+                    return True
+                if qty is not None:
+                    # STP-01: it IS working, at the wrong size. Retrying would rest a
+                    # second stop beside it; resizing it ourselves is forbidden.
+                    return contracts - qty      # the naked quantity
             if attempt < self._retry_attempts - 1:
                 await self._clock.wait_until(self._clock.now())  # advance-controlled retry gap
         return False
 
-    async def _confirmed(self, order_id: str) -> bool:
-        working = await self._broker.working_orders()
-        return any(getattr(o, "order_id", None) == order_id for o in working)
+    async def _confirmed_qty(self, order_id: str) -> int | None:
+        """The working stop's quantity, or None if it isn't working at all.
+        An unreadable quantity is 'unknown', which is NOT 'confirmed'."""
+        for o in await self._broker.working_orders():
+            if getattr(o, "order_id", None) == order_id:
+                return working_order_qty(o)
+        return None
 
-    async def _go_unprotected(self, entry_id: str, side: str) -> None:
-        """STP-04: retries exhausted — flatten per unprotected_action + alert.
-        A position is never knowingly left without a resting stop."""
+    async def _go_unprotected(self, entry_id: str, side: str, *, naked: int | None = None) -> None:
+        """STP-04: retries exhausted, or the stop confirmed at the wrong size
+        (STP-01) — flatten per unprotected_action + alert. A position is never
+        knowingly left without a resting stop that covers all of it."""
         self._events.append(SideUnprotected(entry_id=entry_id, side=side, action=self._unprotected_action))
-        self._alerts.alert("critical", "UNPROTECTED: stop placement failed, flattening",
-                           entry_id=entry_id, side=side, action=self._unprotected_action)
+        if naked is not None:
+            self._alerts.alert(
+                "critical", f"UNPROTECTED: stop quantity mismatch, {naked} contract(s) naked",
+                entry_id=entry_id, side=side, action=self._unprotected_action, naked_quantity=str(naked))
+        else:
+            self._alerts.alert("critical", "UNPROTECTED: stop placement failed, flattening",
+                               entry_id=entry_id, side=side, action=self._unprotected_action)
         if self._close_entry is not None:
             await self._close_entry(entry_id, "unprotected")

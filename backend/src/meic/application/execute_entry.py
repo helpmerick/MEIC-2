@@ -17,7 +17,7 @@ scheduling, the gate chain, the order ladder, and partial handling.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -26,7 +26,9 @@ from meic.domain.ladder import RepriceLadder
 from meic.domain.stop_policy import StopBasis, feasible
 from meic.domain.ticks import TickTable
 
-from .entry_gates import GateSnapshot, evaluate_gates
+from meic.domain.risk import worst_case_loss
+
+from .entry_gates import GateSnapshot, RiskSnapshot, evaluate_gates, evaluate_risk
 from .order_intent import OrderIntent, condor_legs
 
 
@@ -111,6 +113,16 @@ class ExecuteEntryAttempt:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
         return EntryOutcome("SKIPPED", reason)
 
+    @staticmethod
+    def worst_case(condor: Condor) -> Decimal:
+        """RSK-04: this condor's structural worst case, at its own size.
+
+        The wider wing governs: only one side can settle in the money, but we do
+        not get to choose which. Also what UI-22's confirmation dialog shows.
+        """
+        width = max(condor.put_short - condor.put_wing, condor.call_wing - condor.call_short)
+        return worst_case_loss(width, condor.mid_credit, contracts=condor.contracts)
+
     async def attempt(
         self,
         *,
@@ -118,11 +130,19 @@ class ExecuteEntryAttempt:
         scheduled: datetime,
         condor: Condor,
         gates: GateSnapshot,
+        risk: RiskSnapshot | None = None,
+        bypass_window: bool = False,
     ) -> EntryOutcome:
+        """THE entry path. Scheduled entries and manual ENT-09 fires both come
+        through here, and `bypass_window` is the ONLY thing a manual fire changes
+        (ENT-09: the window guards stale scheduled intent; a manual press is fresh
+        intent by definition). Every other rail below applies unreduced — which is
+        why RSK-04 lives here and not in a caller.
+        """
         n = condor.entry_number
 
-        # 1. ENT-02 window
-        if not within_window(self._clock.now(), scheduled, self._window):
+        # 1. ENT-02 window (the one rule ENT-09 may bypass)
+        if not bypass_window and not within_window(self._clock.now(), scheduled, self._window):
             return self._skip(day, n, "missed_window")
 
         # 2. ENT-03 gate chain
@@ -130,7 +150,14 @@ class ExecuteEntryAttempt:
         if reason is not None:
             return self._skip(day, n, reason)
 
-        # 3. STP-02c pre-entry feasibility (estimated trigger vs shorts)
+        # 3. RSK-08 order cap, then RSK-04 max exposure. Priced from THIS condor's
+        # own width/credit/contracts — never from a number a caller passed in.
+        if risk is not None:
+            reason = evaluate_risk(replace(risk, new_worst_case=self.worst_case(condor)))
+            if reason is not None:
+                return self._skip(day, n, reason)
+
+        # 4. STP-02c pre-entry feasibility (estimated trigger vs shorts)
         if not feasible(
             self._basis, ticks=self._ticks,
             short_prices={"PUT": condor.put_short_mid, "CALL": condor.call_short_mid},

@@ -170,9 +170,14 @@ class SimulatedBroker:
                                      received_at=datetime.now(timezone.utc).isoformat(),
                                      margin_held=margin_req)
 
-        # SIM-04: the ENT-03 BP gate strains against simulated capital exactly as
-        # live — if the ledger can't afford the opening condor's worst case the
-        # entry is rejected (rejected_bp), never filled.
+        # EC-ENT-07: the BROKER rejects an order it will not margin. This is the
+        # second of two distinct BP layers, and it is not a duplicate of the first:
+        #   ENT-03  `insufficient_bp` — the bot's own pre-trade gate, before submit
+        #   EC-ENT-07 `rejected_bp`   — the broker refuses anyway, after submit
+        # Live has both, so paper must too (SIM-05). The composition feeds
+        # `ledger.can_afford(...)` into GateSnapshot.buying_power_ok for the first;
+        # this is the second, and reaching it in paper means the gate let something
+        # through that real capital could not carry.
         if margin_req is not None and not self.ledger.can_afford(margin_req):
             self._orders[oid].status = "REJECTED"
             self.events.append({"type": "order_rejected", "reason": "rejected_bp",

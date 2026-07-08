@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from meic.domain.risk import exceeds_max_day_risk
+
 
 @dataclass(frozen=True)
 class GateSnapshot:
@@ -47,7 +49,52 @@ def evaluate_gates(s: GateSnapshot) -> str | None:
     if not s.session_valid:
         return "invalid_session"          # broker session
     if not s.buying_power_ok:
-        return "insufficient_bp"          # worst-case margin
+        # Coarse: is BP readable and the account unrestricted? The exact
+        # "sufficient for the worst-case margin of the NEW condor" comparison
+        # needs the condor, so it lives in evaluate_risk below — same rule, same
+        # reason, evaluated where the number is known.
+        return "insufficient_bp"
+    return None
+
+
+# --- the risk rails every entry crosses --------------------------------------
+# ENT-09 spells the full chain: "... session valid ∧ buying power ∧ order cap ∧
+# RSK-04". The first eight are evaluate_gates above; these are the last two.
+
+@dataclass(frozen=True)
+class RiskSnapshot:
+    """RSK-08 + RSK-04 inputs, evaluated on the SHARED entry path so a manual
+    ENT-09 fire crosses these rails identically to a scheduled one."""
+
+    new_worst_case: Decimal                       # (width − credit) × 100 × contracts
+    open_worst_cases: tuple[Decimal, ...] = ()    # one per already-open entry
+    max_day_risk: Decimal | None = None           # config; mandatory before live (doc 06 §169)
+    order_cap_allows_entry: bool = True           # RSK-08 (exit-side orders are never capped)
+    # ENT-03's BP gate is "buying power sufficient for worst-case margin OF THE NEW
+    # CONDOR" — a comparison, not a flag. GateSnapshot.buying_power_ok can only
+    # answer the coarse question (is BP readable, is the account unrestricted),
+    # because it is built before the condor is priced. The number lives here, where
+    # `new_worst_case` is. None = don't check (offline days / tests).
+    buying_power: Decimal | None = None
+    # In paper this is the SimLedger's BP (SIM-04: the gate strains against
+    # simulated capital exactly as live); in live, derivative_buying_power.
+
+
+def evaluate_risk(r: RiskSnapshot) -> str | None:
+    """Return the first failing risk rail's skip reason, or None.
+
+    Order per ENT-09: "... session valid ∧ buying power ∧ order cap ∧ RSK-04".
+    RSK-04 goes last because it is the only rail needing the whole day's exposure.
+    `max_day_risk` is mandatory before live mode can be enabled (doc 06 §169), so
+    None here means paper/tests — never "unlimited in production".
+    """
+    if r.buying_power is not None and r.buying_power < r.new_worst_case:
+        return "insufficient_bp"          # ENT-03 pre-trade; EC-ENT-07 is the broker's own
+    if not r.order_cap_allows_entry:
+        return "order_cap"                # RSK-08 daily order-count rail
+    if r.max_day_risk is not None and exceeds_max_day_risk(
+            list(r.open_worst_cases), r.new_worst_case, r.max_day_risk):
+        return "max_day_risk"             # RSK-04 — Σ(per-entry worst cases) + this one
     return None
 
 

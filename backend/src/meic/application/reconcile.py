@@ -42,6 +42,7 @@ class TrackedShort:
     # crashed before ever placing one (EC-STP-02).
     stop_trigger: Decimal | None = None
     contracts: int = 1                         # ENT-04: size the re-placed stop to the position
+    stop_resized_by_operator: bool = False     # OWN-10/11: operator intent, never overridden
 
 
 @dataclass
@@ -58,6 +59,9 @@ class RecoveryPlan:
     # an order for a specific instrument at a specific trigger — recovery cannot
     # re-place one from a bare (entry_id, side) pair.
     stop_specs: dict[tuple[str, str], TrackedShort] = field(default_factory=dict)
+    # STP-01 (v1.45): working stops whose quantity no longer covers their short.
+    # (entry_id, side, working_qty, required_qty). Handled as UNPROTECTED (STP-04).
+    quantity_mismatches: list[tuple[str, str, int, int]] = field(default_factory=list)
 
     @property
     def blocks_entries(self) -> bool:
@@ -79,6 +83,7 @@ class Reconcile:
         mid_lex_sides: list[tuple[str, str]],
         stale_entry_order_ids: list[str],
         position_mismatches: list[str] | None = None,
+        working_stop_quantities: dict[str, int] | None = None,  # STP-01 (v1.45)
     ) -> RecoveryPlan:
         p = RecoveryPlan()
         for s in tracked_shorts:
@@ -90,7 +95,20 @@ class Reconcile:
                         (s.entry_id, s.side, s.stop_fill_price, slippage))
                 p.run_lex.append((s.entry_id, s.side))
             elif s.stop_order_id in broker_working_order_ids:
-                pass  # covered — re-attach to the resting stop, no new order (REC-03)
+                # REC-03: covered — re-attach to the resting stop, no new order.
+                # STP-01 (v1.45): unless it is working at the WRONG SIZE. A stop
+                # smaller than the short it protects is silent nakedness, so it is
+                # an UNPROTECTED condition (STP-04) — or operator intent (OWN-10) if
+                # the operator resized it. Either way the bot never resizes it itself.
+                working_qty = working_stop_quantities.get(s.stop_order_id) if working_stop_quantities else None
+                if working_qty is not None and working_qty != s.contracts:
+                    if s.stop_resized_by_operator:      # OWN-11/OWN-10: operator intent
+                        p.user_unprotected.append((s.entry_id, s.side))
+                    else:
+                        p.quantity_mismatches.append((s.entry_id, s.side, working_qty, s.contracts))
+                        p.mismatches.append(
+                            f"stop {s.stop_order_id} for {s.entry_id}/{s.side} covers {working_qty} "
+                            f"of {s.contracts} contracts — {s.contracts - working_qty} naked")
             elif s.stop_cancelled_by_operator:  # REC-04(2): operator intent, stand down
                 p.user_unprotected.append((s.entry_id, s.side))
             else:  # REC-04(3): genuinely unprotected — re-place

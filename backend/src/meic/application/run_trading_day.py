@@ -19,9 +19,11 @@ from datetime import datetime
 from decimal import Decimal
 
 from meic.domain.events import DayArmed, DayCompleted, EntrySkipped
+from meic.domain.projection import fold
+from meic.domain.risk import OrderCap
 
 from .execute_entry import Condor, ExecuteEntryAttempt
-from .entry_gates import GateSnapshot
+from .entry_gates import GateSnapshot, RiskSnapshot
 from .persistent_state import PersistentState
 
 
@@ -42,6 +44,9 @@ class RunTradingDay:
         market_gates: GateSnapshot | None = None,
         max_entries_per_day: int | None = None,
         on_filled=None,
+        max_day_risk: Decimal | None = None,
+        order_cap: OrderCap | None = None,
+        buying_power=None,   # () -> Decimal: SimLedger.buying_power in paper, broker in live
     ) -> None:
         self._clock = clock
         self._state = state
@@ -55,6 +60,28 @@ class RunTradingDay:
             market_open=True, market_halted=False, data_fresh=True, session_valid=True,
             buying_power_ok=True)
         self._max = max_entries_per_day
+        self._max_day_risk = max_day_risk          # RSK-04; mandatory before live (doc 06 §169)
+        self._order_cap = order_cap                # RSK-08
+        self._buying_power = buying_power          # ENT-03 BP, compared to THIS condor's margin
+        self._worst_case: dict[str, Decimal] = {}  # entry_id -> its structural worst case
+
+    def _risk(self, day: str) -> RiskSnapshot:
+        """RSK-08 + RSK-04 inputs. Only entries still OPEN count toward exposure —
+        a closed condor can no longer lose anything, so the event log (not a
+        running total) decides who is still on the books.
+
+        `new_worst_case` is a placeholder: ExecuteEntryAttempt re-prices it from
+        the condor itself, so no caller can under-report the risk of its own entry.
+        """
+        open_ids = {eid for eid, e in fold(self._events).entries.items() if not e.close_initiator}
+        return RiskSnapshot(
+            new_worst_case=Decimal("0"),
+            open_worst_cases=tuple(wc for eid, wc in self._worst_case.items() if eid in open_ids),
+            max_day_risk=self._max_day_risk,
+            order_cap_allows_entry=(self._order_cap is None
+                                    or self._order_cap.allow(exit_priority=False)),
+            buying_power=self._buying_power() if self._buying_power is not None else None,
+        )
 
     def _gates(self) -> GateSnapshot:
         """ENT-03 snapshot: durable states from PersistentState, market/session
@@ -87,10 +114,15 @@ class RunTradingDay:
                 self._events.append(EntrySkipped(date=day, entry_number=n, reason="max_entries"))
                 continue
             outcome = await self._execute.attempt(
-                day=day, scheduled=entry.when, condor=entry.condor, gates=self._gates())
+                day=day, scheduled=entry.when, condor=entry.condor,
+                gates=self._gates(), risk=self._risk(day))
             if outcome.status == "FILLED":
                 filled += 1
+                entry_id = f"{day}#{n}"
+                # RSK-04: this entry is now on the books; its worst case counts
+                # against max_day_risk for every entry that follows.
+                self._worst_case[entry_id] = self._execute.worst_case(entry.condor)
                 if self._on_filled is not None:  # ProtectPosition hand-off (STP-01)
-                    await self._on_filled(f"{day}#{n}", entry.condor)
+                    await self._on_filled(entry_id, entry.condor)
         self._events.append(DayCompleted(date=day))
         return filled

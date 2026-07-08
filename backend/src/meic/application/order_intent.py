@@ -176,6 +176,27 @@ def marketable_close(
     )
 
 
+def working_order_qty(order) -> int | None:
+    """The quantity a broker's WORKING order actually carries.
+
+    STP-01 (v1.45) makes stop qty == short filled qty spec law, and the check has
+    to work against whatever a BrokerGateway hands back: our SimOrder/FakeOrder
+    (which carry the OrderIntent) and the SDK's PlacedOrder (which carries legs).
+    Returns None when the shape is unreadable — the caller must treat "unknown"
+    as "cannot confirm", never as "fine".
+    """
+    intent = getattr(order, "intent", None)
+    if intent is not None and hasattr(intent, "contracts"):
+        return int(intent.contracts)
+    legs = getattr(order, "legs", None)
+    if legs:
+        try:
+            return int(max(abs(Decimal(str(getattr(leg, "quantity", 0)))) for leg in legs))
+        except Exception:  # noqa: BLE001 — an unreadable quantity is "unknown"
+            return None
+    return None
+
+
 def right_of(side: str) -> str:
     """`"PUT"`/`"short_put"` -> `"P"`. The old string-keyed leg names, translated
     once, here — nowhere else."""
