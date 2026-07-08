@@ -28,6 +28,17 @@ class Ownership(str, Enum):
 class OwnershipLedger:
     _owned: dict[str, int] = field(default_factory=dict)
 
+    def snapshot(self) -> dict[str, int]:
+        """REC-07 item 9: the OWN ledger is durable state — serialize it."""
+        return dict(self._owned)
+
+    @classmethod
+    def restore(cls, snapshot: dict | None) -> "OwnershipLedger":
+        """Rebuild from durable state on boot. An empty/absent snapshot means a
+        fresh ledger — so every broker position is FOREIGN until the bot's own
+        fills say otherwise (the safe direction)."""
+        return cls(_owned={str(k): int(v) for k, v in (snapshot or {}).items()})
+
     def apply_fill(self, symbol: str, signed_qty: int) -> None:
         """Record a fill on the bot's OWN order (OWN-01). Operator/manual
         trades never call this — they never enter the ledger."""

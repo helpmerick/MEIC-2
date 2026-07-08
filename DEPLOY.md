@@ -68,8 +68,27 @@ command line or source**. Keys by environment:
 - CERT (default, `MEIC_LIVE_IS_TEST=true`): `TT_CERT_PROVIDER_SECRET`,
   `TT_CERT_REFRESH_TOKEN`, optional `TT_CERT_ACCOUNT`.
 - PRODUCTION (`MEIC_LIVE_IS_TEST=false`): `TT_PROD_PROVIDER_SECRET`,
-  `TT_PROD_REFRESH_TOKEN`, optional `TT_PROD_ACCOUNT`. The cert wiring refuses a
-  non-cert token locally before any network call; production is opt-in.
+  `TT_PROD_REFRESH_TOKEN`, optional `TT_PROD_ACCOUNT`.
+
+**Real money needs TWO deliberate switches, never one.** Alongside
+`MEIC_LIVE_IS_TEST=false` you must set `MEIC_ALLOW_PRODUCTION=I_UNDERSTAND_REAL_MONEY`,
+or the wiring refuses to build. The guards are symmetric and run before any
+network call: the cert wiring refuses a production token, and the production
+wiring refuses a cert token (a mis-slotted token fails loudly, not at auth time).
+
+**Reconcile-on-boot.** On connect the bot adopts broker truth (REC-02/04): any
+position its durable OWN ledger cannot account for is **FOREIGN** — quarantined
+(never stopped, closed or counted, even a naked short), critical-alerted, and it
+**blocks new entries** until you resolve it. See `GET /reconcile`, `/alerts`,
+`/broker/health`. A fresh bot on an account with existing positions will
+therefore refuse to trade — by design.
+
+**Trading runtime.** `LiveRuntime` drives the wall-clock entry cadence (warm-up
+at T-60, the ENT-03 gate chain, plus reconcile-block and clock-drift blocks). It
+takes a **required** `selector` and `market_gates` — there are no optimistic
+defaults, so it cannot fire an entry until real chain selection and real market
+gates are wired. Wiring and verifying those against live data is the remaining
+step before a live trading day.
 
 Go-live order: pass the STP-05a cert drill (`pytest -m contract`) → run cert
 `live_app` for a track record → run the UC-12 outage drill on your account →

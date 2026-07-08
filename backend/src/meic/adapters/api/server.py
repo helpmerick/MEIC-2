@@ -27,6 +27,10 @@ from meic.domain.ticks import TickRung, TickTable
 SPX = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")), TickRung(None, Decimal("0.10"))))
 ROOT = Path(__file__).resolve().parents[5]
 
+# Wiring PRODUCTION (real money) requires this exact second opt-in alongside
+# MEIC_LIVE_IS_TEST=false. One flipped env var must never be enough.
+PRODUCTION_OPT_IN = "I_UNDERSTAND_REAL_MONEY"
+
 
 def _read_env() -> dict[str, str]:
     """Load .env (gitignored, BOM-tolerant per NFR-05), then overlay os.environ."""
@@ -40,6 +44,23 @@ def _read_env() -> dict[str, str]:
                 env[k.strip()] = v.strip()
     env.update(os.environ)
     return env
+
+
+class _PanelAlerts:
+    """AlertSink that keeps critical alerts where the operator can see them
+    (RSK-06). A live bot must never swallow a critical alert into /dev/null."""
+
+    def __init__(self, cap: int = 100) -> None:
+        self._alerts: list[dict] = []
+        self._cap = cap
+
+    def alert(self, level: str, message: str, **context) -> None:
+        self._alerts.append({"level": level, "message": message,
+                             "context": {k: str(v) for k, v in context.items()}})
+        del self._alerts[: -self._cap]
+
+    def recent(self) -> list[dict]:
+        return list(reversed(self._alerts))
 
 
 def _serve_panel(app) -> None:
@@ -104,6 +125,14 @@ def live_app():
     if not token:
         raise RuntimeError("live panel requires MEIC_API_TOKEN (NFR-06) — set it in .env/env")
 
+    # Real money needs a SECOND, deliberate opt-in: flipping one env var must not
+    # be enough. The adapter separately asserts the token's issuer is production.
+    if not is_test and env.get("MEIC_ALLOW_PRODUCTION") != PRODUCTION_OPT_IN:
+        raise RuntimeError(
+            "REFUSING to wire PRODUCTION (real money): set "
+            f"MEIC_ALLOW_PRODUCTION={PRODUCTION_OPT_IN} to confirm, in addition to "
+            "MEIC_LIVE_IS_TEST=false. Two deliberate switches, never one.")
+
     kind = "CERT" if is_test else "PROD"
     secret = env.get(f"TT_{kind}_PROVIDER_SECRET")
     refresh = env.get(f"TT_{kind}_REFRESH_TOKEN")
@@ -121,6 +150,20 @@ def live_app():
     app.state.composition = comp
     app.state.broker_connected = False
     app.state.broker_error = None
+    app.state.reconcile = None
+    alerts = _PanelAlerts()
+    app.state.alerts = alerts
+    comp.alerts = alerts  # critical alerts must reach the operator, not /dev/null
+
+    async def _boot_reconcile() -> None:
+        """REC-02/04: adopt broker truth before any trading is possible. Anything
+        the bot's durable ledger cannot account for is FOREIGN -> quarantined and
+        entries stay blocked until the operator resolves it."""
+        from meic.application.reconcile_boot import reconcile_on_boot
+
+        result = await reconcile_on_boot(
+            broker=comp.broker, events=comp.events, state=comp.state, alerts=alerts)
+        app.state.reconcile = result
 
     @app.on_event("startup")
     async def _connect() -> None:
@@ -129,16 +172,18 @@ def live_app():
         try:
             await comp.connect(account)
             app.state.broker_connected = True
+            await _boot_reconcile()
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
 
     @app.post("/broker/connect")
     async def broker_connect() -> dict:
-        """Retry the broker session (mutating -> token-gated by the middleware)."""
+        """Retry the broker session + boot reconcile (token-gated by middleware)."""
         try:
             await comp.connect(account)
             app.state.broker_connected = True
             app.state.broker_error = None
+            await _boot_reconcile()
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False
             app.state.broker_error = repr(exc)
@@ -146,7 +191,23 @@ def live_app():
 
     @app.get("/broker/health")
     def broker_health() -> dict:
-        return {"connected": app.state.broker_connected, "error": app.state.broker_error}
+        from meic.application.reconcile_boot import entries_blocked_by_reconcile
+        return {"connected": app.state.broker_connected, "error": app.state.broker_error,
+                "entries_blocked_by_reconcile": entries_blocked_by_reconcile(comp.events)}
+
+    @app.get("/reconcile")
+    def reconcile_status() -> dict:
+        r = app.state.reconcile
+        if r is None:
+            return {"ran": False}
+        return {"ran": True, "adopted": r.adopted, "foreign": r.foreign,
+                "shortfall": r.shortfall, "stops_placed": [list(s) for s in r.stops_placed],
+                "lex_resumed": [list(s) for s in r.lex_resumed],
+                "mismatches": r.mismatches, "entries_blocked": r.entries_blocked}
+
+    @app.get("/alerts")
+    def recent_alerts() -> list[dict]:
+        return alerts.recent()
 
     _serve_panel(app)
     return app
