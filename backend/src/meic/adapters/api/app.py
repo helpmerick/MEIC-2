@@ -22,6 +22,41 @@ from meic.config.stop_basis import StopBasisRejected
 from meic.domain.projection import day_report, fold
 
 
+_LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _is_loopback(host_header: str) -> bool:
+    """True iff the Host names this machine's loopback interface (port ignored)."""
+    host = host_header.rsplit(":", 1)[0] if host_header.count(":") == 1 else host_header
+    return host.lower() in _LOOPBACK
+
+
+def origin_allowed(origin: str | None, *, scheme: str, host: str, panel_origin: str) -> bool:
+    """NFR-06 (2): a mutating request's Origin must be the panel's OWN host.
+
+    A hostile page can fire requests at localhost from inside the operator's
+    browser, so a foreign Origin is refused. But the panel is served BY this app,
+    which means the request's own origin IS the panel's own host — including the
+    port. Comparing against a portless constant refused the panel's own Save
+    button while letting nothing else through: security theatre that only ever
+    fired on the legitimate user.
+
+    Allowed:
+      * no Origin at all — not a browser (the documented curl fallback, UI-09/17)
+      * the configured `panel_origin`, exactly (a reverse proxy, say)
+      * this request's own origin, provided the Host is loopback
+
+    The loopback condition is what stops DNS rebinding: an attacker who resolves
+    their own domain to 127.0.0.1 sends Origin == Host, but that Host is theirs,
+    not loopback, so it is refused.
+    """
+    if origin is None:
+        return True
+    if origin == panel_origin:
+        return True
+    return origin == f"{scheme}://{host}" and _is_loopback(host)
+
+
 def _describe(ev: Any) -> dict[str, str] | None:
     """Turn a domain event into one activity-feed line (icon, label, entry,
     detail). Presentation only — the UI renders whatever it's given."""
@@ -75,8 +110,10 @@ def create_app(
         mutating = request.method in ("POST", "PUT", "DELETE", "PATCH")
         if mutating:
             # NFR-06 (2): reject a foreign Origin even on localhost
-            origin = request.headers.get("origin")
-            if origin is not None and origin != panel_origin:
+            if not origin_allowed(request.headers.get("origin"),
+                                  scheme=request.url.scheme,
+                                  host=request.headers.get("host", ""),
+                                  panel_origin=panel_origin):
                 return JSONResponse({"detail": "foreign_origin"}, status_code=403)
             # NFR-06 (3): when a token is set, mutating requests must carry it
             if api_token and request.headers.get("x-api-token") != api_token:
@@ -105,8 +142,10 @@ def create_app(
         """Read-model delta stream (doc 05 §8). NFR-06: refuse a WS upgrade
         with a foreign Origin. Pushes a snapshot on connect and on each client
         ping; the client renders whatever it receives (no logic client-side)."""
-        origin = sock.headers.get("origin")
-        if origin is not None and origin != panel_origin:
+        if not origin_allowed(sock.headers.get("origin"),
+                              scheme=sock.url.scheme.replace("ws", "http"),
+                              host=sock.headers.get("host", ""),
+                              panel_origin=panel_origin):
             await sock.close(code=1008)  # policy violation
             return
         await sock.accept()

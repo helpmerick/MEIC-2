@@ -116,3 +116,67 @@ def test_arm_disarm_and_report_endpoints():
     assert client.get("/state").json()["blocking_state"] == "STOP_TRADING"
     rpt = client.get("/report").json()
     assert set(rpt) >= {"entries_filled", "day_pnl", "stops_hit", "skips"}
+
+
+# --- NFR-06 (2): "the panel's OWN host" includes its port ----------------------
+
+def test_tc_nfr_06_the_panels_own_origin_including_its_port_is_allowed():
+    """The bug: panel_origin defaulted to a PORTLESS "http://127.0.0.1", so the
+    browser's own "http://127.0.0.1:8010" was refused as foreign. Every mutating
+    request from the panel -- Save, Arm, Stop Trading, Close, Flatten, Fire --
+    came back 403 foreign_origin. Security theatre that only fired on the
+    legitimate user."""
+    from meic.adapters.api.app import origin_allowed
+
+    panel = "http://127.0.0.1"          # the old portless default
+    for host in ("127.0.0.1:8010", "127.0.0.1:8000", "localhost:5173", "127.0.0.1"):
+        assert origin_allowed(f"http://{host}", scheme="http", host=host, panel_origin=panel)
+
+
+def test_tc_nfr_06_a_foreign_origin_is_still_refused():
+    from meic.adapters.api.app import origin_allowed
+
+    for evil in ("https://evil.example", "http://127.0.0.1.evil.example",
+                 "http://evil.example:8010", "null"):
+        assert not origin_allowed(evil, scheme="http", host="127.0.0.1:8010",
+                                  panel_origin="http://127.0.0.1")
+
+
+def test_tc_nfr_06_dns_rebinding_cannot_launder_a_foreign_origin():
+    """An attacker who points their own domain at 127.0.0.1 sends Origin == Host.
+    The Host is theirs, not loopback, so same-origin does NOT save them. This is
+    exactly why the rule is `origin == own origin AND host is loopback`."""
+    from meic.adapters.api.app import origin_allowed
+
+    assert not origin_allowed("http://evil.example:8010", scheme="http",
+                              host="evil.example:8010", panel_origin="http://127.0.0.1")
+
+
+def test_tc_nfr_06_a_request_with_no_origin_is_not_a_browser():
+    """The documented curl fallback (UI-09/17) sends no Origin. It is still
+    token-gated whenever a token is set -- that check is separate."""
+    from meic.adapters.api.app import origin_allowed
+
+    assert origin_allowed(None, scheme="http", host="127.0.0.1:8010",
+                          panel_origin="http://127.0.0.1")
+
+
+def test_tc_nfr_06_an_explicitly_configured_panel_origin_still_wins():
+    """A reverse proxy fronting the panel is named exactly, and needs no loopback."""
+    from meic.adapters.api.app import origin_allowed
+
+    assert origin_allowed("https://panel.internal", scheme="http",
+                          host="10.0.0.5:8000", panel_origin="https://panel.internal")
+
+
+def test_tc_nfr_06_save_from_the_browsers_own_origin_succeeds():
+    """End to end through the middleware, at the port the panel actually runs on."""
+    client, _state, _events = _client()
+    origin = "http://127.0.0.1:8010"
+    r = client.post("/schedule", json={"rows": [{"time": "10:00"}], "max_day_risk": "20000"},
+                    headers={"origin": origin, "host": "127.0.0.1:8010"})
+    assert r.status_code == 200 and r.json()["config_version"] == "v1"
+
+    evil = client.post("/schedule", json={"rows": [{"time": "10:00"}]},
+                       headers={"origin": "https://evil.example", "host": "127.0.0.1:8010"})
+    assert evil.status_code == 403 and evil.json()["detail"] == "foreign_origin"
