@@ -347,6 +347,29 @@ Scenario: Submit timeout does not cause duplicate orders
 
 **TC-ORD-05** — EC-ENT-07/08: BP rejection skips with lockout after 2 consecutive; other rejection retried once then skipped.
 
+**TC-ORD-07** — ORD-09 broker-truth leg identity (v1.45)
+```gherkin
+Scenario: Fill events record broker-reported symbols and allocations
+  Given a condor fill is confirmed by the broker
+  Then the fill event records, for each of the 4 legs, the broker-reported OCC symbol and allocated price
+  And the recorded symbols are byte-identical to the broker payload
+
+Scenario: Every later order action uses the recorded symbol
+  Given a recorded fill with leg symbols
+  When a stop, LEX sell, decay buyback, close, or flatten order is built for a leg
+  Then the order's instrument symbol is the recorded one
+  And no code path reconstructs the symbol from strike and expiry at action time
+
+Scenario: Reconstruction only ever cross-checks
+  Given a recorded symbol that disagrees with reconstruction from the condor's strikes
+  Then an alert is raised naming both values
+  And the recorded symbol is still the one used
+
+Scenario: Paper records simulator symbols identically
+  Given a paper-mode fill
+  Then the fill event carries simulator-assigned leg symbols in the same fields
+```
+
 ## Stops
 
 **TC-STP-01** — STP-01/STP-02
@@ -381,13 +404,26 @@ Scenario: Stops placed immediately on fill (per_side basis)
 
 **TC-STP-03** — STP-02 intraday change / EC-STP-07: pct changed 95→150 (and basis per_side→total_credit) after entry 1 ⇒ entry 1 stops unchanged, entry 2 uses the new values.
 
-**TC-STP-04** — STP-04/EC-STP-01
+**TC-STP-04** — STP-04/EC-STP-01, STP-01 quantity invariant (v1.45)
 ```gherkin
 Scenario: Unconfirmed stop escalates to UNPROTECTED handling
   Given the broker rejects stop placement stop_retry_attempts times
   Then the affected side is flattened per unprotected_action
   And a critical alert is raised
   And total unprotected time <= stop_retry_seconds * stop_retry_attempts
+
+Scenario: Stop quantity must equal the short position it protects
+  Given an entry filled with contracts = 2
+  When a stop is confirmed working with quantity 1
+  Then the mismatch is detected at placement confirmation
+  And the condition is handled as UNPROTECTED per STP-04
+  And a critical alert names the naked quantity
+
+Scenario: Reconcile catches a quantity mismatch that arose later
+  Given a working stop whose quantity no longer equals the short leg's ledger quantity
+  When reconcile runs
+  Then the entry is treated as UNPROTECTED (or OWN-10 if operator-resized)
+  And the bot never silently resizes the stop itself
 ```
 
 **TC-STP-05** — EC-STP-02 crash between fill and stop placement: restart ⇒ REC-04 places stops; assert idempotency (no duplicates if one stop had actually been accepted).
@@ -966,6 +1002,7 @@ Scenario: Decision moment - give up safely
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
+| ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |
 | RSK-01a/01b | TC-FLT-01/02/03 | | UI-17/20 / UC-15 | TC-FLT-01/03 |
 | OWN-01→11 | TC-OWN-01→10 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
