@@ -13,7 +13,6 @@ post-fill infeasible path routes the close through an injected close callback
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 from typing import Awaitable, Callable, Iterable
 
@@ -29,29 +28,38 @@ from meic.domain.ticks import TickTable
 from .order_intent import OrderIntent, protective_stop, working_order_qty
 
 
+class LegsUnrecorded(ValueError):
+    """ORD-09: the broker never reported this fill's legs, so no order can name
+    the instrument. A hard refusal - the bot does not invent a symbol, and it does
+    not reconstruct one from strikes at action time."""
+
+
 @dataclass(frozen=True)
 class ShortLeg:
-    """A filled short, carrying the identity needed to protect it.
+    """A filled short, carrying the BROKER-REPORTED identity needed to protect it.
 
-    A stop must name the *instrument* it closes. Identity is mandatory, and is
-    exactly one of `strike` (our own selection — the ACL resolves symbology,
-    doc 05 §121) or `symbol` (broker-sourced, already resolved). Before v1.44
-    this carried only `side`, so no stop could be translated into a real order.
+    ORD-09 (v1.45/v1.46, operator-ratified hard refusal): a stop names the symbol
+    the broker said it filled — read from the fill event via LegBook. There is no
+    strike fallback. Reconstructing a symbol here would be action-time symbology,
+    which ORD-09 prohibits: it re-runs the math on every use, and if it disagrees
+    with the broker we would rest a stop on an instrument the broker never filled.
+
+    A fill whose legs were never recorded is `legs_unrecorded` — refused loudly,
+    never guessed around.
     """
 
     side: str            # "PUT" | "CALL"
     fill: Decimal        # actual short fill (STP-02 uses actual fills)
     long_fill: Decimal   # allocated long fill (per_side basis only)
-    strike: Decimal | None = None
-    symbol: str | None = None
+    symbol: str = ""     # ORD-09: broker-reported, mandatory
 
     def __post_init__(self) -> None:
         if self.side not in ("PUT", "CALL"):
             raise ValueError(f"side must be PUT or CALL, got {self.side!r}")
-        if (self.strike is None) == (self.symbol is None):
-            raise ValueError(
-                f"short {self.side} needs exactly one of `strike` or `symbol` — a stop "
-                "with no instrument identity cannot be placed")
+        if not self.symbol:
+            raise LegsUnrecorded(
+                f"short {self.side} has no broker-reported symbol (ORD-09): a stop cannot "
+                "be placed on an instrument the broker never told us it filled")
 
     @property
     def right(self) -> str:
@@ -110,8 +118,6 @@ class ProtectPosition:
         markup: Decimal = Decimal("0"),
         total_net_credit: Decimal | None = None,
         contracts: int = 1,
-        expiration: date | None = None,
-        underlying: str = "SPXW",
     ) -> ProtectResult:
         """`contracts` (v1.44, ENT-04) sizes each stop at the position it
         protects — a 2-contract condor gets 2-contract stops."""
@@ -136,8 +142,7 @@ class ProtectPosition:
         for leg in shorts:
             intent = protective_stop(
                 entry_id=entry_id, right=leg.right, contracts=contracts,
-                trigger=triggers[leg.side], strike=leg.strike, symbol=leg.symbol,
-                underlying=underlying, expiration=expiration,
+                trigger=triggers[leg.side], symbol=leg.symbol,   # ORD-09: recorded, not derived
                 idempotency_key=f"stop:{entry_id}:{leg.side}",  # ORD-04
             )
             placed = await self._place_and_verify(

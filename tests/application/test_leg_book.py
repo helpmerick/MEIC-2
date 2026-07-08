@@ -84,3 +84,49 @@ def test_crosscheck_reports_rather_than_raises_on_an_unrepresentable_strike():
                                       underlying="SPXW", expiration=EXP,
                                       strikes={("P", "short"): D("5990.00001")})
     assert len(problems) == 1 and "cannot reconstruct" in problems[0]
+
+
+# --- ORD-09 hard refusal (v1.46, operator-ratified) ---------------------------
+
+def test_protect_position_refuses_a_short_with_no_broker_symbol():
+    """A stop must name the instrument the BROKER filled. There is no strike
+    fallback: reconstructing here is action-time symbology, which ORD-09
+    prohibits, and a stop resting on an instrument the broker never filled
+    protects nothing."""
+    import pytest
+    from meic.application.protect_position import LegsUnrecorded, ShortLeg
+
+    with pytest.raises(LegsUnrecorded, match="no broker-reported symbol"):
+        ShortLeg("PUT", D("3.00"), D("0.50"))                 # nothing at all
+
+    with pytest.raises(LegsUnrecorded, match="ORD-09"):
+        ShortLeg("PUT", D("3.00"), D("0.50"), symbol="")      # empty is not identity
+
+    ok = ShortLeg("PUT", D("3.00"), D("0.50"), symbol=PUT_SHORT)
+    assert ok.symbol == PUT_SHORT and ok.right == "P"
+
+
+def test_short_leg_no_longer_accepts_a_strike():
+    """The strike field is gone: there is nothing left to reconstruct from."""
+    import pytest
+    from meic.application.protect_position import ShortLeg
+
+    with pytest.raises(TypeError):
+        ShortLeg("PUT", D("3.00"), D("0.50"), strike=D("5990"))
+
+
+def test_a_fill_with_unrecorded_legs_refuses_to_protect_rather_than_guess():
+    """End to end: the composition raises LegsUnrecorded instead of inventing."""
+    import pytest
+    from meic.application.protect_position import LegsUnrecorded
+
+    class _Comp:
+        events = [CondorFilled(entry_id="d#1", net_credit=D("4.00"))]  # ORD-09 legs absent
+        from meic.composition.paper import PaperComposition as _P
+        _shorts = _P._shorts
+
+    class _Condor:
+        put_short_mid, call_short_mid = D("3.00"), D("2.00")
+
+    with pytest.raises(LegsUnrecorded, match="expected 2"):
+        _Comp()._shorts("d#1", _Condor())

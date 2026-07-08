@@ -23,7 +23,7 @@ from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
 from meic.application.event_log import EventLog
 from meic.application.leg_book import LegBook
-from meic.application.protect_position import ProtectPosition, ShortLeg
+from meic.application.protect_position import LegsUnrecorded, ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
 from meic.domain.stop_policy import StopBasis
@@ -60,19 +60,17 @@ class PaperComposition:
     def _shorts(self, entry_id: str, condor) -> list[ShortLeg]:
         """ORD-09: the stops name the symbols the BROKER reported filling.
 
-        Falls back to the selected strikes only when the broker reported no legs
-        (an offline/legacy fill). Reconstruction at action time is exactly what
-        ORD-09 forbids as a source, so the recorded symbol always wins when present.
+        No strike fallback (v1.46, operator-ratified hard refusal). If the broker
+        recorded no legs we raise rather than reconstruct a symbol at action time:
+        a stop resting on an instrument the broker never filled protects nothing.
         """
         book = LegBook.from_events(self.events)
-        out = []
-        for side, mid, strike in (("PUT", condor.put_short_mid, condor.put_short),
-                                  ("CALL", condor.call_short_mid, condor.call_short)):
-            symbol = book.symbol(entry_id, side, "short")
-            out.append(ShortLeg(side, mid, Decimal("0.50"),
-                                symbol=symbol) if symbol else
-                       ShortLeg(side, mid, Decimal("0.50"), strike=strike))
-        return out
+        shorts = book.shorts(entry_id)
+        if len(shorts) != 2:
+            raise LegsUnrecorded(
+                f"{entry_id}: broker reported {len(shorts)} short leg(s), expected 2 (ORD-09)")
+        mids = {"PUT": condor.put_short_mid, "CALL": condor.call_short_mid}
+        return [ShortLeg(l.side, mids[l.side], Decimal("0.50"), symbol=l.symbol) for l in shorts]
 
     async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
         """STP-01 hand-off: place the two resting stops for a filled condor.
@@ -86,9 +84,7 @@ class PaperComposition:
             shorts=self._shorts(entry_id, condor),
             total_net_credit=condor.mid_credit,
             # ENT-04 (v1.44): each stop is sized to the condor it protects.
-            contracts=condor.contracts,
-            # 0DTE: the expiration IS today unless selection named one explicitly.
-            expiration=condor.expiration or self.clock.now().date())
+            contracts=condor.contracts)
 
     def compose_and_arm(self, entry_times: list[str]) -> None:
         """Operator composes the standing schedule and arms (ENT-01a/01b)."""

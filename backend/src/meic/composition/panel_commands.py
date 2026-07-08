@@ -26,8 +26,30 @@ def _open_sides(e: EntryProjection) -> list[str]:
 
 
 class PanelCommands:
-    def __init__(self, comp) -> None:
+    def __init__(self, comp, manual_entry=None, preflight_checks=None) -> None:
         self._comp = comp
+        self._manual = manual_entry               # ENT-09; None => the ▶ button is inert
+        self.preflight_checks = preflight_checks  # UC-02 checklist providers
+
+    # --- ENT-09 manual fire (UI-22) ---------------------------------------------
+    def can_fire(self) -> bool:
+        """UI-22: ▶ is enabled only while all three trade-enabling states permit
+        entries. A wiring-less panel can never fire."""
+        return self._manual is not None and self._manual.can_fire()
+
+    def fire_preview(self, entry_number: int, row):
+        if self._manual is None:
+            raise RuntimeError("manual entry is not wired (ENT-09)")
+        # The press id is minted here and echoed back on confirm, so the OK dialog
+        # confirms the press it was opened for — a double-click cannot become two.
+        press_id = f"fire:{entry_number}:{self._comp.clock.now().isoformat()}"
+        return self._manual.preview(press_id, entry_number, row)
+
+    async def fire(self, *, press_id: str, entry_number: int, row, confirmed: bool) -> dict:
+        if self._manual is None:
+            return {"result": "unavailable", "reason": "manual entry not wired (ENT-09)"}
+        return await self._manual.fire(press_id=press_id, entry_number=entry_number,
+                                       row=row, confirmed=confirmed)
 
     async def close(self, entry_id: str) -> dict:
         """Close one entry via CLS (manual). No-op if it is already closed —

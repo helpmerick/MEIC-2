@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import JSONResponse
 
 from meic.application.persistent_state import PersistentState
+from meic.application.preflight import run_preflight
+from meic.application.schedule_service import ScheduleService
 from meic.config.validation import ConfigRejected, validate_config
 from meic.config.stop_basis import StopBasisRejected
 from meic.domain.projection import day_report, fold
@@ -155,13 +157,52 @@ def create_app(
         feed = [f for f in feed if f is not None]
         return list(reversed(feed))[:25]
 
+    # --- UC-02 schedule composition -------------------------------------------
+    schedule = ScheduleService(state)
+
+    def _preflight():
+        checks = getattr(commands, "preflight_checks", None) or {}
+        ok = lambda: (True, "")
+        return run_preflight(
+            schedule_service=schedule,
+            reconcile_clear=checks.get("reconcile", ok),
+            clock_ok=checks.get("clock", ok),
+            config_ok=checks.get("config", ok),
+            market_data_ok=checks.get("market_data", ok),
+            # doc 06 s169: max_day_risk is mandatory before live can be enabled.
+            require_max_day_risk=(state.trading_mode == "live"),
+        )
+
+    @app.get("/schedule")
+    def get_schedule() -> dict[str, Any]:
+        """The composed rows with their worst-case ESTIMATES, the max_day_risk
+        ceiling, and the headroom — so adding a row visibly eats headroom (v1.46)."""
+        return schedule.view().to_dict()
+
+    @app.post("/schedule")
+    def save_schedule(body: dict[str, Any]) -> dict[str, Any]:
+        """UC-02: validate -> version -> persist. Every error, not just the first.
+        An invalid schedule is never written: a half-saved one could arm on restart."""
+        out = schedule.save(body.get("rows", []), max_day_risk=body.get("max_day_risk"))
+        if out["result"] == "invalid":
+            raise HTTPException(status_code=422, detail=out)
+        return out
+
+    @app.get("/preflight")
+    def get_preflight() -> dict[str, Any]:
+        """UC-02: the arm checklist, pass/fail per item, in the spec's order."""
+        return _preflight().to_dict()
+
     # --- commands (mutating; secured above) -----------------------------------
     @app.post("/arm")
     def arm() -> dict[str, Any]:
-        if not state.entry_schedule:  # ENT-01a: arming an empty schedule is rejected
-            raise HTTPException(status_code=400, detail="no_entries_composed")
+        # ENT-01a: arming requires >= 1 composed, LEGAL entry. The pre-flight runs
+        # the whole UC-02 sequence; arm only if every item passed.
+        pre = _preflight()
+        if not pre.passed:
+            raise HTTPException(status_code=400, detail=pre.to_dict())
         state.armed = True
-        return get_state()
+        return {**get_state(), "preflight": pre.to_dict()}
 
     @app.post("/disarm")
     def disarm() -> dict[str, Any]:
@@ -189,6 +230,34 @@ def create_app(
 
     # --- trade actions (UC-14/UI-16) — only when a command surface is wired ----
     if commands is not None:
+        @app.get("/entry/{n}/fire-preview")
+        def fire_preview(n: int) -> dict[str, Any]:
+            """UI-22: what the OK dialog shows — the row's parameters and the
+            worst-case ESTIMATE, labelled. No strikes exist yet, so the true number
+            cannot be known here; RSK-04 re-prices at fire time and may still veto."""
+            rows = schedule.resolved()
+            if not 1 <= n <= len(rows):
+                raise HTTPException(status_code=404, detail="unknown_entry")
+            preview = commands.fire_preview(n, rows[n - 1])
+            return {**preview.to_dict(), "can_fire": commands.can_fire()}
+
+        @app.post("/entry/{n}/fire")
+        async def fire_entry(n: int, body: dict[str, Any]) -> dict[str, Any]:
+            """ENT-09: manual fire. Bypasses ONLY the ENT-02 window; the full
+            ENT-03 chain, RSK-08 and RSK-04 run inside the identical pipeline.
+
+            `press_id` makes a double-click exactly one attempt; `confirmed` is the
+            simple OK acknowledgement (UI-22 — never a typed phrase), required in
+            BOTH paper and live."""
+            rows = schedule.resolved()
+            if not 1 <= n <= len(rows):
+                raise HTTPException(status_code=404, detail="unknown_entry")
+            press_id = str(body.get("press_id", "")).strip()
+            if not press_id:
+                raise HTTPException(status_code=400, detail="press_id_required")
+            return await commands.fire(press_id=press_id, entry_number=n,
+                                       row=rows[n - 1], confirmed=bool(body.get("confirmed")))
+
         @app.post("/close/{entry_id}")
         async def close_entry(entry_id: str) -> dict[str, Any]:
             """CLS-02: close one entry instantly via CLS (initiator manual).

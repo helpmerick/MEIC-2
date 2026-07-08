@@ -184,6 +184,9 @@ class CondorFilled(Event):
     fee: Decimal = Decimal("0")  # entry fees, all four legs (PNL-01)
     short_premium: Decimal = Decimal("0")  # gross premium on the shorts (UI-14 label)
     legs: tuple[FilledLeg, ...] = ()  # ORD-09: broker-reported identity + allocations
+    # ENT-09: how this entry came to be. "schedule" | "manual_entry". Reports tag
+    # manual actions (UC-08); the default keeps every pre-v1.44 log entry replayable.
+    initiator: str = "schedule"
 
 
 @dataclass(frozen=True)

@@ -153,6 +153,7 @@ class ExecuteEntryAttempt:
         risk: RiskSnapshot | None = None,
         bypass_window: bool = False,
         stop: StopParams | None = None,
+        initiator: str = "schedule",
     ) -> EntryOutcome:
         """THE entry path. Scheduled entries and manual ENT-09 fires both come
         through here, and `bypass_window` is the ONLY thing a manual fire changes
@@ -194,9 +195,10 @@ class ExecuteEntryAttempt:
             entry_id=entry_id, put_short=condor.put_short, call_short=condor.call_short))
 
         # 4. ORD-01/02/03 — one 4-leg limit, repriced down to the floor
-        return await self._work_order(day, n, entry_id, condor)
+        return await self._work_order(day, n, entry_id, condor, initiator)
 
-    async def _work_order(self, day, n, entry_id, condor: Condor) -> EntryOutcome:
+    async def _work_order(self, day, n, entry_id, condor: Condor,
+                          initiator: str = "schedule") -> EntryOutcome:
         ladder = RepriceLadder(
             start=condor.mid_credit, ticks=self._ticks,
             attempts=self._reprice_attempts, floor=condor.min_total_credit)
@@ -229,7 +231,8 @@ class ExecuteEntryAttempt:
                 fill_credit = step.price
                 legs = await self._fill_legs(working_id, condor, expiration)
                 self._events.append(CondorFilled(
-                    entry_id=entry_id, net_credit=fill_credit, legs=legs))
+                    entry_id=entry_id, net_credit=fill_credit, legs=legs,
+                    initiator=initiator))   # ENT-09 / UC-08 tagging
                 return EntryOutcome("FILLED", fill_credit=fill_credit)
             await self._clock.wait_until(self._clock.now())  # advance-controlled reprice gap
 

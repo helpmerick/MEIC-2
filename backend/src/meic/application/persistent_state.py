@@ -31,6 +31,11 @@ _DEFAULTS: dict[str, Any] = {
     "trading_mode": "paper",  # (4) DAY-05
     "entry_schedule": [],     # (5) standing schedule + per-entry params
     "config_version": None,   # (6) active config version
+    # RSK-04 ceiling. Lives on the schedule panel beside the composed day total
+    # (v1.46), so adding a row visibly eats headroom. Doc 06 s169 makes it
+    # mandatory before live mode can be enabled -- None is paper/unconfigured,
+    # never "unlimited".
+    "max_day_risk": None,
     "tpf_floors": {},         # (7) armed TPF floors (TPF-08), per entry_id
     "own_ledger": {},         # (9) OWN ledger + SUSPENDED/quarantine states
     "paper_cash_ledger": None,  # (10) paper cash ledger + sim positions
@@ -103,6 +108,14 @@ class PersistentState:
     @config_version.setter
     def config_version(self, v: Any) -> None:
         self._set("config_version", v)
+
+    @property
+    def max_day_risk(self) -> Any:
+        return self._get("max_day_risk")
+
+    @max_day_risk.setter
+    def max_day_risk(self, v: Any) -> None:
+        self._set("max_day_risk", v)
 
     @property
     def tpf_floors(self) -> dict[str, Any]:
