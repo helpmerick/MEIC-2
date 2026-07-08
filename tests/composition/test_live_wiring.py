@@ -24,7 +24,7 @@ from meic.application.persistent_state import PersistentState
 from meic.application.schedule_service import ScheduleService
 from meic.composition.live_runtime import LiveRuntime, ScheduledRow
 from meic.composition.live_wiring import (
-    ClockDrift,
+    BrokerClockProbe,
     CountingBroker,
     build_live_runtime,
     build_manual_entry,
@@ -246,8 +246,18 @@ def test_the_manual_fire_reads_the_same_ceiling_and_the_same_open_exposure():
 
 # --- UC-02: the pre-flight checks are real --------------------------------------
 
+def _probe(drift_ms=0.0):
+    """A BrokerClockProbe holding one fresh reading `drift_ms` behind the broker.
+    server time = local - drift, so record() computes exactly `drift_ms`."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 7, 8, 15, 0, tzinfo=timezone.utc)
+    pr = BrokerClockProbe(now=lambda: now)
+    pr.record(now - timedelta(milliseconds=drift_ms), local_time=now)
+    return pr
+
+
 def _checks(comp, *, fresh=True, drift_ms=0.0):
-    return live_preflight_checks(comp, data_fresh=lambda: fresh, drift=ClockDrift(drift_ms))
+    return live_preflight_checks(comp, data_fresh=lambda: fresh, drift=_probe(drift_ms))
 
 
 def test_the_preflight_checks_are_real_not_trivially_passing():
@@ -265,9 +275,9 @@ def test_an_unresolved_reconciliation_mismatch_blocks_the_arm():
 
 
 def test_clock_drift_beyond_tolerance_blocks_the_arm():
-    ok, detail = _checks(_Comp(), drift_ms=400.0)["clock"]()
+    ok, detail = _checks(_Comp(), drift_ms=3000.0)["clock"]()   # > 2000ms default
     assert ok is False and "RSK-07" in detail
-    assert _checks(_Comp(), drift_ms=-100.0)["clock"]()[0] is True   # inside tolerance
+    assert _checks(_Comp(), drift_ms=-500.0)["clock"]()[0] is True   # inside tolerance
 
 
 def test_stale_chain_data_blocks_the_arm():
@@ -288,28 +298,55 @@ def test_an_unmeasured_clock_is_unverified_and_blocks_the_arm():
     measures drift here, so wiring `lambda: 0.0` would assert a perfect clock
     forever — a rail that can never fire, which is worse than no rail because the
     pre-flight would tick green."""
-    drift = ClockDrift()                       # nobody measured it
+    drift = BrokerClockProbe()                 # no reading recorded
     assert drift.verified is False
     assert drift.ms() == float("inf")          # blocks, never passes
 
     checks = live_preflight_checks(_Comp(), data_fresh=lambda: True, drift=drift)
     ok, detail = checks["clock"]()
-    assert ok is False and "DAY-03" in detail and "MEIC_CLOCK_DRIFT_MS" in detail
+    assert ok is False and "DAY-03" in detail
+
+
+def test_a_stale_reading_is_unverified_and_blocks_the_arm():
+    """v1.48: the latest reading older than 300 s counts as unmeasured -- the probe
+    may have silently stopped landing."""
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 7, 8, 15, 0, tzinfo=timezone.utc)
+    clock = {"now": t0}
+    drift = BrokerClockProbe(now=lambda: clock["now"])
+    drift.record(t0, local_time=t0)             # 0 ms drift, fresh
+    assert drift.verified is True and drift.ms() == 0.0
+
+    clock["now"] = t0 + timedelta(seconds=301)  # the probe went quiet
+    assert drift.verified is False and drift.ms() == float("inf")
+
+
+def test_an_unreadable_date_header_clears_the_reading():
+    """server_time() returns None when the broker sends no Date header (or the
+    probe fails). That must not leave a stale value looking fresh."""
+    from datetime import datetime, timezone
+    t0 = datetime(2026, 7, 8, 15, 0, tzinfo=timezone.utc)
+    drift = BrokerClockProbe(now=lambda: t0)
+    drift.record(t0, local_time=t0)
+    assert drift.verified is True
+    drift.record(None)                          # no header this probe
+    assert drift.verified is False and drift.ms() == float("inf")
 
 
 def test_an_unverified_clock_blocks_every_entry_in_the_runtime():
     from meic.application.entry_gates import clock_drift_blocks_entry
 
-    runtime = _runtime(_Comp())                # no drift supplied
+    runtime = _runtime(_Comp())                # no probe reading yet
     assert clock_drift_blocks_entry(drift_ms=runtime.measure_drift_ms(),
                                     max_drift_ms=runtime.max_clock_drift_ms) is True
 
 
-def test_an_operator_measured_drift_inside_tolerance_passes():
-    runtime = _runtime(_Comp(), drift=ClockDrift(37.0))
-    assert runtime.measure_drift_ms() == 37.0
+def test_a_probed_drift_inside_tolerance_passes():
+    probe = _probe(500.0)                       # 500ms, under the 2000ms default
+    runtime = _runtime(_Comp(), drift=probe)
+    assert runtime.measure_drift_ms() == 500.0
     assert live_preflight_checks(_Comp(), data_fresh=lambda: True,
-                                 drift=ClockDrift(37.0))["clock"]()[0] is True
+                                 drift=probe)["clock"]()[0] is True
 
 
 # --- ENT-09: the manual fire honours the reconcile block and clock drift --------
@@ -321,7 +358,7 @@ def test_the_manual_fire_is_blocked_by_an_unresolved_reconcile_mismatch():
     _runtime(comp)
     comp.events.append(ReconciliationMismatch(detail="position mismatch"))
     manual = build_manual_entry(comp, selector=_selector, market_gates=_gates,
-                                drift=ClockDrift(0.0))
+                                drift=_probe(0.0))
     assert manual._blocks() == "reconcile_pending"
 
 
@@ -329,17 +366,17 @@ def test_the_manual_fire_is_blocked_by_clock_drift():
     comp = _Comp()
     _runtime(comp)
     assert build_manual_entry(comp, selector=_selector, market_gates=_gates,
-                              drift=ClockDrift(400.0))._blocks() == "clock_drift"
+                              drift=_probe(3000.0))._blocks() == "clock_drift"
     # ... and by an UNVERIFIED clock, which reads as infinite drift
     assert build_manual_entry(comp, selector=_selector, market_gates=_gates,
-                              drift=ClockDrift())._blocks() == "clock_drift"
+                              drift=BrokerClockProbe())._blocks() == "clock_drift"
 
 
 def test_a_clear_manual_fire_has_no_block():
     comp = _Comp()
     _runtime(comp)
     assert build_manual_entry(comp, selector=_selector, market_gates=_gates,
-                              drift=ClockDrift(10.0))._blocks() is None
+                              drift=_probe(10.0))._blocks() is None
 
 
 def test_preflight_predicates_are_synchronous():

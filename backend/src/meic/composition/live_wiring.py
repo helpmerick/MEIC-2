@@ -35,33 +35,65 @@ DEFAULT_DAILY_ORDER_CAP = 380
 DEFAULT_ORDER_CAP_BUFFER = 10
 
 
-class ClockDrift:
-    """DAY-03: "The system clock MUST be verified against an authoritative source
-    at startup; drift > max_clock_drift_ms blocks trading (RSK-07)."
+#: DAY-03 (v1.48): a reading older than this is stale — unverified, blocked.
+CLOCK_READING_MAX_AGE_S = 300
 
-    Nothing in this codebase measures drift. Wiring `lambda: 0.0` would assert the
-    clock is perfect forever — a rail that can never fire, which is worse than no
-    rail because the pre-flight would tick green.
 
-    So UNMEASURED means UNVERIFIED means BLOCKED: `ms` returns infinity, every
-    entry skips `clock_drift`, and the UC-02 pre-flight fails with the reason. The
-    operator supplies a real measurement (`w32tm /stripchart`, `chronyc tracking`,
-    `ntpdate -q`) via MEIC_CLOCK_DRIFT_MS. An HTTP `Date` header cannot serve: it
-    has one-second resolution against a 250 ms tolerance.
+class BrokerClockProbe:
+    """DAY-03 (v1.48, option B): drift measured against the BROKER's `Date` header.
 
-    A proper NTP probe is a new dependency and needs operator ratification.
+    The clock that governs entry windows and cutoffs is the broker's, not ours, so
+    that is the one to check against. The authenticated session probe already runs
+    every ~60 s (NFR-02); each response carries a `Date` header, so drift is
+    measured continuously with no new dependency and no new network path. Header
+    resolution is ~1 s, hence the 2000 ms default threshold.
+
+    UNMEASURED = UNVERIFIED = BLOCKED, and staleness counts as unmeasured:
+      * no reading yet (startup, or the probe can't reach the broker) -> ms() = inf
+      * latest reading older than 300 s -> ms() = inf
+    Either way every entry skips `clock_drift` and the pre-flight names it. Wiring
+    a constant `0.0` would be a rail that can never fire; blocking on absence is the
+    only safe default when the probe is the source of truth.
+
+    `now` is injected so staleness is testable without wall-clock sleeps.
     """
 
-    def __init__(self, measured_ms: float | None = None) -> None:
-        self.measured_ms = measured_ms
+    def __init__(self, now: Callable[[], datetime] | None = None,
+                 max_age_s: float = CLOCK_READING_MAX_AGE_S) -> None:
+        self._now = now or _utcnow
+        self._max_age_s = max_age_s
+        self._drift_ms: float | None = None
+        self._read_at: datetime | None = None
+
+    def record(self, server_time: datetime | None, local_time: datetime | None = None) -> None:
+        """Fold in one probe reading. `server_time` None (no `Date` header) clears
+        the reading — an unreadable probe must not leave a stale value looking
+        fresh."""
+        if server_time is None:
+            self._drift_ms = None
+            self._read_at = None
+            return
+        local = local_time or self._now()
+        self._drift_ms = (local - server_time).total_seconds() * 1000.0
+        self._read_at = local
 
     @property
     def verified(self) -> bool:
-        return self.measured_ms is not None
+        return self.ms() != float("inf")
 
     def ms(self) -> float:
-        """Drift in ms. Unverified reads as infinite: it BLOCKS, never passes."""
-        return float("inf") if self.measured_ms is None else self.measured_ms
+        """Signed drift in ms (local − broker). Unmeasured or stale reads as
+        infinite: it BLOCKS, never passes."""
+        if self._drift_ms is None or self._read_at is None:
+            return float("inf")
+        if (self._now() - self._read_at).total_seconds() > self._max_age_s:
+            return float("inf")                    # stale — as good as unmeasured
+        return self._drift_ms
+
+
+def _utcnow() -> datetime:
+    from datetime import timezone
+    return datetime.now(timezone.utc)
 
 
 class CountingBroker:
@@ -134,8 +166,8 @@ def build_live_runtime(
     max_entries_per_day: int | None = None,
     daily_order_cap: int = DEFAULT_DAILY_ORDER_CAP,
     order_cap_buffer: int = DEFAULT_ORDER_CAP_BUFFER,
-    drift: ClockDrift | None = None,
-    max_clock_drift_ms: float = 250.0,
+    drift: BrokerClockProbe | None = None,
+    max_clock_drift_ms: float = 2000.0,   # DAY-03 v1.48 default
 ) -> LiveRuntime:
     """Assemble the live day with EVERY rail armed.
 
@@ -144,7 +176,7 @@ def build_live_runtime(
     """
     cap = OrderCap(cap=daily_order_cap, buffer=order_cap_buffer)
     # DAY-03/RSK-07: an unverified clock reads as infinite drift and blocks entries.
-    drift = drift or ClockDrift()
+    drift = drift or BrokerClockProbe()
     if not isinstance(comp.broker, CountingBroker):
         comp.broker = CountingBroker(comp.broker, cap)
 
@@ -172,14 +204,14 @@ def build_live_runtime(
 
 def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None,
                        day: Callable[[], str] | None = None,
-                       drift: ClockDrift | None = None,
-                       max_clock_drift_ms: float = 250.0) -> ManualEntry:
+                       drift: BrokerClockProbe | None = None,
+                       max_clock_drift_ms: float = 2000.0) -> ManualEntry:
     """ENT-09. The manual fire crosses the identical rails as a scheduled entry —
     the SAME max_day_risk, the SAME open worst cases, the SAME reconcile block and
     clock-drift check. Only the ENT-02 window is bypassed."""
     from meic.application.entry_gates import clock_drift_blocks_entry
 
-    drift = drift or ClockDrift()
+    drift = drift or BrokerClockProbe()
 
     def blocks() -> str | None:
         if entries_blocked_by_reconcile(comp.events):          # REC-02 -> RSK-03
@@ -205,8 +237,8 @@ def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None
 
 
 def live_preflight_checks(comp, *, data_fresh: Callable[[], bool],
-                          drift: ClockDrift,
-                          max_drift_ms: float = 250.0,
+                          drift: BrokerClockProbe,
+                          max_drift_ms: float = 2000.0,
                           ) -> dict[str, Callable[[], tuple[bool, str]]]:
     """UC-02: real checks, in the spec's order. They were absent, so every item
     passed trivially and the checklist told the operator nothing.
@@ -225,8 +257,8 @@ def live_preflight_checks(comp, *, data_fresh: Callable[[], bool],
 
     def clock() -> tuple[bool, str]:
         if not drift.verified:
-            return False, ("clock NOT verified against an authoritative source (DAY-03) — "
-                           "measure it and set MEIC_CLOCK_DRIFT_MS")
+            return False, ("clock NOT verified against the broker (DAY-03) — no fresh "
+                           "session-probe reading yet, or the last one is stale (> 300s)")
         ms = drift.ms()
         if abs(ms) > max_drift_ms:
             return False, f"clock drift {ms:.0f}ms exceeds {max_drift_ms:.0f}ms (RSK-07)"

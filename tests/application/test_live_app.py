@@ -161,28 +161,47 @@ def test_live_app_wires_the_manual_fire_and_a_real_preflight(monkeypatch, tmp_pa
     assert app.state.runtime._worst_case is app.state.composition.worst_case
 
 
-def test_live_app_blocks_trading_when_the_clock_was_never_verified(monkeypatch, tmp_path):
-    """DAY-03: the clock MUST be verified against an authoritative source. Nothing
-    measures it, so an unset MEIC_CLOCK_DRIFT_MS means UNVERIFIED -> infinite drift
-    -> every entry skips `clock_drift`. Never silently assumed to be zero."""
+def test_live_app_blocks_trading_until_the_first_clock_probe_lands(monkeypatch, tmp_path):
+    """DAY-03 (v1.48): drift is measured against the broker's Date header on the
+    ~60s session probe. At boot no probe has landed, so the clock is UNVERIFIED ->
+    infinite drift -> every entry skips `clock_drift`. Never assumed to be zero."""
     from meic.application.entry_gates import clock_drift_blocks_entry
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
     monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
-    monkeypatch.delenv("MEIC_CLOCK_DRIFT_MS", raising=False)
 
     runtime = live_app().state.runtime
-    assert runtime.measure_drift_ms() == float("inf")
+    assert runtime.measure_drift_ms() == float("inf")     # nothing probed yet
     assert clock_drift_blocks_entry(drift_ms=runtime.measure_drift_ms(),
                                     max_drift_ms=runtime.max_clock_drift_ms) is True
 
 
-def test_an_operator_measured_drift_unblocks_the_clock_rail(monkeypatch, tmp_path):
+def test_the_clock_rail_is_fed_by_the_session_probe_not_an_env_var(monkeypatch, tmp_path):
+    """DAY-03 (v1.48): drift is measured against the broker Date header on the
+    ~60s session probe. There is no MEIC_CLOCK_DRIFT_MS env path any more."""
+    import asyncio
+    from datetime import datetime, timezone
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
     monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
-    monkeypatch.setenv("MEIC_CLOCK_DRIFT_MS", "42")
+    monkeypatch.setenv("MEIC_CLOCK_DRIFT_MS", "42")   # set, and deliberately IGNORED
 
-    assert live_app().state.runtime.measure_drift_ms() == 42.0
+    app = live_app()
+    runtime = app.state.runtime
+    assert runtime.measure_drift_ms() == float("inf")   # nothing probed yet -> blocked
+
+    # the session-probe gate is what records a reading. Drive it against a broker
+    # whose clock matches ours, and the rail clears.
+    gate = app.state.session_probe
+    comp = app.state.composition
+    now = datetime.now(timezone.utc)
+    comp.broker._inner.working_orders = lambda: _async([])   # not connected in a unit test
+    comp.broker._inner.server_time = lambda: _async(now)     # broker clock == ours
+    asyncio.run(gate())
+    assert abs(runtime.measure_drift_ms()) < 2000.0       # verified, inside tolerance
+
+
+async def _async(v):
+    return v

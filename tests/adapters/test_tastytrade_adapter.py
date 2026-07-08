@@ -75,3 +75,39 @@ def test_assumption5_records_allocation_on_real_fill():
     assert rec.passed is True and gate.consecutive_passed == 1
     bad = adapter.record_fill_allocation([D("0.50"), D("0.00")], net_fill=D("0.05"))
     assert bad.passed is False and gate.consecutive_passed == 0  # FAIL resets
+
+
+def test_server_time_parses_the_broker_date_header():
+    """DAY-03 (v1.48): drift is measured against the broker's `Date` header on the
+    session probe. Offline — the response is injected, no session."""
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+
+    async def resp():   # an httpx-like response carrying a Date header
+        return SimpleNamespace(headers={"date": "Wed, 08 Jul 2026 15:00:00 GMT"})
+    adapter._probe_response = resp
+
+    got = asyncio.run(adapter.server_time())
+    assert got == datetime(2026, 7, 8, 15, 0, tzinfo=timezone.utc)
+
+
+def test_server_time_is_none_when_the_header_is_missing_or_the_probe_fails():
+    """None = 'no reading', which the clock probe treats as unverified -> blocked.
+    A probe that cannot read the header must never crash the health loop."""
+    import asyncio
+    from types import SimpleNamespace
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+
+    async def no_header():
+        return SimpleNamespace(headers={})
+    adapter._probe_response = no_header
+    assert asyncio.run(adapter.server_time()) is None
+
+    async def boom():
+        raise RuntimeError("network down")
+    adapter._probe_response = boom
+    assert asyncio.run(adapter.server_time()) is None   # degrades to blocked, never raises

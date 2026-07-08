@@ -156,21 +156,20 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     from meic.composition.live_gates import LiveMarketGates
     from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
     from meic.composition.live_wiring import (
-        ClockDrift,
+        BrokerClockProbe,
         build_live_runtime,
         build_manual_entry,
         live_preflight_checks,
     )
 
     min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
-    max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "250"))
+    max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "2000"))   # DAY-03 v1.48
 
-    # DAY-03: the clock MUST be verified against an authoritative source. Nothing
-    # here measures it, so an UNSET value is UNVERIFIED and blocks trading -- it is
-    # never silently treated as zero drift. Measure it (`w32tm /stripchart`,
-    # `chronyc tracking`) and pass the result in.
-    raw_drift = env.get("MEIC_CLOCK_DRIFT_MS")
-    drift = ClockDrift(float(raw_drift) if raw_drift not in (None, "") else None)
+    # DAY-03 (v1.48): drift is measured against the BROKER's Date header on the
+    # ~60 s session probe — no env var, no NTP. Starts unverified (infinite drift),
+    # so entries are blocked until the first probe lands; a reading older than 300 s
+    # is treated as unverified too. The session probe below feeds it.
+    drift = BrokerClockProbe()
 
     class _Snapshots:
         """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
@@ -190,7 +189,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         return not snaps.stale
 
     async def _session_valid() -> bool:
+        # The ~60 s session probe (NFR-02) doubles as the DAY-03 clock reading:
+        # the broker's Date header on THIS response is the drift source (v1.48).
         await comp.broker.working_orders()  # a light authenticated call; raises if dead
+        drift.record(await comp.broker.server_time())
         return True
 
     async def _buying_power_ok() -> bool:
@@ -221,6 +223,9 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         "preflight_checks": live_preflight_checks(
             comp, data_fresh=lambda: not snaps.stale,
             drift=drift, max_drift_ms=max_drift_ms),
+        # the ~60s session probe, which also records the DAY-03 clock reading. The
+        # health loop runs it live; exposed so the wiring test can drive one tick.
+        "session_probe": _session_valid,
     }
 
 
@@ -278,6 +283,7 @@ def live_app():
     app = create_app(comp.state, comp.events, api_token=token, commands=commands)
     app.state.composition = comp
     app.state.commands = commands
+    app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None

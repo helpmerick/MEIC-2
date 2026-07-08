@@ -100,17 +100,16 @@ is wired in `live_app` with the real chain selector and real market gates:
   `_wire_live_day`; `tests/composition/test_live_wiring.py` fails if any is left
   unwired.
 
-**Clock verification (DAY-03, required before a live arm).** Nothing in the bot
-measures its own clock drift, and the pre-flight will **block a live arm** until
-you supply a measurement — an unverified clock reads as infinite drift, never as
-zero. Measure it against an authoritative source and pass the result in
-milliseconds:
+**Clock verification (DAY-03, v1.48 — automatic, no manual step).** Drift is
+measured against the **broker's `Date` header** on the authenticated session
+probe that already runs every ~60 s — continuous, no NTP, no env var. Until the
+first probe lands the clock is **unverified** (infinite drift) and the pre-flight
+**blocks a live arm**; a reading older than 300 s is treated the same. The only
+knob is the tolerance:
 
 ```
-# Windows:  w32tm /stripchart /computer:time.nist.gov /samples:1
-# Linux:    chronyc tracking      (or: ntpdate -q pool.ntp.org)
-MEIC_CLOCK_DRIFT_MS=<measured ms>    # e.g. 42 ; omit and every entry skips clock_drift
-MEIC_MAX_CLOCK_DRIFT_MS=250          # RSK-07 tolerance (default 250)
+MEIC_MAX_CLOCK_DRIFT_MS=2000    # RSK-07 tolerance (default 2000; range 1000-10000).
+                                # ~1s Date-header resolution, so sub-1000 is noise.
 ```
 
 ### Verify at the market open (read-only, places nothing)

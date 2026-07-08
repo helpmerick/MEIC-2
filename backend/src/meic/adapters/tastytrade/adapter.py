@@ -19,6 +19,7 @@ the BrokerGateway port.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator
 
@@ -207,6 +208,34 @@ class TastytradeAdapter:
     async def working_orders(self) -> list[Any]:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().split(".")[-1] in ("live", "received")]
+
+    async def server_time(self) -> "datetime | None":
+        """The broker's clock, from the `Date` header of a light authenticated call
+        (DAY-03 v1.48 — measure drift against the counterparty whose clock governs
+        windows). Best-effort: None means 'no reading', which the clock probe treats
+        as unverified and therefore blocking. Never raises — a probe that cannot
+        read the header must degrade to blocked, not crash the health loop.
+
+        `_probe_response` is the injectable seam; the SDK's exact client is not
+        pinned here, so it is contract-tested offline rather than assumed."""
+        from email.utils import parsedate_to_datetime
+
+        try:
+            resp = await self._probe_response()
+            date = resp.headers.get("date") if resp is not None else None
+            return parsedate_to_datetime(date) if date else None
+        except Exception:  # noqa: BLE001 — any failure is "no reading" (blocked), not a crash
+            return None
+
+    async def _probe_response(self):
+        """A light authenticated GET whose response carries the broker `Date`
+        header. Overridable so `server_time` is testable without a session; in
+        production it reuses the SDK's authenticated async client (the same session
+        the ~60 s probe already uses — no new network path)."""
+        client = getattr(self._session, "async_client", None)
+        if client is None:
+            return None
+        return await client.get("/sessions/validate")
 
     async def positions(self) -> list[Any]:
         return await self._account.get_positions(self._session)
