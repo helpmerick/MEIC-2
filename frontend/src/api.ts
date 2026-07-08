@@ -2,7 +2,10 @@
 // No trading logic lives here or anywhere in the frontend (UI-03): it reads
 // state and sends commands; the backend validates everything.
 
-import type { ActivityLine, DayReport, EntryCard, PanelState } from "./types";
+import type {
+  ActivityLine, DayReport, EntryCard, FirePreview, FireResult,
+  PanelState, Preflight, ScheduleRow, ScheduleView,
+} from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
 // it. Read it from a meta tag or localStorage; empty on a plain localhost bind.
@@ -57,6 +60,23 @@ export const api = {
     post<OutageDrill>("/drill/outage", { outage_seconds: 2 }),
   modeSwitch: (target: "paper" | "live", confirmation: string) =>
     post<{ staged: boolean; target: string; effective: string }>("/mode-switch", { target, confirmation }),
+
+  // --- UC-02 schedule -------------------------------------------------------
+  getSchedule: () => get<ScheduleView>("/schedule"),
+  // Validation is entirely server-side (UI-03). A 422 carries EVERY error, so the
+  // form can mark each offending cell in one pass.
+  saveSchedule: (rows: ScheduleRow[], maxDayRisk: string) =>
+    post<ScheduleView & { config_version: string }>("/schedule", {
+      rows,
+      max_day_risk: maxDayRisk === "" ? null : maxDayRisk,
+    }),
+  getPreflight: () => get<Preflight>("/preflight"),
+
+  // --- ENT-09 manual fire (UI-22) -------------------------------------------
+  firePreview: (n: number) => get<FirePreview>(`/entry/${n}/fire-preview`),
+  // The press_id came from the preview: confirming twice is ONE attempt.
+  fire: (n: number, pressId: string) =>
+    post<FireResult>(`/entry/${n}/fire`, { press_id: pressId, confirmed: true }),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

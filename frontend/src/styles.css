@@ -274,3 +274,56 @@ body {
 .mode-switch { cursor: pointer; font-family: inherit; transition: filter .15s ease, transform .12s ease; }
 .mode-switch:hover { filter: brightness(1.15); transform: translateY(-1px); }
 .mode-switch:active { transform: translateY(0); }
+
+/* --- SCHEDULE & PARAMETERS (UC-02, ENT-09/UI-22) --------------------------- */
+.schedule-panel { grid-column: 1 / -1; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; }
+.panel-head .version { color: var(--muted); font-size: 0.8rem; }
+
+table.schedule { width: 100%; border-collapse: collapse; margin: 0.5rem 0; }
+table.schedule th { text-align: left; font-size: 0.75rem; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted); padding: 0.35rem 0.5rem; }
+table.schedule td { padding: 0.25rem 0.5rem; border-top: 1px solid var(--border); }
+table.schedule td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+table.schedule input, table.schedule select {
+  width: 100%; min-width: 4.5rem; padding: 0.3rem 0.4rem;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+}
+table.schedule input.invalid, table.schedule select.invalid {
+  border-color: var(--danger); outline: 1px solid var(--danger);
+}
+table.schedule td.actions { display: flex; gap: 0.25rem; }
+table.schedule td.actions button { padding: 0.25rem 0.5rem; }
+table.schedule td.actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.schedule-foot { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.schedule-foot .risk { display: flex; flex-direction: column; font-size: 0.75rem; color: var(--muted); }
+.schedule-foot .risk input { padding: 0.3rem 0.4rem; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; }
+.risk-readout { display: grid; grid-template-columns: auto auto; gap: 0 0.75rem; margin: 0; }
+.risk-readout dt { color: var(--muted); font-size: 0.75rem; }
+.risk-readout dd { margin: 0; font-variant-numeric: tabular-nums; }
+.risk-readout dd.over { color: var(--danger); font-weight: 600; }
+
+.preflight { list-style: none; padding: 0; margin: 0.75rem 0 0; font-size: 0.85rem; }
+.preflight li { padding: 0.2rem 0; }
+.preflight li.pass span { color: var(--ok); }
+.preflight li.fail { color: var(--danger); }
+.preflight .detail { color: var(--muted); }
+
+.note { color: var(--muted); font-size: 0.75rem; margin: 0.4rem 0 0; }
+.warn { color: var(--danger); }
+.ok { color: var(--ok); }
+.error { color: var(--danger); font-size: 0.8rem; margin: 0.15rem 0; }
+
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: grid; place-items: center; z-index: 50; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1.25rem 1.5rem; max-width: 30rem; }
+.modal h3 { margin-top: 0; }
+.modal .muted { color: var(--muted); font-size: 0.8rem; }
+.fire-params { display: grid; grid-template-columns: auto auto; gap: 0.15rem 1rem; margin: 0.75rem 0; }
+.fire-params dt { color: var(--muted); }
+.fire-params dd { margin: 0; font-variant-numeric: tabular-nums; }
+.modal .estimate { border-left: 3px solid var(--danger); padding-left: 0.6rem; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
