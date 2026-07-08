@@ -12,7 +12,7 @@
 // surface that shows the number says so.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, STOP_PCT_SET } from "../api";
+import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
 import type {
   FirePreview,
   FireResult,
@@ -22,7 +22,11 @@ import type {
   ScheduleView,
 } from "../types";
 
-const BLANK: ScheduleRow = { time: "", contracts: "", target_premium: "", wing_width: "", stop_loss_pct: "" };
+// A new row carries the stop-% default outright. Every other cell stays blank so
+// the backend inherits its global (doc 06 section 37) — stop % is the one field
+// the backend echoes back resolved, so showing "default" here promised an
+// inheritance the round-trip never delivered.
+const BLANK: ScheduleRow = { time: "", contracts: "", target_premium: "", wing_width: "", stop_loss_pct: DEFAULT_STOP_PCT };
 
 // Server-side is authoritative; this only decides which cell to outline in red.
 function errorFor(errors: ScheduleError[], index: number, field: string): string | undefined {
@@ -159,11 +163,10 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   {/* The discrete set is the ONLY stop-% the backend accepts (STP-02) */}
                   <select
                     aria-label={`stop pct ${i + 1}`}
-                    value={String(row.stop_loss_pct ?? "")}
+                    value={String(row.stop_loss_pct || DEFAULT_STOP_PCT)}
                     onChange={(e) => patch(i, "stop_loss_pct", e.target.value)}
                     className={errorFor(rowErrors, i, "stop_loss_pct") ? "invalid" : ""}
                   >
-                    <option value="">default</option>
                     {STOP_PCT_SET.map((p) => (
                       <option key={p} value={p}>{p}%</option>
                     ))}

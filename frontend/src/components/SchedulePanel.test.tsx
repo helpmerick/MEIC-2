@@ -171,13 +171,32 @@ describe("server-side validation (UI-03)", () => {
     expect(await screen.findByText(/schedule — empty_schedule/)).toBeInTheDocument();
   });
 
-  it("the stop-% control offers only the discrete set (STP-02)", async () => {
+  it("the stop-% control offers only the discrete set (STP-02), and never a 'default' option", async () => {
     await renderPanel();
     const options = Array.from(screen.getByLabelText("stop pct 1").querySelectorAll("option"));
-    const values = options.map((o) => o.getAttribute("value")).filter((v) => v !== "");
+    const values = options.map((o) => o.getAttribute("value"));
     expect(values[0]).toBe("95");
     expect(values.at(-1)).toBe("300");
     expect(values).not.toContain("97");
+    expect(values).not.toContain("");                     // no empty "inherit" option
+    options.forEach((o) => expect(o.textContent).toMatch(/^\d+%$/));
+  });
+
+  it("a new row starts at 95%, not blank", async () => {
+    const save = vi.spyOn(api, "saveSchedule").mockResolvedValue({ ...VIEW, config_version: "v4" });
+    vi.spyOn(api, "getPreflight").mockResolvedValue({ passed: true, blocked_by: null, checks: [] });
+    await renderPanel();
+
+    fireEvent.click(screen.getByText("+ Add entry"));
+    expect(screen.getByLabelText("stop pct 3")).toHaveValue("95");
+
+    fireEvent.change(screen.getByLabelText("time 3"), { target: { value: "13:00" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    // the row is sent with an explicit 95 — the backend would have resolved a blank
+    // cell to 95 and echoed it back anyway, so the UI never shows a value it drops
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0][0][2].stop_loss_pct).toBe(95);
   });
 });
 

@@ -92,3 +92,9 @@ export interface OutageDrill {
 // Discrete stop-pct set (UI-04) — in production generated from the config
 // schema the backend serves, so UI and backend cannot drift.
 export const STOP_PCT_SET: number[] = Array.from({ length: (300 - 95) / 5 + 1 }, (_, i) => 95 + i * 5);
+
+// STP-02 / doc 06 ScheduleDefaults.stop_loss_pct. A new row starts here rather
+// than blank: the backend resolves a blank cell to 95 and echoes 95 straight
+// back, so a "default" option only ever showed the operator a value the very
+// next round-trip replaced with the number anyway.
+export const DEFAULT_STOP_PCT = 95;
