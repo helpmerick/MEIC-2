@@ -30,6 +30,12 @@ class NonCertTokenRefused(RuntimeError):
     refused before any network call."""
 
 
+class NonProductionTokenRefused(RuntimeError):
+    """The mirror guard: a token whose issuer is NOT production was slotted into
+    the production wiring. Fail loudly rather than silently authenticate against
+    the wrong environment (a cert token in TT_PROD_* is a configuration bug)."""
+
+
 def _jwt_issuer(token: str) -> str | None:
     import base64
 
@@ -40,10 +46,29 @@ def _jwt_issuer(token: str) -> str | None:
         return None
 
 
+def _is_cert_issuer(issuer: str | None) -> bool:
+    return bool(issuer) and ("cert" in issuer or "sandbox" in issuer)
+
+
 def assert_cert_token(refresh_token: str) -> None:
     issuer = _jwt_issuer(refresh_token)
-    if issuer is None or not ("cert" in issuer or "sandbox" in issuer):
+    if not _is_cert_issuer(issuer):
         raise NonCertTokenRefused(f"refresh token issuer {issuer!r} is not cert/sandbox")
+
+
+def assert_production_token(refresh_token: str) -> None:
+    """Symmetric to assert_cert_token. The live/production wiring must carry a
+    PRODUCTION token: a missing/undecodable issuer, or a cert/sandbox one, is a
+    misconfiguration and is refused before any network call. Without this, a
+    cert token in the production slot would fail late and confusingly — or a
+    fat-fingered env could point real-money wiring at the wrong environment."""
+    issuer = _jwt_issuer(refresh_token)
+    if issuer is None:
+        raise NonProductionTokenRefused("refresh token has no decodable issuer")
+    if _is_cert_issuer(issuer):
+        raise NonProductionTokenRefused(
+            f"refresh token issuer {issuer!r} is CERT/SANDBOX, not production — "
+            "a cert token was slotted into the production wiring")
 
 
 # Option stop-markets are Day-TIF only (assumption 2). Any other TIF on an
@@ -66,6 +91,8 @@ class TastytradeAdapter:
     ) -> None:
         if is_test:  # paper/contract wiring must never carry a production token
             assert_cert_token(refresh_token)  # assumption 10 — before any network call
+        else:  # production wiring must never carry a cert token (mirror guard)
+            assert_production_token(refresh_token)
         self._secret = provider_secret
         self._refresh = refresh_token
         self._is_test = is_test
