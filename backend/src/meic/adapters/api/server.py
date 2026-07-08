@@ -2,14 +2,14 @@
 
 Paper (SIM-01) — a self-driving demo day, no credentials, localhost:
 
-    uvicorn meic.adapters.api.server:paper_app --factory --host 127.0.0.1 --port 8000
+    uvicorn meic.adapters.api.server:paper_app --factory --host 127.0.0.1 --port 8010
 
 Live — the real Tastytrade + DXLink wiring, SQLite-persisted (REC-07),
 token-gated (NFR-06), booting with SAFE DEFAULTS (DISARMED, Confirm Live OFF)
 so nothing trades until the operator deliberately arms and confirms. Defaults
 to the CERT sandbox; MEIC_LIVE_IS_TEST=false selects production credentials:
 
-    MEIC_API_TOKEN=... uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8000
+    MEIC_API_TOKEN=... uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8010
 """
 from __future__ import annotations
 

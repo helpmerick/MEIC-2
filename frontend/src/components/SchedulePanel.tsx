@@ -8,7 +8,8 @@
 // The day-total worst case beside `max_day_risk` is an ESTIMATE (v1.46):
 // (width - target premium) x 100 x contracts. No strikes exist before selection,
 // so the true number cannot be known here. RSK-04 re-prices from real strikes at
-// fire time and can still veto an entry this panel showed as fitting.
+// fire time and can still veto an entry this panel showed as fitting. Every
+// surface that shows the number says so.
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, STOP_PCT_SET } from "../api";
@@ -28,8 +29,12 @@ function errorFor(errors: ScheduleError[], index: number, field: string): string
   return errors.find((e) => e.index === index && e.field === field)?.reason;
 }
 
-function scheduleErrors(errors: ScheduleError[]): ScheduleError[] {
-  return errors.filter((e) => e.index === null);
+/** Fraction of the ceiling the composed day already consumes. */
+function usedFraction(view: ScheduleView): number | null {
+  if (view.max_day_risk === null) return null;
+  const ceiling = Number(view.max_day_risk);
+  if (!(ceiling > 0)) return null;
+  return Number(view.day_total_estimate) / ceiling;
 }
 
 export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
@@ -67,7 +72,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
       setSaved(v.config_version);
       setPreflight(await api.getPreflight());
     } catch (e) {
-      // 422 carries every error at once, so the operator fixes the form in one pass
+      // A 422 carries every error at once, so the operator fixes the form in one pass
       const detail = e instanceof ApiError ? (e.detail as { errors?: ScheduleError[] }) : null;
       setErrors(detail?.errors ?? [{ field: "form", reason: String(e), index: null }]);
     }
@@ -93,154 +98,175 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
     }
   }
 
-  if (!view) return <section className="panel">Loading schedule…</section>;
+  if (!view) return <section className="card schedule-panel">Loading schedule…</section>;
 
   const rowErrors = errors.filter((e) => e.index !== null);
-  const formErrors = scheduleErrors(errors);
+  const formErrors = errors.filter((e) => e.index === null);
+  const used = usedFraction(view);
+  const meterClass = view.exceeds_max_day_risk ? "over" : used !== null && used > 0.8 ? "warn" : "";
 
   return (
-    <section className="panel schedule-panel">
-      <header className="panel-head">
+    <section className="card schedule-panel">
+      <div className="card-head">
         <h2>Schedule &amp; Parameters</h2>
-        {view.config_version && <span className="version">config {view.config_version}</span>}
-      </header>
+        {view.config_version && <span className="chip">config {view.config_version}</span>}
+      </div>
 
-      <table className="schedule">
-        <thead>
-          <tr>
-            <th>Time (ET)</th>
-            <th>Target $</th>
-            <th>Width</th>
-            <th>Stop %</th>
-            <th>Count</th>
-            <th>Worst case (est.)</th>
-            <th aria-label="actions" />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i} data-testid={`row-${i}`}>
-              <td>
-                <input
-                  aria-label={`time ${i + 1}`}
-                  value={row.time ?? ""}
-                  placeholder="10:00"
-                  onChange={(e) => patch(i, "time", e.target.value)}
-                  className={errorFor(rowErrors, i, "time") ? "invalid" : ""}
-                />
-              </td>
-              <td>
-                <input
-                  aria-label={`target premium ${i + 1}`}
-                  value={row.target_premium ?? ""}
-                  placeholder="3.00"
-                  onChange={(e) => patch(i, "target_premium", e.target.value)}
-                  className={errorFor(rowErrors, i, "target_premium") ? "invalid" : ""}
-                />
-              </td>
-              <td>
-                <input
-                  aria-label={`wing width ${i + 1}`}
-                  value={row.wing_width ?? ""}
-                  placeholder="50"
-                  onChange={(e) => patch(i, "wing_width", e.target.value)}
-                  className={errorFor(rowErrors, i, "wing_width") ? "invalid" : ""}
-                />
-              </td>
-              <td>
-                {/* The discrete set is the ONLY stop-% the backend accepts (STP-02) */}
-                <select
-                  aria-label={`stop pct ${i + 1}`}
-                  value={String(row.stop_loss_pct ?? "")}
-                  onChange={(e) => patch(i, "stop_loss_pct", e.target.value)}
-                  className={errorFor(rowErrors, i, "stop_loss_pct") ? "invalid" : ""}
-                >
-                  <option value="">default</option>
-                  {STOP_PCT_SET.map((p) => (
-                    <option key={p} value={p}>{p}%</option>
-                  ))}
-                </select>
-              </td>
-              <td>
-                {/* ENT-04 (v1.44): each row trades its OWN size */}
-                <input
-                  aria-label={`contracts ${i + 1}`}
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={row.contracts ?? ""}
-                  placeholder="1"
-                  onChange={(e) => patch(i, "contracts", e.target.value)}
-                  className={errorFor(rowErrors, i, "contracts") ? "invalid" : ""}
-                />
-              </td>
-              <td className="numeric" data-testid={`wc-${i}`}>
-                {row.worst_case_estimate ? `$${row.worst_case_estimate}` : "—"}
-              </td>
-              <td className="actions">
-                <button
-                  aria-label={`fire entry ${i + 1}`}
-                  title={entriesEnabled ? "Fire this entry now (ENT-09)" : "Blocked: entries are not enabled"}
-                  disabled={!entriesEnabled}
-                  onClick={() => void openFireDialog(i + 1)}
-                >
-                  ▶
-                </button>
-                <button
-                  aria-label={`delete entry ${i + 1}`}
-                  onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
-                >
-                  ×
-                </button>
-              </td>
+      <div className="sched-scroll">
+        <table className="schedule">
+          <thead>
+            <tr>
+              <th className="num">Time (ET)</th>
+              <th className="num">Target $</th>
+              <th className="num">Width</th>
+              <th>Stop %</th>
+              <th className="num">Count</th>
+              <th className="num">Worst case (est.)</th>
+              <th aria-label="actions" />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} data-testid={`row-${i}`}>
+                <td className="cell-num">
+                  <input
+                    aria-label={`time ${i + 1}`}
+                    value={row.time ?? ""}
+                    placeholder="10:00"
+                    onChange={(e) => patch(i, "time", e.target.value)}
+                    className={errorFor(rowErrors, i, "time") ? "invalid" : ""}
+                  />
+                </td>
+                <td className="cell-num">
+                  <input
+                    aria-label={`target premium ${i + 1}`}
+                    value={row.target_premium ?? ""}
+                    placeholder="3.00"
+                    onChange={(e) => patch(i, "target_premium", e.target.value)}
+                    className={errorFor(rowErrors, i, "target_premium") ? "invalid" : ""}
+                  />
+                </td>
+                <td className="cell-num">
+                  <input
+                    aria-label={`wing width ${i + 1}`}
+                    value={row.wing_width ?? ""}
+                    placeholder="50"
+                    onChange={(e) => patch(i, "wing_width", e.target.value)}
+                    className={errorFor(rowErrors, i, "wing_width") ? "invalid" : ""}
+                  />
+                </td>
+                <td>
+                  {/* The discrete set is the ONLY stop-% the backend accepts (STP-02) */}
+                  <select
+                    aria-label={`stop pct ${i + 1}`}
+                    value={String(row.stop_loss_pct ?? "")}
+                    onChange={(e) => patch(i, "stop_loss_pct", e.target.value)}
+                    className={errorFor(rowErrors, i, "stop_loss_pct") ? "invalid" : ""}
+                  >
+                    <option value="">default</option>
+                    {STOP_PCT_SET.map((p) => (
+                      <option key={p} value={p}>{p}%</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="cell-num">
+                  {/* ENT-04 (v1.44): each row trades its OWN size */}
+                  <input
+                    aria-label={`contracts ${i + 1}`}
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={row.contracts ?? ""}
+                    placeholder="1"
+                    onChange={(e) => patch(i, "contracts", e.target.value)}
+                    className={errorFor(rowErrors, i, "contracts") ? "invalid" : ""}
+                  />
+                </td>
+                <td className="cell-wc" data-testid={`wc-${i}`}>
+                  {row.worst_case_estimate ? `$${row.worst_case_estimate}` : "—"}
+                </td>
+                <td className="cell-actions">
+                  <button
+                    className="icon-btn fire"
+                    aria-label={`fire entry ${i + 1}`}
+                    title={entriesEnabled ? "Fire this entry now (ENT-09)" : "Blocked: entries are not enabled"}
+                    disabled={!entriesEnabled}
+                    onClick={() => void openFireDialog(i + 1)}
+                  >
+                    ▶
+                  </button>
+                  <button
+                    className="icon-btn del"
+                    aria-label={`delete entry ${i + 1}`}
+                    title="Remove this entry"
+                    onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {rowErrors.map((e, i) => (
-        <p key={i} className="error" role="alert">
+        <p key={i} className="msg err" role="alert">
           Row {(e.index ?? 0) + 1}: {e.field} — {e.reason}
         </p>
       ))}
       {formErrors.map((e, i) => (
-        <p key={`f${i}`} className="error" role="alert">
+        <p key={`f${i}`} className="msg err" role="alert">
           {e.field} — {e.reason}
         </p>
       ))}
 
-      <div className="schedule-foot">
-        <button onClick={() => setRows((rs) => [...rs, { ...BLANK }])}>+ Add entry</button>
+      <div className="sched-foot">
+        <button className="btn" onClick={() => setRows((rs) => [...rs, { ...BLANK }])}>
+          + Add entry
+        </button>
 
-        <label className="risk">
-          Max day risk
+        <label className="field">
+          <span>Max day risk</span>
           <input
             aria-label="max day risk"
             value={maxDayRisk}
-            placeholder="required before live"
+            placeholder="required for live"
             onChange={(e) => setMaxDayRisk(e.target.value)}
           />
         </label>
 
         {/* v1.46: the ceiling sits beside the composed day total, so adding a row
-            visibly eats headroom. */}
-        <dl className="risk-readout" data-testid="risk-readout">
-          <dt>Day total (est.)</dt>
-          <dd className={view.exceeds_max_day_risk ? "over" : ""}>${view.day_total_estimate}</dd>
-          <dt>Headroom</dt>
-          <dd data-testid="headroom">{view.headroom === null ? "—" : `$${view.headroom}`}</dd>
-        </dl>
+            visibly eats headroom. The meter makes that visible, not just numeric. */}
+        <div className="risk-readout grow" data-testid="risk-readout">
+          <div className="risk-line">
+            <span className="k">Day total (est.)</span>
+            <span className={`v ${view.exceeds_max_day_risk ? "over" : ""}`}>
+              ${view.day_total_estimate}
+            </span>
+          </div>
+          <div className={`meter ${meterClass}`} aria-hidden>
+            <i style={{ width: `${Math.min(100, (used ?? 0) * 100)}%` }} />
+          </div>
+          <div className="risk-line">
+            <span className="k">Headroom</span>
+            <span className={`v ${view.headroom === null ? "none" : view.exceeds_max_day_risk ? "over" : ""}`}
+                  data-testid="headroom">
+              {view.headroom === null ? "no ceiling set" : `$${view.headroom}`}
+            </span>
+          </div>
+        </div>
 
-        <button className="primary" onClick={() => void save()}>Save</button>
+        <button className="btn primary" onClick={() => void save()}>Save</button>
       </div>
 
       {view.exceeds_max_day_risk && (
-        <p className="warn" role="alert">
+        <p className="msg warn" role="alert">
           Composed day total exceeds max day risk. RSK-04 will veto entries at fire time.
         </p>
       )}
+      {saved && <p className="msg ok" role="status">Saved as config {saved}.</p>}
       <p className="note">{view.estimate_note}</p>
-      {saved && <p className="ok" role="status">Saved as config {saved}.</p>}
 
       {preflight && <PreflightList preflight={preflight} />}
 
@@ -254,7 +280,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
       )}
 
       {fireResult && (
-        <p className={fireResult.result.result === "filled" ? "ok" : "warn"} role="status">
+        <p className={`msg ${fireResult.result.result === "filled" ? "ok" : "warn"}`} role="status">
           Entry {fireResult.n}:{" "}
           {fireResult.result.result === "filled"
             ? `filled (${fireResult.result.initiator})`
@@ -271,9 +297,9 @@ export function PreflightList({ preflight }: { preflight: Preflight }) {
     <ul className="preflight" data-testid="preflight">
       {preflight.checks.map((c) => (
         <li key={c.name} className={c.passed ? "pass" : "fail"}>
-          <span aria-hidden>{c.passed ? "✓" : "✗"}</span>
+          <span className="tick" aria-hidden>{c.passed ? "✓" : "✗"}</span>
           <strong>{c.name}</strong> <em>({c.rule})</em>
-          {c.detail && <span className="detail"> — {c.detail}</span>}
+          {c.detail && <span className="detail">{c.detail}</span>}
         </li>
       ))}
     </ul>
@@ -293,22 +319,34 @@ export function FireDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const params: [string, string][] = [
+    ["Contracts", String(preview.contracts)],
+    ["Target premium", `$${preview.target_premium}`],
+    ["Wing width", preview.wing_width],
+    ["Stop", `${preview.stop_loss_pct}%`],
+  ];
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm manual entry">
       <div className="modal">
         <h3>Fire entry {preview.entry_number} now?</h3>
-        <p className="muted">{new Date(preview.now).toLocaleTimeString()} — outside any scheduled window (ENT-09)</p>
-
-        <dl className="fire-params">
-          <dt>Contracts</dt><dd>{preview.contracts}</dd>
-          <dt>Target premium</dt><dd>${preview.target_premium}</dd>
-          <dt>Wing width</dt><dd>{preview.wing_width}</dd>
-          <dt>Stop</dt><dd>{preview.stop_loss_pct}%</dd>
-        </dl>
-
-        <p className="estimate" data-testid="fire-estimate">
-          <strong>Worst case (ESTIMATE): ${preview.worst_case_estimate}</strong>
+        <p className="sub">
+          {new Date(preview.now).toLocaleTimeString()} — outside any scheduled window (ENT-09)
         </p>
+
+        <div className="fire-params">
+          {params.map(([k, v]) => (
+            <div className="p-row" key={k}>
+              <span className="k">{k}</span>
+              <span className="v">{v}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="estimate-box" data-testid="fire-estimate">
+          <div className="lab">Worst case (ESTIMATE)</div>
+          <div className="val">${preview.worst_case_estimate}</div>
+        </div>
         <p className="note">
           {preview.estimate_formula}. Strikes are not selected until the entry fires, so
           this is an estimate — the RSK-04 check runs on the real strikes and may still
@@ -316,8 +354,8 @@ export function FireDialog({
         </p>
 
         <div className="modal-actions">
-          <button onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="primary" onClick={onConfirm} disabled={busy} autoFocus>
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={onConfirm} disabled={busy} autoFocus>
             {busy ? "Firing…" : "OK"}
           </button>
         </div>

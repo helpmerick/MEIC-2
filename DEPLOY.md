@@ -10,7 +10,7 @@ adapter is a separate wiring and is never constructed here (SIM-01/EC-RSK-04).
 docker compose up --build
 ```
 
-Then open **http://127.0.0.1:8000/**. The compressed paper day starts on its own
+Then open **http://127.0.0.1:8010/**. The compressed paper day starts on its own
 and loops, so the panel always has activity to watch; use the per-entry **Close**
 buttons and header **Flatten all** (typed `FLATTEN`) to act on the book.
 
@@ -59,7 +59,7 @@ the broker on startup but a connect failure never takes the panel down —
 ```bash
 # CERT sandbox (default) — real broker session, fake money:
 MEIC_API_TOKEN=<pick-a-token> \
-  uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8000
+  uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8010
 ```
 
 Credentials live in a gitignored `.env` (BOM-tolerant, NFR-05), **never in the

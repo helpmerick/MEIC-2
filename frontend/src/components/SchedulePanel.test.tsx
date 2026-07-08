@@ -111,6 +111,35 @@ describe("composing the schedule", () => {
     await waitFor(() => expect(save).toHaveBeenCalled());
     expect(save.mock.calls[0][0][0].target_premium).toBe("");
   });
+
+  it("an unset ceiling reads as unknown, never as unlimited", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue({
+      ...VIEW, max_day_risk: null, headroom: null, exceeds_max_day_risk: false,
+    });
+    await renderPanel();
+    expect(screen.getByTestId("headroom")).toHaveTextContent("no ceiling set");
+    expect(screen.queryByText(/unlimited/i)).toBeNull();
+  });
+
+  it("the headroom meter fills with the composed day and turns red over the ceiling", async () => {
+    const { container, unmount } = render(<SchedulePanel entriesEnabled />);
+    await screen.findByRole("table");
+    // 14100 of 20000 => ~70%, still green
+    const bar = container.querySelector(".meter > i") as HTMLElement;
+    expect(bar.style.width).toBe("70.5%");
+    expect(container.querySelector(".meter")?.className).not.toContain("over");
+    unmount();
+
+    vi.spyOn(api, "getSchedule").mockResolvedValue({
+      ...VIEW, day_total_estimate: "23500.00", headroom: "-3500.00", exceeds_max_day_risk: true,
+    });
+    const second = render(<SchedulePanel entriesEnabled />);
+    await screen.findByRole("table");
+    // over the ceiling the bar caps at 100% and goes red — it never overflows
+    const overBar = second.container.querySelector(".meter > i") as HTMLElement;
+    expect(overBar.style.width).toBe("100%");
+    expect(second.container.querySelector(".meter")?.className).toContain("over");
+  });
 });
 
 describe("server-side validation (UI-03)", () => {
@@ -198,7 +227,9 @@ describe("ENT-09 manual fire (UI-22)", () => {
     fireEvent.click(screen.getByLabelText("fire entry 1"));
 
     await screen.findByRole("dialog");
-    expect(screen.getByTestId("fire-estimate")).toHaveTextContent("Worst case (ESTIMATE): $9400.00");
+    const box = screen.getByTestId("fire-estimate");
+    expect(box).toHaveTextContent(/Worst case \(ESTIMATE\)/);
+    expect(box).toHaveTextContent("$9400.00");
     expect(screen.getByText(/\(width - target premium\) x 100 x contracts/)).toBeInTheDocument();
     expect(screen.getByText(/RSK-04 check runs on the real strikes and may still\s+veto/)).toBeInTheDocument();
   });

@@ -91,7 +91,17 @@ class PaperComposition:
             contracts=condor.contracts)
 
     def compose_and_arm(self, entry_times: list[str]) -> None:
-        """Operator composes the standing schedule and arms (ENT-01a/01b)."""
+        """Operator composes the standing schedule and arms (ENT-01a/01b).
+
+        A schedule the OPERATOR saved is never overwritten. The demo loop calls
+        this on every cycle, and it used to clobber whatever had been composed in
+        the panel — you saved one row and six came back. `config_version` is the
+        marker: it is set only by a real save (ScheduleService), never here.
+        """
+        if self.state.config_version:
+            self.state.armed = True
+            self.state.confirm_live = True
+            return
         self.state.entry_schedule = [{"time": t} for t in entry_times]
         self.state.armed = True
         self.state.confirm_live = True

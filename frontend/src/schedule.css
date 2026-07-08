@@ -1,0 +1,193 @@
+/* ===========================================================================
+   SCHEDULE & PARAMETERS  (UC-02 compose, ENT-09/UI-22 fire)
+
+   Keys off the same tokens as every other card, so light/dark invert cleanly
+   and nothing here hardcodes a colour.
+   =========================================================================== */
+
+.schedule-panel { grid-column: 1 / -1; }
+.schedule-panel .card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px;
+}
+.schedule-panel .card-head h2 { margin: 0; }
+.chip {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  padding: 4px 9px; border-radius: 999px;
+  background: var(--badge-bg); border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap;
+}
+
+/* --- the table ------------------------------------------------------------- */
+.sched-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 2px; }
+table.schedule { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 660px; }
+table.schedule thead th {
+  text-align: left; padding: 0 10px 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--faint); white-space: nowrap;
+}
+table.schedule thead th.num { text-align: right; }
+table.schedule tbody tr { transition: background .15s ease; }
+table.schedule tbody tr:hover { background: var(--hover); }
+table.schedule tbody td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: middle; }
+table.schedule tbody tr:first-child td { border-top: none; }
+
+.schedule input,
+.schedule select {
+  width: 100%; min-width: 68px; padding: 8px 10px;
+  font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+.schedule input:hover,
+.schedule select:hover { border-color: var(--line-strong); }
+.schedule input:focus,
+.schedule select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.schedule input::placeholder { color: var(--faint); }
+.schedule input[type="number"] { -moz-appearance: textfield; }
+.schedule .cell-num input { text-align: right; }
+
+.schedule input.invalid,
+.schedule select.invalid { border-color: var(--bad); background: var(--bad-dim); }
+.schedule input.invalid:focus,
+.schedule select.invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 24%, transparent); }
+
+td.cell-wc {
+  font-variant-numeric: tabular-nums; color: var(--muted);
+  font-size: 13px; white-space: nowrap; text-align: right;
+}
+
+/* row actions */
+td.cell-actions { white-space: nowrap; text-align: right; }
+.icon-btn {
+  width: 30px; height: 30px; margin-left: 6px;
+  display: inline-grid; place-items: center;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  color: var(--muted);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); transform: translateY(-1px); }
+.icon-btn.fire:hover:not(:disabled) { color: var(--good); border-color: rgba(52,211,153,0.35); background: var(--good-dim); }
+.icon-btn.del:hover:not(:disabled)  { color: var(--bad);  border-color: rgba(248,113,113,0.35); background: var(--bad-dim); }
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* --- footer: add / ceiling / readout / save -------------------------------- */
+.sched-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.sched-foot .grow { flex: 1 1 auto; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > span { font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); }
+.field input {
+  width: 156px; padding: 8px 10px; font: inherit; font-size: 13px;
+  font-variant-numeric: tabular-nums; text-align: right; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+}
+.field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.field input::placeholder { color: var(--faint); }
+
+/* The RSK-04 readout. The ceiling sits beside the composed day total, and the
+   meter makes "adding a row eats headroom" something the operator can SEE. */
+.risk-readout { min-width: 236px; }
+.risk-line { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.risk-line .k { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.risk-line .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.risk-line .v.over { color: var(--bad); }
+.risk-line .v.none { color: var(--faint); font-weight: 400; }
+.meter {
+  height: 6px; border-radius: 999px; margin: 8px 0 7px;
+  background: var(--surface); border: 1px solid var(--line); overflow: hidden;
+}
+.meter > i {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--good), #6ee7b7);
+  transition: width .3s ease, background .3s ease;
+}
+.meter.warn > i { background: linear-gradient(90deg, var(--warn), #fcd34d); }
+.meter.over > i { background: linear-gradient(90deg, var(--bad), #fca5a5); }
+
+/* --- messages -------------------------------------------------------------- */
+.msg {
+  font-size: 12px; margin: 8px 0 0; padding: 9px 12px;
+  border-radius: 10px; border: 1px solid transparent;
+}
+.msg.err  { color: var(--bad);  background: var(--bad-dim);  border-color: rgba(248,113,113,0.22); }
+.msg.warn { color: var(--warn); background: var(--warn-dim); border-color: rgba(251,191,36,0.22); }
+.msg.ok   { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.22); }
+.note { color: var(--faint); font-size: 11px; line-height: 1.55; margin: 11px 0 0; }
+
+/* UC-02 pre-flight checklist */
+.preflight { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 6px; }
+.preflight li {
+  display: flex; align-items: center; gap: 9px; font-size: 12px;
+  padding: 8px 11px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.preflight li .tick { width: 14px; text-align: center; font-weight: 700; }
+.preflight li.pass .tick { color: var(--good); }
+.preflight li.fail { background: var(--bad-dim); border-color: rgba(248,113,113,0.22); }
+.preflight li.fail .tick { color: var(--bad); }
+.preflight li strong { font-weight: 600; text-transform: capitalize; }
+.preflight li em { font-style: normal; color: var(--faint); font-size: 11px; }
+.preflight .detail { color: var(--muted); margin-left: auto; text-align: right; }
+
+/* --- UI-22 confirmation dialog --------------------------------------------- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center; padding: 20px;
+  background: rgba(3, 5, 9, 0.66); backdrop-filter: blur(3px);
+  animation: modal-fade .14s ease;
+}
+@keyframes modal-fade { from { opacity: 0; } }
+.modal {
+  width: min(440px, 100%);
+  background: var(--card-solid); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
+  padding: 22px; animation: modal-rise .16s ease;
+}
+@keyframes modal-rise { from { transform: translateY(6px); opacity: 0; } }
+.modal h3 { margin: 0 0 4px; font-size: 17px; }
+.modal .sub { margin: 0 0 16px; font-size: 12px; color: var(--muted); }
+
+.fire-params { margin: 0 0 16px; }
+.fire-params .p-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 7px 0; border-top: 1px solid var(--line); }
+.fire-params .p-row .k { font-size: 12px; color: var(--muted); }
+.fire-params .p-row .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* The number is an ESTIMATE (v1.46) — styled as a caution, never as a fact. */
+.estimate-box { padding: 12px 14px; border-radius: 11px; background: var(--warn-dim); border: 1px solid rgba(251, 191, 36, 0.24); }
+.estimate-box .lab { font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--warn); }
+.estimate-box .val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.modal-actions .btn { min-width: 96px; justify-content: center; }
+
+/* --- wide screens: sections side by side ------------------------------------
+   Below 820px everything stacks (handled above). These rules only ADD columns
+   as the viewport earns them; nothing narrower ever sees them. */
+@media (min-width: 1280px) {
+  .grid > .entries-col { grid-column: 1 / 2; }
+  .grid > .feed-col    { grid-column: 2 / -1; }
+}
+@media (min-width: 1680px) {
+  .grid { grid-template-columns: 1.15fr 1fr 1fr; }
+  .grid > .report      { grid-column: 3 / -1; grid-row: 1; }
+  .schedule-panel      { grid-column: 1 / -1; }
+  .grid > .entries-col { grid-column: 1 / 3; }
+  .grid > .feed-col    { grid-column: 3 / -1; }
+}
+@media (min-width: 2100px) {
+  /* the schedule table stops needing full width; the feed comes up beside it */
+  .grid { grid-template-columns: 1.1fr 0.9fr 0.9fr 1fr; }
+  .grid > .report      { grid-column: 3 / 5; grid-row: 1; }
+  .schedule-panel      { grid-column: 1 / 4; grid-row: 2; }
+  .grid > .feed-col    { grid-column: 4 / -1; grid-row: 2; }
+  .grid > .entries-col { grid-column: 1 / -1; grid-row: 3; }
+}
