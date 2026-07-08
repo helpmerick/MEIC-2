@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timezone
 from decimal import Decimal
 from pathlib import Path
+
+from fastapi import HTTPException
 
 from meic.application.clocks import MutableClock
 from meic.composition.paper import PaperComposition
@@ -208,6 +210,90 @@ def live_app():
     @app.get("/alerts")
     def recent_alerts() -> list[dict]:
         return alerts.recent()
+
+    # --- live trading day: selection + gates + the wall-clock runtime ---------
+    from meic.composition.live_gates import ET, LiveMarketGates
+    from meic.composition.live_runtime import LiveRuntime
+    from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
+
+    min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
+
+    class _Snapshots:
+        """Holds the freshness of the most recent chain snapshot so the DAT-02
+        gate reflects the data the selector actually used."""
+        stale = True
+
+        async def take(self):
+            from meic.adapters.dxlink.chain_snapshot import snapshot_chain
+            snap = await snapshot_chain(comp.broker._session)
+            self.stale = snap.stale
+            return snap
+
+    snaps = _Snapshots()
+
+    async def _data_fresh() -> bool:
+        return not snaps.stale
+
+    async def _session_valid() -> bool:
+        await comp.broker.working_orders()  # a light authenticated call; raises if dead
+        return True
+
+    async def _buying_power_ok() -> bool:
+        return (await comp.broker.buying_power()) >= min_buying_power
+
+    runtime = LiveRuntime(
+        comp,
+        selector=LiveCondorSelector(snapshot_provider=snaps.take, config=SelectionConfig()),
+        market_gates=LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
+                                     session_valid=_session_valid,
+                                     buying_power_ok=_buying_power_ok),
+    )
+    app.state.runtime = runtime
+    app.state.day_task = None
+
+    def _todays_entry_times() -> list[datetime]:
+        """Composed 'HH:MM' schedule -> today's ET datetimes."""
+        today = datetime.now(ET).date()
+        out = []
+        for item in comp.state.entry_schedule:
+            hh, mm = str(item["time"]).split(":")[:2]
+            out.append(datetime.combine(today, dtime(int(hh), int(mm)), tzinfo=ET))
+        return sorted(out)
+
+    @app.post("/day/start")
+    async def day_start() -> dict:
+        """Start the wall-clock trading day. Every entry still runs the full gate
+        chain — starting the day does NOT arm it."""
+        task = app.state.day_task
+        if task is not None and not task.done():
+            return {"running": True, "already_running": True}
+        times = _todays_entry_times()
+        if not times:
+            raise HTTPException(status_code=400, detail="no_entries_composed")
+        day = datetime.now(ET).date().isoformat()
+        app.state.day_task = asyncio.create_task(runtime.run_day(day, times))
+        return {"running": True, "day": day, "entries": len(times)}
+
+    @app.post("/day/stop")
+    async def day_stop() -> dict:
+        task = app.state.day_task
+        if task is not None and not task.done():
+            task.cancel()
+        return {"running": False}
+
+    @app.get("/day/status")
+    def day_status() -> dict:
+        task = app.state.day_task
+        if task is None:
+            return {"started": False, "running": False}
+        if not task.done():
+            return {"started": True, "running": True}
+        if task.cancelled():
+            return {"started": True, "running": False, "cancelled": True}
+        exc = task.exception()
+        return {"started": True, "running": False,
+                "filled": None if exc else task.result(),
+                "error": repr(exc) if exc else None}
 
     _serve_panel(app)
     return app
