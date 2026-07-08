@@ -45,6 +45,9 @@ class LiveComposition:
     stop_basis: StopBasis = StopBasis.TOTAL_CREDIT
     # v1.44: an EventLog stamps every appended event with config_version.
     events: list = field(default_factory=EventLog)
+    # RSK-04: entry_id -> structural worst case of each FILLED entry. Live had no
+    # such record, so RSK-04 could not have been enforced here even if asked.
+    worst_case: dict = field(default_factory=dict)
     state_store: object = None  # inject a SqliteStateStore for durable state (REC-07)
 
     def __post_init__(self) -> None:
@@ -82,6 +85,8 @@ class LiveComposition:
         return [ShortLeg(l.side, mids[l.side], Decimal("0.50"), symbol=l.symbol) for l in shorts]
 
     async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
+        # RSK-04: record what this entry can lose, so later entries see the headroom.
+        self.worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
         await self.protect.protect(
             entry_id=entry_id,
             # doc 06 section 37: this row's stop settings, falling back to the globals.

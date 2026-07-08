@@ -143,6 +143,93 @@ def paper_app():
     return app
 
 
+def _wire_live_day(comp, env: dict[str, str]) -> dict:
+    """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
+
+    Thin: every decision that could leave a SAFETY RAIL unarmed lives in
+    composition/live_wiring.py, where tests/composition/test_live_wiring.py asserts
+    on it directly. That test exists because this function's predecessor built a
+    LiveRuntime with max_day_risk, order_cap and buying_power all left at None,
+    and threw the composed schedule rows away — while the paper composition and
+    every unit test had all of it armed.
+    """
+    from meic.composition.live_gates import LiveMarketGates
+    from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
+    from meic.composition.live_wiring import (
+        ClockDrift,
+        build_live_runtime,
+        build_manual_entry,
+        live_preflight_checks,
+    )
+
+    min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
+    max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "250"))
+
+    # DAY-03: the clock MUST be verified against an authoritative source. Nothing
+    # here measures it, so an UNSET value is UNVERIFIED and blocks trading -- it is
+    # never silently treated as zero drift. Measure it (`w32tm /stripchart`,
+    # `chronyc tracking`) and pass the result in.
+    raw_drift = env.get("MEIC_CLOCK_DRIFT_MS")
+    drift = ClockDrift(float(raw_drift) if raw_drift not in (None, "") else None)
+
+    class _Snapshots:
+        """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
+        the UC-02 pre-flight — reflect the data the selector actually used.
+        Starts STALE: unknown freshness is never 'fresh'."""
+        stale = True
+
+        async def take(self):
+            from meic.adapters.dxlink.chain_snapshot import snapshot_chain
+            snap = await snapshot_chain(comp.broker._session)
+            self.stale = snap.stale
+            return snap
+
+    snaps = _Snapshots()
+
+    async def _data_fresh() -> bool:
+        return not snaps.stale
+
+    async def _session_valid() -> bool:
+        await comp.broker.working_orders()  # a light authenticated call; raises if dead
+        return True
+
+    async def _buying_power_ok() -> bool:
+        return (await comp.broker.buying_power()) >= min_buying_power
+
+    selector = LiveCondorSelector(snapshot_provider=snaps.take, config=SelectionConfig())
+    gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
+                            session_valid=_session_valid, buying_power_ok=_buying_power_ok)
+
+    # RSK-04 + RSK-08 + ENT-03 BP, all armed. Also wraps comp.broker so the order
+    # cap counts every order any service submits.
+    runtime = build_live_runtime(comp, selector=selector, market_gates=gates,
+                                 max_entries_per_day=_max_entries(comp),
+                                 drift=drift, max_clock_drift_ms=max_drift_ms)
+
+    # ENT-09: the panel's ▶ crosses the identical rails (same ceiling, same book).
+    manual = build_manual_entry(
+        comp, selector=selector, market_gates=gates,
+        max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
+        day=lambda: datetime.now(timezone.utc).astimezone().date().isoformat())
+
+    return {
+        "runtime": runtime,
+        "manual": manual,
+        # UC-02: real checks. `data_fresh` is read synchronously off the cached
+        # snapshot — the pre-flight route runs on a threadpool and must not await
+        # the broker (that would bind its session to a fresh event loop).
+        "preflight_checks": live_preflight_checks(
+            comp, data_fresh=lambda: not snaps.stale,
+            drift=drift, max_drift_ms=max_drift_ms),
+    }
+
+
+def _max_entries(comp) -> int | None:
+    """ENT-05. `None` means 'as many as are composed' (doc 06 default)."""
+    schedule = comp.state.entry_schedule or []
+    return len(schedule) or None
+
+
 def live_app():
     """Live composition behind the panel: real broker + feed, SQLite-persisted,
     token-gated, safe defaults. Connects on startup; NO trading auto-starts —
@@ -180,8 +267,17 @@ def live_app():
     comp = LiveComposition(
         clock=SystemClock(), ticks=SPX, provider_secret=secret, refresh_token=refresh,
         is_test=is_test, state_store=SqliteStateStore(data_dir / "state.db"))
-    app = create_app(comp.state, comp.events, api_token=token, commands=PanelCommands(comp))
+
+    # The live day, assembled with EVERY safety rail armed. Built BEFORE create_app
+    # so the panel's ▶ button and pre-flight get the real thing, not stubs. See
+    # composition/live_wiring.py — and tests/composition/test_live_wiring.py, which
+    # asserts on those functions precisely because this is where rails go missing.
+    live = _wire_live_day(comp, env)
+    commands = PanelCommands(comp, manual_entry=live["manual"],
+                             preflight_checks=live["preflight_checks"])
+    app = create_app(comp.state, comp.events, api_token=token, commands=commands)
     app.state.composition = comp
+    app.state.commands = commands
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None
@@ -243,54 +339,25 @@ def live_app():
     def recent_alerts() -> list[dict]:
         return alerts.recent()
 
-    # --- live trading day: selection + gates + the wall-clock runtime ---------
-    from meic.composition.live_gates import ET, LiveMarketGates
-    from meic.composition.live_runtime import LiveRuntime
-    from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
+    # --- live trading day: the runtime was assembled above (see _wire_live_day) --
+    from meic.composition.live_gates import ET
 
-    min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
-
-    class _Snapshots:
-        """Holds the freshness of the most recent chain snapshot so the DAT-02
-        gate reflects the data the selector actually used."""
-        stale = True
-
-        async def take(self):
-            from meic.adapters.dxlink.chain_snapshot import snapshot_chain
-            snap = await snapshot_chain(comp.broker._session)
-            self.stale = snap.stale
-            return snap
-
-    snaps = _Snapshots()
-
-    async def _data_fresh() -> bool:
-        return not snaps.stale
-
-    async def _session_valid() -> bool:
-        await comp.broker.working_orders()  # a light authenticated call; raises if dead
-        return True
-
-    async def _buying_power_ok() -> bool:
-        return (await comp.broker.buying_power()) >= min_buying_power
-
-    runtime = LiveRuntime(
-        comp,
-        selector=LiveCondorSelector(snapshot_provider=snaps.take, config=SelectionConfig()),
-        market_gates=LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
-                                     session_valid=_session_valid,
-                                     buying_power_ok=_buying_power_ok),
-    )
+    runtime = live["runtime"]
     app.state.runtime = runtime
     app.state.day_task = None
 
-    def _todays_entry_times() -> list[datetime]:
-        """Composed 'HH:MM' schedule -> today's ET datetimes."""
-        today = datetime.now(ET).date()
-        out = []
-        for item in comp.state.entry_schedule:
-            hh, mm = str(item["time"]).split(":")[:2]
-            out.append(datetime.combine(today, dtime(int(hh), int(mm)), tzinfo=ET))
-        return sorted(out)
+    def _todays_entry_times():
+        """Today's ScheduledRows — each carrying its OWN ENT-04 settings.
+
+        This used to return bare datetimes: the composed rows' contracts, premium,
+        width and stop were parsed off and thrown away, so every live entry traded
+        1 contract at the globals no matter what the panel displayed.
+        """
+        from meic.composition.live_wiring import schedule_rows
+        return schedule_rows(comp.state, today=datetime.now(ET).date(), tz=ET)
+
+    # exposed so the live-wiring capstone can assert on the REAL row construction
+    app.state.todays_rows = _todays_entry_times
 
     @app.post("/day/start")
     async def day_start() -> dict:

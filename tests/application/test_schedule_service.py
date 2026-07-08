@@ -211,3 +211,94 @@ def test_paper_does_not_require_a_ceiling_but_never_calls_it_unlimited():
     assert pre.passed is True
     assert "max_day_risk" not in [c.name for c in pre.checks]
     assert _svc([_row("10:00")]).max_day_risk() is None    # unknown, not infinite
+
+
+# --- v1.47 pin-at-Save (operator-ratified, doc 06 section 37) -------------------
+
+def _defaults(**over):
+    from dataclasses import replace as dc_replace
+    from meic.domain.schedule import ScheduleDefaults
+    return dc_replace(ScheduleDefaults(), **over)
+
+
+def _svc_with(state, defaults):
+    return ScheduleService(state, defaults)
+
+
+def test_a_saved_row_is_byte_identical_after_a_global_changes():
+    """THE pin-at-Save invariant. Save a row against one set of globals, change
+    every global, and the row's resolved parameters must not move by a hair.
+
+    Same reasoning as STP-02's subsequent-entries-only rule: changing a setting
+    can never silently change what a SAVED entry trades."""
+    from meic.application.schedule_service import pinned_row
+
+    state = PersistentState(InMemoryStateStore())
+    before_globals = _defaults()                       # 1 contract, $3.00, 50 wide, 95%
+    svc = _svc_with(state, before_globals)
+    assert svc.save([_row("10:00")])["result"] == "saved"
+
+    before = [pinned_row(r) for r in svc.resolved()]
+
+    # the operator now changes every global that a row can inherit
+    after_globals = _defaults(contracts=7, target_premium=D("9.00"), wing_width=D("100"),
+                              stop_loss_pct=200, stop_basis="short_premium",
+                              stop_rebate_markup=D("1.50"), min_short_premium=D("2.00"),
+                              min_total_credit=D("5.00"), probe_down_max=40,
+                              strike_method="delta", short_delta_target=D("0.25"))
+    after = [pinned_row(r) for r in _svc_with(state, after_globals).resolved()]
+
+    assert after == before, "a global change reached back into a saved row"
+    assert before[0]["contracts"] == 1 and before[0]["target_premium"] == "3.00"
+    assert before[0]["wing_width"] == "50" and before[0]["stop_loss_pct"] == 95
+
+
+def test_the_saved_row_stores_concrete_values_for_every_parameter():
+    """Nothing is left to inherit later — the row IS the contract."""
+    state = PersistentState(InMemoryStateStore())
+    _svc_with(state, _defaults()).save([_row("10:00")])
+
+    stored = state.entry_schedule[0]
+    assert set(stored) == {
+        "time", "contracts", "target_premium", "wing_width", "stop_loss_pct",
+        "stop_basis", "stop_rebate_markup", "min_short_premium", "min_total_credit",
+        "probe_down_max", "strike_method", "short_delta_target"}
+    assert not any(v in (None, "") for v in stored.values())
+
+
+def test_globals_are_pre_fills_for_new_rows_only():
+    """A NEW row still inherits whatever the globals are AT SAVE TIME — that is
+    what a pre-fill means. It is only retro-application that is forbidden."""
+    state = PersistentState(InMemoryStateStore())
+    _svc_with(state, _defaults()).save([_row("10:00")])                  # pinned at 1
+    rich = _svc_with(state, _defaults(contracts=4))
+    rich.save([*state.entry_schedule, _row("11:00")])                    # new row appended
+
+    assert [r.contracts for r in rich.resolved()] == [1, 4]              # old pinned, new pre-filled
+
+
+def test_an_explicit_override_survives_the_pin_unchanged():
+    state = PersistentState(InMemoryStateStore())
+    svc = _svc_with(state, _defaults())
+    svc.save([_row("10:00", contracts=3, stop_loss_pct=150, wing_width="30")])
+
+    r = svc.resolved()[0]
+    assert (r.contracts, r.stop_loss_pct, r.wing_width) == (3, 150, D("30"))
+
+
+def test_decimals_pin_as_exact_strings_never_floats():
+    """The order and the event log both depend on the exactness."""
+    state = PersistentState(InMemoryStateStore())
+    _svc_with(state, _defaults()).save([_row("10:00", target_premium="3.05",
+                                             stop_rebate_markup="0.05")])
+    stored = state.entry_schedule[0]
+    assert stored["target_premium"] == "3.05" and isinstance(stored["target_premium"], str)
+    assert stored["stop_rebate_markup"] == "0.05"
+
+
+def test_a_row_composed_outside_the_panel_still_resolves():
+    """The paper demo writes bare {"time": ...} rows; pre-v1.47 durable state may
+    hold them too. They resolve against the globals rather than crashing."""
+    state = PersistentState(InMemoryStateStore())
+    state.entry_schedule = [{"time": "10:00"}]
+    assert _svc_with(state, _defaults(contracts=2)).resolved()[0].contracts == 2

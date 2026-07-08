@@ -36,6 +36,17 @@ from .schedule_service import worst_case_estimate
 MANUAL = "manual_entry"
 
 
+async def _maybe_await(provider):
+    """Call a provider that may be sync or async. `None` means the rail is off.
+    Live's risk snapshot needs an authenticated buying-power call; paper's does not."""
+    import inspect
+
+    if provider is None:
+        return None
+    value = provider()
+    return await value if inspect.isawaitable(value) else value
+
+
 @dataclass(frozen=True)
 class FirePreview:
     """What the UI-22 dialog shows before the operator presses OK."""
@@ -68,13 +79,16 @@ class FirePreview:
 
 class ManualEntry:
     def __init__(self, comp, selector, market_gates, *, max_entries_per_day=None,
-                 risk=None, day=None) -> None:
+                 risk=None, day=None, blocks=None) -> None:
         self._comp = comp
         self._selector = selector          # async (when, n, config) -> (Condor|None, skip|None)
         self._gates = market_gates         # async () -> GateSnapshot
         self._max_entries = max_entries_per_day
-        self._risk = risk                  # () -> RiskSnapshot | None
+        self._risk = risk                  # () -> RiskSnapshot | None (sync or async)
         self._day = day                    # () -> "YYYY-MM-DD"
+        # ENT-09: "reconcile-block and clock-drift checks" apply to a manual fire.
+        # They sit OUTSIDE the ENT-03 gate chain, so attempt() cannot run them.
+        self._blocks = blocks              # () -> skip reason | None
         self._consumed: set[str] = set()   # press ids already acted on (idempotency)
 
     # --- UI-22 -------------------------------------------------------------------
@@ -117,13 +131,21 @@ class ManualEntry:
             return {"result": "blocked", "reason": "blocked",
                     "state": self._comp.state.blocking_state()}
 
-        # 4. ENT-05: a manual entry COUNTS toward max_entries_per_day.
+        # 4. ENT-09: the reconcile-block (REC-02 -> RSK-03) and the clock-drift
+        # check (RSK-07). A manual press is fresh intent, not a stale clock.
+        blocked = self._blocks() if self._blocks else None
+        if blocked is not None:
+            self._comp.events.append(
+                EntrySkipped(date=day, entry_number=entry_number, reason=blocked))
+            return {"result": "skipped", "reason": blocked}
+
+        # 5. ENT-05: a manual entry COUNTS toward max_entries_per_day.
         if self._max_entries is not None and self._filled_today() >= self._max_entries:
             self._comp.events.append(
                 EntrySkipped(date=day, entry_number=entry_number, reason="max_entries"))
             return {"result": "skipped", "reason": "max_entries"}
 
-        # 5. Selection at fire time, from fresh chain data — as a scheduled entry.
+        # 6. Selection at fire time, from fresh chain data — as a scheduled entry.
         when = self._comp.clock.now()
         condor, skip = await self._selector(when, entry_number, _selection(row))
         if condor is None:

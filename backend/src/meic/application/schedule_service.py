@@ -44,6 +44,34 @@ def day_total_estimate(entries) -> Decimal:
     return sum((worst_case_estimate(e) for e in entries), Decimal("0"))
 
 
+def pinned_row(entry) -> dict[str, Any]:
+    """A ResolvedEntry as the row we PERSIST (v1.47 pin-at-Save, doc 06 §37).
+
+    Every parameter concrete. Globals are pre-fills for NEW rows only; they never
+    retro-apply to a saved row. This extends v1.44's `contracts_per_entry`
+    precedent to every field, for the same reason STP-02 makes stop changes apply
+    to subsequent entries only: changing a setting must never silently change what
+    a saved entry trades. What the row displays is exactly what it trades.
+
+    Decimals go out as strings — exact, never float (the log and the order both
+    depend on it).
+    """
+    return {
+        "time": entry.time.strftime("%H:%M"),
+        "contracts": entry.contracts,
+        "target_premium": str(entry.target_premium),
+        "wing_width": str(entry.wing_width),
+        "stop_loss_pct": entry.stop_loss_pct,
+        "stop_basis": entry.stop_basis,
+        "stop_rebate_markup": str(entry.stop_rebate_markup),
+        "min_short_premium": str(entry.min_short_premium),
+        "min_total_credit": str(entry.min_total_credit),
+        "probe_down_max": entry.probe_down_max,
+        "strike_method": entry.strike_method,
+        "short_delta_target": str(entry.short_delta_target),
+    }
+
+
 @dataclass(frozen=True)
 class ScheduleView:
     """What the panel renders: the rows, their estimates, and the headroom."""
@@ -124,19 +152,20 @@ class ScheduleService:
 
     # --- read ------------------------------------------------------------------
     def resolved(self) -> list:
+        """The concrete parameters each row trades.
+
+        Pin-at-Save (v1.47) means a SAVED row already holds concrete values, so
+        `resolve` is a no-op over it. It still runs, for two cases: a row composed
+        outside the panel (the paper demo's bare `{"time": ...}` rows), and any
+        pre-v1.47 row already in the durable store.
+        """
         rows = self._state.entry_schedule or []
         return [resolve(spec_from_row(r), self._defaults) for r in rows]
 
     def view(self) -> ScheduleView:
         resolved = self.resolved()
-        rows = []
-        for raw, r in zip(self._state.entry_schedule or [], resolved):
-            rows.append({**raw,
-                         "contracts": r.contracts,
-                         "target_premium": str(r.target_premium),
-                         "wing_width": str(r.wing_width),
-                         "stop_loss_pct": r.stop_loss_pct,
-                         "worst_case_estimate": str(worst_case_estimate(r))})
+        rows = [{**pinned_row(r), "worst_case_estimate": str(worst_case_estimate(r))}
+                for r in resolved]
         return ScheduleView(rows=rows, day_total_estimate=day_total_estimate(resolved),
                             max_day_risk=self.max_day_risk(),
                             config_version=self._state.config_version)
@@ -167,7 +196,11 @@ class ScheduleService:
                                for e in errors]}
 
         version = self._next_version()
-        self._state.entry_schedule = rows
+        # v1.47 pin-at-Save: persist CONCRETE values, resolved against the globals
+        # in force right now. A later change to a global cannot reach back into a
+        # saved row — the row is the contract.
+        self._state.entry_schedule = [
+            pinned_row(resolve(spec_from_row(r), self._defaults)) for r in rows]
         if max_day_risk not in (None, ""):
             self._state.max_day_risk = str(Decimal(str(max_day_risk)))
         self._state.config_version = version

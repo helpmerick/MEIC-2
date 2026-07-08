@@ -32,6 +32,16 @@ from meic.domain.stop_policy import StopBasis
 
 from .live_selection import SelectionConfig
 
+async def _maybe_await(provider):
+    """Call a provider that may be sync or async. `None` means the rail is off."""
+    import inspect
+
+    if provider is None:
+        return None
+    value = provider()
+    return await value if inspect.isawaitable(value) else value
+
+
 # (condor, skip_reason) — exactly one is non-None
 Selector = Callable[..., Awaitable[tuple[Condor | None, str | None]]]
 GatesProvider = Callable[[], Awaitable[GateSnapshot]]
@@ -78,10 +88,15 @@ class LiveRuntime:
     def _skip(self, day: str, n: int, reason: str) -> None:
         self.comp.events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
 
-    def _risk(self) -> RiskSnapshot:
+    async def _risk(self) -> RiskSnapshot:
         """RSK-08 + RSK-04 + ENT-03 BP. Only entries still OPEN count toward
         exposure. `new_worst_case` is a placeholder — ExecuteEntryAttempt re-prices
-        it from the condor, so the runtime cannot under-report its own entry."""
+        it from the condor, so the runtime cannot under-report its own entry.
+
+        Async because a live broker's buying power is an authenticated call. It is
+        fetched HERE, immediately before the gate that uses it, rather than read
+        from something a previous await happened to refresh.
+        """
         open_ids = {eid for eid, e in fold(self.comp.events).entries.items() if not e.close_initiator}
         return RiskSnapshot(
             new_worst_case=Decimal("0"),
@@ -89,7 +104,7 @@ class LiveRuntime:
             max_day_risk=self.max_day_risk,
             order_cap_allows_entry=(self.order_cap is None
                                     or self.order_cap.allow(exit_priority=False)),
-            buying_power=self.buying_power() if self.buying_power is not None else None,
+            buying_power=await _maybe_await(self.buying_power),
         )
 
     def _blocked_reason(self, filled: int, cap: int) -> str | None:
@@ -143,7 +158,7 @@ class LiveRuntime:
             gates = await self.market_gates()
             outcome = await comp.execute.attempt(
                 day=day, scheduled=when, condor=condor, gates=gates,
-                risk=self._risk(), stop=row.stop)
+                risk=await self._risk(), stop=row.stop)
             if outcome.status == "FILLED":
                 filled += 1
                 # ExecuteEntryAttempt keys its events off condor.entry_number, so we

@@ -95,6 +95,23 @@ is wired in `live_app` with the real chain selector and real market gates:
   session probe, and `derivative_buying_power` vs `MEIC_MIN_BUYING_POWER`
   (default 5000). Every provider **defaults to the blocking answer**: a gate that
   cannot be evaluated blocks the entry rather than waving it through.
+- **rails** — RSK-04 (`max_day_risk` from the schedule panel), RSK-08 (daily order
+  cap, default 380), and the ENT-03 buying-power gate are all armed by
+  `_wire_live_day`; `tests/composition/test_live_wiring.py` fails if any is left
+  unwired.
+
+**Clock verification (DAY-03, required before a live arm).** Nothing in the bot
+measures its own clock drift, and the pre-flight will **block a live arm** until
+you supply a measurement — an unverified clock reads as infinite drift, never as
+zero. Measure it against an authoritative source and pass the result in
+milliseconds:
+
+```
+# Windows:  w32tm /stripchart /computer:time.nist.gov /samples:1
+# Linux:    chronyc tracking      (or: ntpdate -q pool.ntp.org)
+MEIC_CLOCK_DRIFT_MS=<measured ms>    # e.g. 42 ; omit and every entry skips clock_drift
+MEIC_MAX_CLOCK_DRIFT_MS=250          # RSK-07 tolerance (default 250)
+```
 
 ### Verify at the market open (read-only, places nothing)
 
