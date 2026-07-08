@@ -34,7 +34,7 @@ Single source of truth for every configurable parameter. The backend config sche
 
 ### Per-entry overrides
 
-`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only: `contracts` (v1.44), `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `probe_down_max` (v1.44 — the UI may display it as dollars: n × $0.05, e.g. 15 → “within $0.75 below target”; the up-cap stays `probe_up_max`, NEVER symmetric), `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`. Example:
+`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only — **pin-at-Save semantics (v1.47, operator-ratified): every schedule row stores CONCRETE values for all its parameters at Save time; globals are pre-fill defaults for NEW rows only and NEVER retro-apply to saved rows (extends v1.44's `contracts_per_entry` precedent to all row fields; what the row displays is exactly what trades)** — : `contracts` (v1.44), `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `probe_down_max` (v1.44 — the UI may display it as dollars: n × $0.05, e.g. 15 → “within $0.75 below target”; the up-cap stays `probe_up_max`, NEVER symmetric), `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`. Example:
 
 ```yaml
 entries:
