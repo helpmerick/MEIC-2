@@ -195,6 +195,12 @@ class TastytradeAdapter:
     async def positions(self) -> list[Any]:
         return await self._account.get_positions(self._session)
 
+    async def buying_power(self) -> Decimal:
+        """Options buying power (ENT-03 BP gate / RSK-04). `derivative_buying_power`
+        is the figure that governs an options spread, not equity BP."""
+        balances = await self._account.get_balances(self._session)
+        return Decimal(str(balances.derivative_buying_power))
+
     async def fills_since(self, cursor) -> list[Any]:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]

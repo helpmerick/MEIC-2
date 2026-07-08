@@ -84,11 +84,41 @@ position its durable OWN ledger cannot account for is **FOREIGN** — quarantine
 therefore refuse to trade — by design.
 
 **Trading runtime.** `LiveRuntime` drives the wall-clock entry cadence (warm-up
-at T-60, the ENT-03 gate chain, plus reconcile-block and clock-drift blocks). It
-takes a **required** `selector` and `market_gates` — there are no optimistic
-defaults, so it cannot fire an entry until real chain selection and real market
-gates are wired. Wiring and verifying those against live data is the remaining
-step before a live trading day.
+at T-60, the ENT-03 gate chain, plus reconcile-block and clock-drift blocks) and
+is wired in `live_app` with the real chain selector and real market gates:
+
+- **selector** — snapshots the live SPXW 0DTE chain over DXLink, applies DAT-02
+  freshness → STK-10 completeness → probe walk → STK-09 collisions → credit gates
+  re-run on the FINAL strikes. Any degraded input returns a **named skip reason
+  and no Condor**; it never estimates a missing mark.
+- **gates** — exchange calendar (DAY-01/02, ET), snapshot freshness, a broker
+  session probe, and `derivative_buying_power` vs `MEIC_MIN_BUYING_POWER`
+  (default 5000). Every provider **defaults to the blocking answer**: a gate that
+  cannot be evaluated blocks the entry rather than waving it through.
+
+### Verify at the market open (read-only, places nothing)
+
+```bash
+pytest -m contract tests/contract/test_live_selection_cert.py -s
+```
+
+It prints spot, expiration, band/marked counts, completeness, and either the
+selected condor or the named skip reason. It asserts the one invariant that
+matters: **a Condor is never returned from stale or incomplete data.** Run it at
+the open; with the market closed you will correctly see `data_unavailable`.
+
+### Run a trading day
+
+```
+POST /day/start    # starts the wall-clock cadence (token-gated)
+GET  /day/status
+POST /day/stop
+```
+
+Starting the day does **not** arm it — every entry still runs the full gate
+chain. Verified against cert: fully ARMED with Confirm Live ON, at a live entry
+time with the market closed, the runtime skipped `data_unavailable` and
+submitted **zero orders**.
 
 Go-live order: pass the STP-05a cert drill (`pytest -m contract`) → run cert
 `live_app` for a track record → run the UC-12 outage drill on your account →
