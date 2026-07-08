@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.47 — 2026-07-08
+- v1.47 changes (operator-ratified, agent's ScheduleService question): **pin-at-Save row semantics** — every schedule row stores concrete values for ALL parameters at Save; globals are pre-fills for new rows only, never retro-applied (no action at a distance: changing a global on Tuesday can never silently change Wednesday's saved entries; extends the v1.44 contracts precedent to target_premium, wing_width, and all row fields). Consistent with STP-02's subsequent-entries-only pattern and replay determinism. Also approved: live_app wired to parity with paper + a test asserting on the REAL wiring function (no rail may be None); read-only market-open selection verification.
 - Version: 1.46 — 2026-07-08
 - v1.46 changes (operator-ratified UI rulings, item-7 hold): UI-22's ▶ dialog shows a labeled worst-case ESTIMATE from row parameters — the agent proved the previously-worded "computed structural worst case" impossible at press time (no strikes selected yet); post-selection RSK-04 stays authoritative. max_day_risk ceiling lives ON the schedule panel beside the composed day total. strike_method/short_delta_target stay panel-level in the UI for now (per-entry override capability remains in the config schema, §37 unchanged). ProtectPosition's strike-identified ShortLeg fallback ruled a HARD REFUSAL — already mandated by ORD-09.
 - Version: 1.45 — 2026-07-08
