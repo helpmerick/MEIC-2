@@ -22,6 +22,8 @@ import json
 from decimal import Decimal
 from typing import Any, AsyncIterator
 
+from meic.adapters.tastytrade.occ import occ_symbol
+from meic.application.order_intent import OrderIntent
 from meic.domain.allocation import AllocationGate, reconcile
 
 
@@ -111,15 +113,25 @@ class TastytradeAdapter:
             self._account = accounts[0]
 
     # ---- intent translation (ACL) --------------------------------------------
-    async def _build_order(self, intent: dict[str, Any]):
-        """Translate an abstract order intent into a tastytrade NewOrder.
+    async def _option_for(self, symbol: str):
+        """Resolve an OCC symbol to the SDK instrument. Overridable so the ACL
+        can be contract-tested without a session (see the intent-contract suite)."""
+        from tastytrade.instruments import Option
+        return await Option.get(self._session, symbol)
 
-        Intent shape (concrete): {order_type, tif, price?, stop_trigger?, legs:
-        [{symbol, action, qty}]}. `symbol` is a resolved SPXW OCC symbol — the
-        composition root resolves strikes to symbols before submit."""
+    async def _build_order(self, intent: OrderIntent):
+        """Translate the canonical OrderIntent into a tastytrade NewOrder.
+
+        Payload translation is the ACL's job (doc 05 §121) — including resolving
+        each leg's (underlying, expiration, right, strike) to an OCC symbol. The
+        application layer speaks strikes; only this adapter knows symbology.
+
+        Every leg is sized at `intent.contracts` (the OrderIntent constructor
+        already refuses any other shape), so a stop can never be placed smaller
+        than the position it protects.
+        """
         from decimal import Decimal as D
 
-        from tastytrade.instruments import Option
         from tastytrade.order import NewOrder, OrderAction, OrderTimeInForce, OrderType
 
         self.validate_stop_tif(intent)  # assumption 2 — before building anything
@@ -130,29 +142,31 @@ class TastytradeAdapter:
         tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
 
         legs = []
-        for leg in intent["legs"]:
-            opt = await Option.get(self._session, leg["symbol"])
-            legs.append(opt.build_leg(D(str(leg.get("qty", 1))), action_map[leg["action"]]))
+        for leg in intent.legs:
+            symbol = leg.symbol or occ_symbol(
+                intent.underlying, intent.expiration, leg.right, leg.strike)
+            opt = await self._option_for(symbol)
+            legs.append(opt.build_leg(D(leg.qty), action_map[leg.action]))
 
         kwargs: dict[str, Any] = dict(
-            time_in_force=tif_map.get(intent.get("tif", "Day"), OrderTimeInForce.DAY),
-            order_type=type_map[intent["order_type"]],
+            time_in_force=tif_map.get(intent.tif, OrderTimeInForce.DAY),
+            order_type=type_map[intent.order_type],
             legs=legs,
         )
-        if "stop_trigger" in intent:
-            kwargs["stop_trigger"] = D(str(intent["stop_trigger"]))
-        if "price" in intent:
-            kwargs["price"] = D(str(intent["price"]))
+        if intent.stop_trigger is not None:
+            kwargs["stop_trigger"] = D(str(intent.stop_trigger))
+        if intent.price is not None:
+            kwargs["price"] = D(str(intent.price))
         return NewOrder(**kwargs)
 
     @staticmethod
-    def validate_stop_tif(order: dict[str, Any]) -> None:
+    def validate_stop_tif(intent: OrderIntent) -> None:
         """Assumption 2: reject an option stop that isn't Day-TIF before submit.
-        Accepts either intent shape (`order_type` or `type`)."""
-        otype = order.get("order_type") or order.get("type")
-        if otype in ("stop_market", "stop_limit") and order.get("tif") not in _OPTION_STOP_ALLOWED_TIF:
+        (OrderIntent already refuses this at construction; kept as the adapter's
+        own last line of defence against a hand-built intent.)"""
+        if intent.order_type in ("stop_market", "stop_limit") and intent.tif not in _OPTION_STOP_ALLOWED_TIF:
             raise ValueError(
-                f"option stop TIF {order.get('tif')!r} unsupported — Day only "
+                f"option stop TIF {intent.tif!r} unsupported — Day only "
                 "(cert: tif_no_stop_market_gtc_options)")
 
     def record_fill_allocation(
