@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.46 — 2026-07-08
+- v1.46 changes (operator-ratified UI rulings, item-7 hold): UI-22's ▶ dialog shows a labeled worst-case ESTIMATE from row parameters — the agent proved the previously-worded "computed structural worst case" impossible at press time (no strikes selected yet); post-selection RSK-04 stays authoritative. max_day_risk ceiling lives ON the schedule panel beside the composed day total. strike_method/short_delta_target stay panel-level in the UI for now (per-entry override capability remains in the config schema, §37 unchanged). ProtectPosition's strike-identified ShortLeg fallback ruled a HARD REFUSAL — already mandated by ORD-09.
 - Version: 1.45 — 2026-07-08
 - v1.45 changes (operator-ratified, from the leg-identity flag + stop-qty defect): **(1) ORD-09 broker-truth leg identity (Option A — “keep the receipt”)**: every fill event records each leg's broker-reported OCC symbol + allocated fill price; ALL later order actions use the recorded symbol, never reconstruction (reconstruction = cross-check-with-alert only); same fields in paper. Serves STP-02d reconciliation records and the OWN ledger. Kills the placeholder-symbol bug class flagged in panel_commands.close(). **(2) STP-01 quantity invariant**: stop quantity MUST equal the short leg's filled quantity; any working mismatch (placement confirm, reconcile, later checks) = UNPROTECTED per STP-04 (OWN-10 if operator-resized); bot never silently resizes. Locks the fixed 2-contract/1-stop defect out of the rulebook. TC-ORD-07 added; TC-STP-04 gains 2 scenarios.
 - Version: 1.44 — 2026-07-08
