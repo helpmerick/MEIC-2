@@ -13,7 +13,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `entry_window_seconds` | 10–600 | 120 | next-entry | ENT-02 |
 | `session_warmup_lead_seconds` | 10–300 | 60 | next-entry | ENT-08 |
 | `session_token_expiry_buffer_seconds` | 60–1800 | 300 | immediate | ENT-08, REC-06 |
-| `contracts_per_entry` | 1–100 | 1 | next-entry | ENT-04 |
+| `contracts_per_entry` | 1–10 | 1 | next-entry | ENT-04 — per-entry since v1.44: each schedule row carries its own `contracts` (1–10); this parameter is only the pre-fill for new rows |
 | `max_entries_per_day` | 1–20 | len(entry_times) | next-entry | ENT-05 |
 | `strike_method` | premium \| delta | premium | next-entry | STK-02 |
 | `target_premium` | $0.50–$20.00 | $3.00 | next-entry | STK-02/02a — short-leg mid target; selection ceiling = target + tolerance, never exceeded; NOT net spread credit; net = short − long fluctuates with wing cost |
@@ -34,7 +34,7 @@ Single source of truth for every configurable parameter. The backend config sche
 
 ### Per-entry overrides
 
-`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only: `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`. Example:
+`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only: `contracts` (v1.44), `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `probe_down_max` (v1.44 — the UI may display it as dollars: n × $0.05, e.g. 15 → “within $0.75 below target”; the up-cap stays `probe_up_max`, NEVER symmetric), `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`. Example:
 
 ```yaml
 entries:
@@ -109,7 +109,7 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 
 | Parameter | Type / Range | Default | Effectivity | Rules |
 |---|---|---|---|---|
-| `entry_reprice_seconds` | 5–120 | 20 | next-entry | ORD-02 |
+| `entry_reprice_seconds` | 3–120 | 20 | next-entry | ORD-02 — floor lowered 5→3 s (v1.44, operator-ratified); below 3 s rejected: an aggressive walk must not starve the API budget EC-API-02 reserves for exits |
 | `entry_reprice_attempts` | 1–10 | 5 | next-entry | ORD-02 |
 | `partial_fix_seconds` | 5–60 | 15 | immediate | EC-ENT-06 |
 | `reject_retry_seconds` | 1–30 | 5 | immediate | EC-ENT-08 |
