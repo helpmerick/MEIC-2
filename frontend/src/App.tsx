@@ -147,8 +147,8 @@ function ApiTokenControl() {
   const [value, setValue] = useState(getApiToken());
   const [status, setStatus] = useState<TokenStatus>("idle");
 
-  // On mount, verify any already-stored password so the padlock reflects reality
-  // (🔐 only when the backend actually accepts it), not just "a string exists".
+  // On mount, verify any already-stored password so the control reflects reality
+  // (Unlocked only when the backend actually accepts it), not just "a string exists".
   useEffect(() => {
     if (!getApiToken()) return;
     setStatus("checking");
@@ -168,15 +168,23 @@ function ApiTokenControl() {
     }
   }
 
-  const locked = status === "ok";
+  // Intuitive direction: UNLOCKED (🔓) = authenticated, you CAN command; LOCKED
+  // (🔒) = you must enter the password first. The word carries the meaning so the
+  // icon direction is never a guess.
   if (!open) {
+    const unlocked = status === "ok";
+    const label = unlocked ? "Unlocked"
+      : status === "bad" ? "Rejected"
+      : status === "checking" ? "Checking…" : "Locked";
+    const icon = unlocked ? "🔓" : status === "bad" ? "⚠️" : "🔒";
+    const title = unlocked
+      ? "Password accepted — commands are enabled (Arm, Confirm Live, ▶). Click to change or clear it."
+      : status === "bad" ? "Password was rejected — click to re-enter."
+      : "Enter your User Password to enable commands.";
     return (
-      <button className="theme-toggle" onClick={() => setOpen(true)}
-              title={locked ? "User Password accepted — click to change"
-                            : status === "bad" ? "User Password was rejected — click to fix"
-                            : "Set the User Password (MEIC_USER_PASSWORD)"}
-              aria-label="user password">
-        {locked ? "🔐" : status === "bad" ? "⚠️" : "🔓"}
+      <button className={`auth-pill ${status}`} onClick={() => setOpen(true)}
+              title={title} aria-label="user password">
+        <span aria-hidden>{icon}</span> {label}
       </button>
     );
   }

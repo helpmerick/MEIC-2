@@ -294,3 +294,6 @@ body {
 .tok-msg { font-size: 11px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap; }
 .tok-msg.ok { color: var(--good); }
 .tok-msg.bad { color: var(--bad); }
+.auth-pill { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 8px; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; cursor: pointer; border: 1px solid var(--line); background: var(--panel-2); color: var(--faint); }
+.auth-pill.ok { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.35); }
+.auth-pill.bad { color: var(--bad); background: var(--bad-dim); border-color: rgba(248,113,113,0.4); }

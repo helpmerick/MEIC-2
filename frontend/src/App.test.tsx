@@ -104,9 +104,9 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
 
     expect(localStorage.getItem("meic_api_token")).toBe("s3cr3t-token");
     expect(check).toHaveBeenCalled();                        // validated, not blindly stored
-    // padlock flips to 🔐 (accepted) — no page reload
+    // control flips to "Unlocked" (accepted) — intuitive direction, no page reload
     await waitFor(() =>
-      expect(screen.getByLabelText("user password")).toHaveTextContent("🔐"));
+      expect(screen.getByLabelText("user password")).toHaveTextContent(/unlocked/i));
   });
 
   it("tells the operator when the User Password is wrong (401), staying unlocked", async () => {
