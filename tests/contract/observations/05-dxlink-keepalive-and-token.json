@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-07-08T12:00:42.059967+00:00",
+  "recorded_at": "2026-07-09T15:41:03.272301+00:00",
   "observation": {
     "setup_frames": [
       "received: {'type': 'SETUP', 'channel': 0, 'version': '1.0-2.8.3', 'keepaliveTimeout': 60, 'acceptKeepaliveTimeout': 60}",
@@ -7,7 +7,7 @@
     ],
     "token_log_lines": [],
     "streamer_attrs": {
-      "_auth_token": "dGFzdHksZGVtbywsMTc4MzU5ODQ0MCwxNzgzNTEyMDQwLFUwMmY0NzdjNy00MGQyLTRlMTItYTQ1Yy0wNDI4ZTlmZGVkMTA.CsRCVZUX4oL10rk00mdeM_w1eHkQwaeXJDBgGIdY6v8",
+      "_auth_token": "dGFzdHksZGVtbywsMTc4MzY5ODA2MSwxNzgzNjExNjYxLFUwMmY0NzdjNy00MGQyLTRlMTItYTQ1Yy0wNDI4ZTlmZGVkMTA.2ZRfeMAaM-_nsHrLajrQHmrrJC9bR-rsOeEVghCoJcg",
       "_wss_url": "wss://tasty-demo-dxlink-md-ws.dxfeed.com/delayed"
     },
     "note": "spec expectation ~24h quote token (doc 05 NFR-04); session OAuth token separately ~900s per refresh log"

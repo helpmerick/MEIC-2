@@ -13,6 +13,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
+import {
+  etToZone,
+  isMilitaryTime,
+  RTH_CLOSE_LABEL,
+  RTH_OPEN_LABEL,
+  withinMarketHours,
+  zoneLabel,
+} from "../time";
 import type {
   FirePreview,
   FireResult,
@@ -31,6 +39,43 @@ const BLANK: ScheduleRow = { time: "", contracts: "", target_premium: "", wing_w
 // Server-side is authoritative; this only decides which cell to outline in red.
 function errorFor(errors: ScheduleError[], index: number, field: string): string | undefined {
   return errors.find((e) => e.index === index && e.field === field)?.reason;
+}
+
+// A locally-detectable bad time: not 24-hour military, or outside market hours.
+// The backend re-checks both; this just outlines the cell early.
+function timeInvalid(value?: string): boolean {
+  const raw = (value ?? "").trim();
+  if (!raw) return false; // empty is "unfilled", not "wrong" — the backend flags it
+  return !isMilitaryTime(raw) || !withinMarketHours(raw);
+}
+
+// Under each ET time: the operator's LOCAL equivalent (DST-aware, read live from
+// the browser), or a precise reason the time is not yet valid. Times are ET; a
+// London operator entering 11:53 sees "≈ 16:53 London" and knows exactly when it
+// fires their time. Military-only + market-open (09:30-16:00 ET) are enforced here
+// for instant feedback and by the backend authoritatively.
+function TimeHint({ value }: { value?: string }) {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  if (!isMilitaryTime(raw)) {
+    return (
+      <span className="time-hint bad" data-testid="time-hint">
+        24-hour HH:MM (e.g. 09:32)
+      </span>
+    );
+  }
+  if (!withinMarketHours(raw)) {
+    return (
+      <span className="time-hint bad" data-testid="time-hint">
+        outside market hours ({RTH_OPEN_LABEL}–{RTH_CLOSE_LABEL} ET)
+      </span>
+    );
+  }
+  return (
+    <span className="time-hint" data-testid="time-hint">
+      ≈ {etToZone(raw)} {zoneLabel()}
+    </span>
+  );
 }
 
 /** Fraction of the ceiling the composed day already consumes. */
@@ -136,10 +181,14 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   <input
                     aria-label={`time ${i + 1}`}
                     value={row.time ?? ""}
-                    placeholder="10:00"
+                    placeholder="09:32"
+                    inputMode="numeric"
                     onChange={(e) => patch(i, "time", e.target.value)}
-                    className={errorFor(rowErrors, i, "time") ? "invalid" : ""}
+                    className={
+                      errorFor(rowErrors, i, "time") || timeInvalid(row.time) ? "invalid" : ""
+                    }
                   />
+                  <TimeHint value={row.time} />
                 </td>
                 <td className="cell-num">
                   <input

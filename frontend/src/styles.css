@@ -289,3 +289,5 @@ body {
 .pill.live-mode { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.35); font-weight: 800; }
 .msg.live-banner { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.3); }
 .msg.live-banner strong { font-weight: 900; letter-spacing: 0.03em; }
+.time-hint { display: block; margin-top: 3px; font-size: 10px; line-height: 1.3; color: var(--faint); letter-spacing: 0.01em; white-space: nowrap; }
+.time-hint.bad { color: var(--warn); }

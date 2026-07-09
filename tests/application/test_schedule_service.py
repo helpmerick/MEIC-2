@@ -148,8 +148,38 @@ def test_a_time_too_close_to_the_close_is_rejected():
 
 
 def test_an_unparsable_row_is_an_error_not_a_crash():
-    out = _svc([]).save([{"time": "not-a-time"}])
+    # A non-time parse error (bad contracts) still routes to the generic row error.
+    out = _svc([]).save([{"time": "10:00", "contracts": "abc"}])
     assert out["result"] == "invalid" and out["errors"][0]["field"] == "row"
+
+
+# --- entry times must be 24-hour military, within market hours --------------------
+
+@pytest.mark.parametrize("bad", ["11.53", "1:53pm", "0930", "24:00", "11:60", "9:5", "noon", ""])
+def test_entry_time_must_be_24_hour_military(bad):
+    """Entry times are 24-hour HH:MM; am/pm, dotted, 4-digit and out-of-range are
+    refused with a precise per-row reason, not a generic crash."""
+    out = _svc([]).save([_row(bad)])
+    assert out["result"] == "invalid"
+    err = out["errors"][0]
+    assert err["field"] == "time" and err["reason"] == "not_24h_military" and err["index"] == 0
+
+
+@pytest.mark.parametrize("good", ["09:32", "9:32", "10:00", "15:30", "23:59", "00:00"])
+def test_military_times_parse_as_valid_format(good):
+    """The format gate accepts any real 24-hour time; the SESSION gate (below) is
+    what then rejects the ones outside market hours."""
+    errs = _svc([]).validate([_row(good)])
+    assert not any(e.reason == "not_24h_military" for e in errs)
+
+
+def test_entry_time_must_be_within_market_hours():
+    """Ruling: an entry time is only valid while the market is open (09:30-16:00 ET).
+    Pre-market and after-close 24-hour times are refused even though the format is
+    valid. (The DAY-02 30-min-before-close buffer is a separate, stricter gate.)"""
+    assert _svc([]).save([_row("09:30")])["result"] == "saved"      # market open edge
+    assert _svc([]).save([_row("08:00")])["result"] == "invalid"    # pre-market
+    assert _svc([]).save([_row("16:30")])["result"] == "invalid"    # after close
 
 
 # --- UC-02 pre-flight ---------------------------------------------------------------

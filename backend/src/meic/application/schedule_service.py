@@ -14,6 +14,7 @@ and can still veto an entry the panel showed as fitting.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import time
 from decimal import Decimal
@@ -112,6 +113,23 @@ class ScheduleView:
         }
 
 
+# A 24-hour "military" wall-clock time: HH:MM, hour 00-23, minute 00-59. Leading
+# zero on the hour is optional (9:32 or 09:32) but the separator MUST be a colon
+# and there is NO am/pm — rejecting "11.53", "1:53pm", "24:00", "11:60".
+_MILITARY_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
+def _military_time_errors(rows: list[dict[str, Any]]) -> list[ScheduleError]:
+    """Every row whose `time` is not 24-hour HH:MM (military). Checked BEFORE parse
+    so the operator gets a precise per-row reason, not a generic crash."""
+    errors = []
+    for i, row in enumerate(rows):
+        raw = str(row.get("time", "")).strip()
+        if not _MILITARY_RE.fullmatch(raw):
+            errors.append(ScheduleError(field="time", reason="not_24h_military", index=i))
+    return errors
+
+
 def _parse_time(raw: str) -> time:
     h, m = raw.split(":")[:2]
     return time(int(h), int(m))
@@ -183,6 +201,12 @@ class ScheduleService:
     # --- validate --------------------------------------------------------------
     def validate(self, rows: list[dict[str, Any]]) -> list[ScheduleError]:
         """Every error, not just the first — the operator fixes the form once."""
+        # Military-time format first: entry times must be 24-hour HH:MM. This runs
+        # before parsing so a bad time reports as `not_24h_military` on its own row
+        # rather than crashing spec_from_row into a generic "unparsable".
+        fmt = _military_time_errors(rows)
+        if fmt:
+            return fmt
         try:
             specs = [spec_from_row(r) for r in rows]
         except (KeyError, ValueError, ArithmeticError) as e:

@@ -302,3 +302,24 @@ describe("ENT-09 manual fire (UI-22)", () => {
     await waitFor(() => expect(fire).toHaveBeenCalledWith(2, "press-2"));
   });
 });
+
+describe("entry time — local equivalent + military/market-hours hints", () => {
+  it("shows the ET time's local equivalent under a valid in-hours time", async () => {
+    await renderPanel();
+    // row 1 loads as 10:00 ET (in hours) -> a local-equivalent hint (≈ HH:MM),
+    // whatever the runner's timezone is
+    expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/≈\s*\d{2}:\d{2}/);
+  });
+
+  it("flags a non-military (non 24-hour) time", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("time 1"), { target: { value: "11.53" } });
+    expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/24-hour HH:MM/);
+  });
+
+  it("flags a valid time that falls outside market hours (09:30–16:00 ET)", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("time 1"), { target: { value: "08:00" } });
+    expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/outside market hours/);
+  });
+});
