@@ -157,6 +157,122 @@ def _chain_band_pts(env: dict[str, str]) -> Decimal:
     return raw if Decimal("50") <= raw <= Decimal("500") else Decimal("150")
 
 
+def _chain_completeness_pct(env: dict[str, str]) -> Decimal:
+    """STK-10 `chain_completeness_pct` (doc 06: range 50-100, default 90) — the % of
+    ATM-band strikes that must carry marks before selection. Doc-06-defined but never
+    wired (the selector hardcoded 90). The far-OTM 0DTE quote boundary RECEDES toward
+    the money late in the day, so with the band already at its 50-pt floor this is the
+    remaining spec dial that keeps dead listed strikes from vetoing selection.
+    Out-of-range falls back to the spec default (reject-the-dial, trade the default)."""
+    try:
+        raw = Decimal(env.get("MEIC_CHAIN_COMPLETENESS_PCT", "90"))
+    except (ArithmeticError, ValueError):
+        return Decimal("90")
+    return raw if Decimal("50") <= raw <= Decimal("100") else Decimal("90")
+
+
+def _remaining_rows(rows, now, events, day):
+    """ENT-10: the rows a day task started NOW should attempt — future-timed
+    (row.when > now) and not already attempted today (no CondorFilled with
+    entry_id == f"{day}#{n}" and no EntrySkipped with date==day and
+    entry_number==n in events). Rows keep their original numbers.
+    """
+    from meic.domain.events import CondorFilled, EntrySkipped
+
+    filled_ids = {e.entry_id for e in events if isinstance(e, CondorFilled)}
+    skipped = {(e.date, e.entry_number) for e in events if isinstance(e, EntrySkipped)}
+
+    out = []
+    for idx, row in enumerate(rows, start=1):
+        n = row.number if row.number is not None else idx
+        if row.when <= now:
+            continue
+        if f"{day}#{n}" in filled_ids:
+            continue
+        if (day, n) in skipped:
+            continue
+        out.append(row)
+    return out
+
+
+def _day_status_extras(rows, now):
+    """UI-24: (next_entry_at_iso|None, seconds_to_next|None, entries_remaining)
+    computed from row.when > now."""
+    remaining = [r for r in rows if r.when > now]
+    if not remaining:
+        return {"next_entry_at": None, "seconds_to_next": None, "entries_remaining": 0}
+    nxt = min(remaining, key=lambda r: r.when)
+    return {
+        "next_entry_at": nxt.when.isoformat(),
+        "seconds_to_next": int((nxt.when - now).total_seconds()),
+        "entries_remaining": len(remaining),
+    }
+
+
+async def _supervise_once(app_state, comp, alerts, todays_rows, runtime, now_fn) -> None:
+    """ENT-10: one supervisor tick, factored out of `live_app`'s startup loop so it
+    can be unit-tested without a running FastAPI app. Precedence, evaluated in
+    order:
+
+      1. Disarmed -> clear the crash latch (ENT-10(6)) and cancel any running
+         task (ENT-10(3)).
+      2. A task is already running -> leave it alone.
+      3. The crash latch is set -> do NOT auto-restart (ENT-10(6)) until the
+         operator cycles Disarm -> Arm.
+      4. The previous task finished WITH an exception and is not yet latched ->
+         latch it, raise a critical alert (RSK-06), and do NOT start a new task
+         on this same pass (a crash must be an alert, never a retry loop).
+      5. Otherwise (no task yet, or the previous task finished OK / was
+         cancelled) -> start a new task for the remaining, originally-numbered
+         rows, if any remain.
+    """
+    armed = comp.state.armed
+    task = app_state.day_task
+    running = task is not None and not task.done()
+
+    if not armed:
+        app_state.day_task_failed = False   # a disarm clears the crash latch (ENT-10(6))
+        if running:
+            task.cancel()                   # ENT-10(3)
+        # drop the stale reference so a later re-arm doesn't re-detect this task's
+        # old exception (ENT-10(6): the disarm→arm cycle must actually restart the day)
+        app_state.day_task = None
+        return
+
+    if running:
+        return
+
+    if app_state.day_task_failed:
+        return                              # ENT-10(6): no auto-restart after a crash
+
+    if task is not None and task.done() and not task.cancelled() and task.exception() is not None:
+        app_state.day_task_failed = True
+        alerts.alert("critical", "ENT-10: day task died; disarm+arm to restart",
+                     error=repr(task.exception()))
+        return
+
+    now = now_fn()
+    rows = _remaining_rows(todays_rows(), now, comp.events, now.date().isoformat())
+    if rows:
+        app_state.day_task = asyncio.create_task(runtime.run_day(now.date().isoformat(), rows))
+
+
+async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn) -> None:
+    """One GUARDED supervisor tick. A broken tick must be VISIBLE (RSK-06): a bug
+    in the schedule read would otherwise silently prevent the day from ever
+    starting. Alert once per DISTINCT error — not every interval — by latching the
+    last failure's repr on `app_state.day_supervisor_error` (None when healthy;
+    surfaced in /day/status as `supervisor_error`)."""
+    try:
+        await _supervise_once(app_state, comp, alerts, todays_rows, runtime, now_fn)
+        app_state.day_supervisor_error = None   # a clean tick clears the latch
+    except Exception as exc:  # noqa: BLE001
+        err = repr(exc)
+        if err != app_state.day_supervisor_error:
+            app_state.day_supervisor_error = err
+            alerts.alert("critical", f"ENT-10: day supervisor tick failed: {err}")
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -214,7 +330,11 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     async def _buying_power_ok() -> bool:
         return (await comp.broker.buying_power()) >= min_buying_power
 
-    selector = LiveCondorSelector(snapshot_provider=snaps.take, config=SelectionConfig())
+    selector = LiveCondorSelector(
+        snapshot_provider=snaps.take,
+        # STK-10: the chain-scoped completeness dial (doc 06, 50-100, default 90),
+        # previously hardcoded at 90 inside SelectionConfig.
+        config=SelectionConfig(completeness_pct=_chain_completeness_pct(env)))
     gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
                             session_valid=_session_valid, buying_power_ok=_buying_power_ok)
 
@@ -432,17 +552,30 @@ def live_app():
 
     @app.post("/day/start")
     async def day_start() -> dict:
-        """Start the wall-clock trading day. Every entry still runs the full gate
-        chain — starting the day does NOT arm it."""
+        """Start the wall-clock trading day, manually.
+
+        ENT-10: one code path, one set of guarantees for what run_day is given —
+        this endpoint hands run_day exactly what the supervisor would: the
+        REMAINING, originally-numbered rows, and only while ARMED. A disarmed
+        start used to walk every row and persist EntrySkipped(DISARMED) for the
+        whole schedule, which the remaining-rows filter then read as "already
+        attempted" — silently disabling the entire day even after a real arm.
+        """
         task = app.state.day_task
         if task is not None and not task.done():
             return {"running": True, "already_running": True}
+        if not comp.state.armed:
+            raise HTTPException(status_code=400, detail="not_armed")
         times = _todays_entry_times()
         if not times:
             raise HTTPException(status_code=400, detail="no_entries_composed")
-        day = datetime.now(ET).date().isoformat()
-        app.state.day_task = asyncio.create_task(runtime.run_day(day, times))
-        return {"running": True, "day": day, "entries": len(times)}
+        now = datetime.now(ET)
+        day = now.date().isoformat()
+        rows = _remaining_rows(times, now, comp.events, day)
+        if not rows:
+            return {"running": False, "reason": "no_remaining_entries"}
+        app.state.day_task = asyncio.create_task(runtime.run_day(day, rows))
+        return {"running": True, "day": day, "entries": len(rows)}
 
     @app.post("/day/stop")
     async def day_stop() -> dict:
@@ -454,16 +587,55 @@ def live_app():
     @app.get("/day/status")
     def day_status() -> dict:
         task = app.state.day_task
+        # UI-24 + ENT-10: the operator-visible watch state, always present
+        # regardless of whether a day task has ever run. Computed over the SAME
+        # filtered set the supervisor hands run_day — an entry already attempted
+        # today (e.g. fired early via ENT-09) must not show as "next".
+        now = datetime.now(ET)
+        remaining = _remaining_rows(_todays_entry_times(), now, comp.events,
+                                    now.date().isoformat())
+        extras = _day_status_extras(remaining, now)
+        base = {"armed": comp.state.armed,
+                # RSK-06: a supervisor whose ticks are failing must say so —
+                # None when healthy, the last failure's repr otherwise.
+                "supervisor_error": getattr(app.state, "day_supervisor_error", None),
+                **extras}
         if task is None:
-            return {"started": False, "running": False}
+            return {**base, "started": False, "running": False}
         if not task.done():
-            return {"started": True, "running": True}
+            return {**base, "started": True, "running": True}
         if task.cancelled():
-            return {"started": True, "running": False, "cancelled": True}
+            return {**base, "started": True, "running": False, "cancelled": True}
         exc = task.exception()
-        return {"started": True, "running": False,
+        return {**base, "started": True, "running": False,
                 "filled": None if exc else task.result(),
                 "error": repr(exc) if exc else None}
+
+    # ENT-10: arming runs the day. This supervisor is what turns "ARMED" from a
+    # state flag into a running watch — it starts run_day for the REMAINING
+    # schedule on arm (and on boot-restore, since it is the SAME loop either
+    # way), cancels on disarm, and alerts-once (never auto-retries) on a crash.
+    supervisor_interval = float(env.get("MEIC_DAY_SUPERVISOR_INTERVAL_S", "2.0"))
+    app.state.day_task_failed = False
+    app.state.day_supervisor_error = None   # last tick failure, repr — None when healthy
+
+    @app.on_event("startup")
+    async def _start_day_supervisor() -> None:
+        async def _loop() -> None:
+            while True:
+                await _supervisor_tick(app.state, comp, alerts, _todays_entry_times,
+                                       runtime, lambda: datetime.now(ET))
+                await asyncio.sleep(supervisor_interval)
+        app.state.day_supervisor = asyncio.create_task(_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_day_supervisor() -> None:
+        task = getattr(app.state, "day_supervisor", None)
+        if task:
+            task.cancel()
+        day_task = getattr(app.state, "day_task", None)
+        if day_task:
+            day_task.cancel()
 
     _serve_panel(app)
     return app

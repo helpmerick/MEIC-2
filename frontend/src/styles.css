@@ -108,6 +108,7 @@ body {
 .grid > .report { grid-column: 1 / -1; }
 .grid > .entries-col { grid-column: 1 / -1; }
 .grid > .feed-col { grid-column: 1 / -1; }
+.grid > .next-entry { grid-column: 1 / -1; }
 @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
 
 .card {
@@ -304,4 +305,8 @@ body {
 .auth-toast { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; white-space: nowrap; padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; box-shadow: 0 6px 20px rgba(0,0,0,0.28); animation: auth-fade 3.5s ease forwards; }
 .auth-toast.ok { color: #052e1a; background: var(--good); }
 .auth-toast.bad { color: #fff; background: var(--bad); }
+
+/* ENT-10 / UI-24: the next-entry countdown — a thin status line, not a card. */
+.next-entry { font-size: 13px; padding: 2px 2px 10px; color: var(--good); font-weight: 600; }
+.next-entry.idle { color: var(--faint); font-weight: 400; }
 @keyframes auth-fade { 0% { opacity: 0; transform: translateY(-4px); } 10% { opacity: 1; transform: translateY(0); } 85% { opacity: 1; } 100% { opacity: 0; } }

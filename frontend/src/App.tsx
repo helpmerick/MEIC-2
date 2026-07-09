@@ -5,6 +5,7 @@ import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
 import { DayReportView } from "./components/DayReportView";
 import { EntryCards } from "./components/EntryCards";
+import { NextEntryCountdown } from "./components/NextEntryCountdown";
 import { SchedulePanel } from "./components/SchedulePanel";
 import { useLiveBot } from "./useLiveBot";
 import { useTheme } from "./useTheme";
@@ -117,6 +118,8 @@ export function App() {
 
       <main className="grid">
         <Dashboard state={state} connected={connected} />
+        {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
+        <NextEntryCountdown />
         <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
         {/* UC-02 composition + ENT-09 fire. The fire button follows the three
             trade-enabling states, exactly as UI-22 requires. */}

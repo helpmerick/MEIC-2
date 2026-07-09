@@ -74,9 +74,14 @@ class LiveCondorSelector:
         if snap.stale:                                    # DAT-02: never trade stale data
             return None, "data_unavailable"
 
-        # STK-10: a holey ATM band means no selection at all (both types)
+        # STK-10: a holey ATM band means no selection at all (both types).
+        # completeness_pct is CHAIN-scoped, never per-row (`for_entry` docstring) —
+        # the gate reads THIS selector's config, not the per-entry override, which
+        # `for_entry` builds with a hardcoded default the wiring can't reach. This
+        # is what lets the composition wire doc 06's `chain_completeness_pct` dial.
         for chain, band in ((snap.put_side, snap.put_band), (snap.call_side, snap.call_band)):
-            if not completeness_ok(chain, band_strikes=band, completeness_pct=c.completeness_pct):
+            if not completeness_ok(chain, band_strikes=band,
+                                   completeness_pct=self.config.completeness_pct):
                 return None, "incomplete_chain"
 
         put = self._side(snap.put_side, Decimal(-1), c)

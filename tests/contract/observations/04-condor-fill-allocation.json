@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-07-07T18:48:19.738675+00:00",
+  "recorded_at": "2026-07-09T19:19:42.504080+00:00",
   "observation": {
     "filled": true,
     "order_final": {
@@ -12,20 +12,20 @@
       "cancellable": false,
       "editable": false,
       "edited": false,
-      "updated_at": "2026-07-07 18:48:15.287000+00:00",
+      "updated_at": "2026-07-09 19:19:38.143000+00:00",
       "legs": [
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260707P06970000",
+          "symbol": "SPXW  260709P06960000",
           "action": "Buy to Open",
           "quantity": 1,
           "remaining_quantity": "0",
           "fills": [
             {
-              "fill_id": "20384",
+              "fill_id": "41252",
               "quantity": "1",
               "fill_price": "0.05",
-              "filled_at": "2026-07-07 18:48:14.808000+00:00",
+              "filled_at": "2026-07-09 19:19:37.794000+00:00",
               "destination_venue": "MARKET_SIMULATOR_A",
               "ext_group_fill_id": null,
               "ext_exec_id": null
@@ -34,16 +34,16 @@
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260707P06975000",
+          "symbol": "SPXW  260709P06970000",
           "action": "Sell to Open",
           "quantity": 1,
           "remaining_quantity": "0",
           "fills": [
             {
-              "fill_id": "20385",
+              "fill_id": "41253",
               "quantity": "1",
               "fill_price": "0.0",
-              "filled_at": "2026-07-07 18:48:14.809000+00:00",
+              "filled_at": "2026-07-09 19:19:37.795000+00:00",
               "destination_venue": "MARKET_SIMULATOR_A",
               "ext_group_fill_id": null,
               "ext_exec_id": null
@@ -52,16 +52,16 @@
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260707C07530000",
+          "symbol": "SPXW  260709C07525000",
           "action": "Sell to Open",
           "quantity": 1,
           "remaining_quantity": "0",
           "fills": [
             {
-              "fill_id": "20386",
+              "fill_id": "41254",
               "quantity": "1",
-              "fill_price": "0.55",
-              "filled_at": "2026-07-07 18:48:14.809000+00:00",
+              "fill_price": "14.7",
+              "filled_at": "2026-07-09 19:19:37.795000+00:00",
               "destination_venue": "MARKET_SIMULATOR_A",
               "ext_group_fill_id": null,
               "ext_exec_id": null
@@ -70,16 +70,16 @@
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260707C07535000",
+          "symbol": "SPXW  260709C07530000",
           "action": "Buy to Open",
           "quantity": 1,
           "remaining_quantity": "0",
           "fills": [
             {
-              "fill_id": "20387",
+              "fill_id": "41255",
               "quantity": "1",
-              "fill_price": "0.3",
-              "filled_at": "2026-07-07 18:48:14.810000+00:00",
+              "fill_price": "10.1",
+              "filled_at": "2026-07-09 19:19:37.796000+00:00",
               "destination_venue": "MARKET_SIMULATOR_A",
               "ext_group_fill_id": null,
               "ext_exec_id": null
@@ -101,18 +101,18 @@
       "replaces_order_id": null,
       "in_flight_at": null,
       "live_at": null,
-      "received_at": "2026-07-07 18:48:14.043000+00:00",
+      "received_at": "2026-07-09 19:19:36.779000+00:00",
       "reject_reason": null,
       "user_id": null,
       "username": null,
-      "terminal_at": "2026-07-07 18:48:15.282000+00:00",
+      "terminal_at": "2026-07-09 19:19:38.136000+00:00",
       "complex_order_id": null,
       "complex_order_tag": null,
       "preflight_id": null,
       "order_rule": null,
       "source": "tastyware/tastytrade:v13.0.0",
       "external_identifier": null,
-      "id": 1202130
+      "id": 1213941
     },
     "note": "per-leg fill prices vs net: evidence for the STP-02 per_side allocation caveat"
   }

@@ -107,3 +107,73 @@ def test_harness_rejects_repricing_a_filled_order():
     clock.advance(seconds=2)  # let it fill
     with pytest.raises(RuntimeError, match="margin_check_failed"):
         asyncio.run(broker.replace(oid, intent))
+
+
+# --- ENT-10(3): a cancel mid-LADDER must never orphan a working entry order -----
+
+def test_cancel_mid_ladder_never_orphans_a_working_entry_order():
+    """Re-review finding (2026-07-09): a disarm cancel landing INSIDE the attempt
+    — during the reprice ladder's submit/_await_fill polls — used to unwind with
+    the entry limit order still WORKING at the broker, unwatched. If it filled
+    later there'd be a real position with no CondorFilled, no stop, no alert.
+    The whole attempt is now an atomic shielded unit: the outer day task dies
+    instantly, the attempt runs to its natural end and protects its own fill."""
+    from meic.adapters.persistence.event_store import InMemoryStateStore
+    from meic.application.persistent_state import PersistentState
+    from meic.composition.live_runtime import LiveRuntime, ScheduledRow
+
+    async def scenario():
+        clock = FakeClock(SCHEDULED)
+        broker = LiveShapedBroker(clock, fill_delay=3.0)   # fills 3s after submit
+        events: list = []
+        protected: list[str] = []
+
+        comp = type("Comp", (), {})()
+        comp.clock = clock
+        comp.broker = broker
+        comp.events = events
+        comp.state = PersistentState(InMemoryStateStore())
+        comp.state.armed = True
+        comp.state.confirm_live = True
+        comp.state.stop_trading = False
+        comp.execute = ExecuteEntryAttempt(broker, clock, events, SPX)
+
+        async def on_filled(entry_id, condor, stop=None):
+            protected.append(entry_id)
+        comp._on_filled = on_filled
+
+        async def selector(when, n, config=None):
+            return CONDOR, None
+
+        async def gates():
+            return PASS
+
+        rt = LiveRuntime(comp, selector=selector, market_gates=gates)
+        day_task = asyncio.create_task(
+            rt.run_day("2026-07-09", [ScheduledRow(SCHEDULED, number=1)]))
+
+        for _ in range(500):        # let the attempt SUBMIT; the clock does NOT
+            await asyncio.sleep(0)  # advance, so the order cannot fill yet —
+            if broker.submits:      # the attempt is genuinely mid-ladder
+                break
+        assert broker.submits, "the attempt never reached the broker"
+        assert not any(isinstance(e, CondorFilled) for e in events)   # pre-fill
+
+        day_task.cancel()           # ENT-10(3): the disarm/stop path
+        with pytest.raises(asyncio.CancelledError):
+            await day_task          # the day task dies instantly — desired
+
+        # drive the clock so the SHIELDED attempt runs to its natural end
+        for _ in range(60):
+            for _ in range(6):
+                await asyncio.sleep(0)
+            clock.advance(seconds=1)
+
+        # the attempt finished: the fill was RECORDED and PROTECTED...
+        assert sum(isinstance(e, CondorFilled) for e in events) == 1
+        assert protected == [ENTRY_ID]
+        # ...and the broker holds NO orphaned working entry order
+        working = await broker.working_orders()
+        assert working == [], f"orphaned working orders: {[o.id for o in working]}"
+
+    asyncio.run(scenario())

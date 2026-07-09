@@ -3,7 +3,7 @@
 // state and sends commands; the backend validates everything.
 
 import type {
-  ActivityLine, DayReport, EntryCard, FirePreview, FireResult,
+  ActivityLine, DayReport, DayStatus, EntryCard, FirePreview, FireResult,
   PanelState, Preflight, ScheduleRow, ScheduleView,
 } from "./types";
 
@@ -81,6 +81,8 @@ export const api = {
       max_day_risk: maxDayRisk === "" ? null : maxDayRisk,
     }),
   getPreflight: () => get<Preflight>("/preflight"),
+  // ENT-10 / UI-24: the day supervisor's watch state — next entry, countdown.
+  getDayStatus: () => get<DayStatus>("/day/status"),
 
   // --- ENT-09 manual fire (UI-22) -------------------------------------------
   firePreview: (n: number) => get<FirePreview>(`/entry/${n}/fire-preview`),

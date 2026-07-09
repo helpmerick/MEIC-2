@@ -185,3 +185,40 @@ def test_runtime_cannot_be_built_without_selector_and_gates():
     comp = _Comp(FastClock(OPEN), FakeBroker())
     with pytest.raises(TypeError):
         LiveRuntime(comp)  # selector + market_gates are required, no defaults
+
+
+# --- ENT-10(3)/STP-01: a cancel must never abandon a fill before its stop rests -
+
+def test_cancelling_run_day_during_the_fill_handoff_still_places_the_stop():
+    """A disarm (or /day/stop) cancels the day task. If the cancel lands AFTER an
+    entry fills but WHILE the STP-01 hand-off is awaiting, an unshielded await
+    unwinds and leaves a live condor with NO stop — the 2026-07-09 naked-position
+    incident class. run_day itself must die (that is the point of the cancel);
+    the in-flight protect hand-off must run to completion anyway."""
+    async def scenario():
+        broker = FakeBroker(); broker.autofill(IS_CONDOR)
+        comp = _Comp(FastClock(OPEN), broker)
+        handoff_started = asyncio.Event()
+        release = asyncio.Event()
+        protected: list[str] = []
+
+        async def slow_on_filled(entry_id, condor, stop=None):
+            handoff_started.set()
+            await release.wait()           # the cancel lands in THIS window
+            protected.append(entry_id)
+
+        comp._on_filled = slow_on_filled
+        task = asyncio.create_task(_runtime(comp).run_day("2026-07-07", _times(1)))
+        await handoff_started.wait()       # fill committed at the broker; stop pending
+        task.cancel()                      # ENT-10(3): the disarm/stop path
+        await asyncio.sleep(0)             # deliver the cancellation
+        release.set()                      # the stop-placement path proceeds
+
+        with pytest.raises(asyncio.CancelledError):
+            await task                     # the day task dies — desired
+
+        for _ in range(10):                # let the shielded inner task finish
+            await asyncio.sleep(0)
+        assert protected == ["2026-07-07#1"], "cancellation left the fill UNPROTECTED"
+
+    asyncio.run(scenario())

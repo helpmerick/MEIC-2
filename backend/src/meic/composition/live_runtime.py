@@ -16,6 +16,8 @@ operator has not wired real selection and real gates, the runtime cannot trade.
 """
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
@@ -42,6 +44,22 @@ async def _maybe_await(provider):
     return await value if inspect.isawaitable(value) else value
 
 
+def _alert_orphaned_failure(comp, context: str):
+    """done-callback for a shielded attempt task: if it fails AFTER its caller was
+    cancelled, nobody is left awaiting it — route the error to the alert sink
+    (RSK-06), never /dev/null. (When the caller was NOT cancelled the exception
+    also propagates through the shield await; the alert is the backstop for the
+    orphaned case.)"""
+    def _cb(task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            alerts = getattr(comp, "alerts", None)
+            if alerts is not None:
+                alerts.alert("critical",
+                             f"orphaned entry attempt failed after cancel: {context}",
+                             error=repr(task.exception()))
+    return _cb
+
+
 # (condor, skip_reason) — exactly one is non-None
 Selector = Callable[..., Awaitable[tuple[Condor | None, str | None]]]
 GatesProvider = Callable[[], Awaitable[GateSnapshot]]
@@ -54,6 +72,11 @@ class ScheduledRow:
 
     when: datetime
     entry: object | None = None      # domain.schedule.ResolvedEntry (None => globals)
+    # ENT-10(4): the row's ORIGINAL 1-based schedule position. A mid-day restart
+    # filters the schedule down to the remaining rows; without a stamped number,
+    # re-enumerating the filtered list would renumber row 3 as row 1 and collide
+    # its entry_id with an already-filled entry (ORD-04 idempotency, RSK-04 book).
+    number: int | None = None
 
     @property
     def selection(self) -> SelectionConfig | None:
@@ -134,7 +157,11 @@ class LiveRuntime:
         cap = self.max_entries_per_day if self.max_entries_per_day is not None else len(rows)
         filled = 0
 
-        for n, row in enumerate(rows, start=1):
+        # ENT-10(4): a mid-day restart passes a FILTERED schedule; rows carry their
+        # ORIGINAL numbers so entry_ids never collide with already-filled entries
+        # (ORD-04/RSK-04).
+        for idx, row in enumerate(rows, start=1):
+            n = row.number if row.number is not None else idx
             when = row.when
             # ENT-08: warm up ahead of the entry; never let it delay the clock.
             if self.warmup is not None:
@@ -156,18 +183,35 @@ class LiveRuntime:
                 continue
 
             gates = await self.market_gates()
-            outcome = await comp.execute.attempt(
-                day=day, scheduled=when, condor=condor, gates=gates,
-                risk=await self._risk(), stop=row.stop)
-            if outcome.status == "FILLED":
-                filled += 1
-                # ExecuteEntryAttempt keys its events off condor.entry_number, so we
-                # must too. Keying off the loop index instead would silently drop
-                # entries out of the RSK-04 total whenever the two disagreed.
-                entry_id = f"{day}#{condor.entry_number}"
-                # RSK-04: on the books — counts against every entry that follows.
-                self._worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
-                await comp._on_filled(entry_id, condor, row.stop)  # STP-01 protect hand-off
+
+            # ENT-10(3): disarm/stop cancels stop FUTURE entries instantly (the
+            # waits are cancellable) but an IN-FLIGHT attempt is atomic — it runs
+            # to its natural end (fill→protected, or cancelled-at-floor→skip).
+            # Cancelling mid-ladder would orphan a live resting order at the
+            # broker (re-review finding, 2026-07-09). The whole attempt — the
+            # reprice ladder, fill recording, RSK-04 bookkeeping and the STP-01
+            # protect hand-off — is ONE shielded unit; ensure_future keeps a
+            # strong reference so the inner task is never GC'd.
+            async def _attempt_and_protect(when=when, row=row, condor=condor, gates=gates):
+                nonlocal filled
+                outcome = await comp.execute.attempt(
+                    day=day, scheduled=when, condor=condor, gates=gates,
+                    risk=await self._risk(), stop=row.stop)
+                if outcome.status == "FILLED":
+                    filled += 1
+                    # ExecuteEntryAttempt keys its events off condor.entry_number, so
+                    # we must too. Keying off the loop index instead would silently
+                    # drop entries out of the RSK-04 total whenever they disagreed.
+                    entry_id = f"{day}#{condor.entry_number}"
+                    # RSK-04: on the books — counts against every entry that follows.
+                    self._worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
+                    await comp._on_filled(entry_id, condor, row.stop)  # STP-01 hand-off
+                return outcome
+
+            attempt_task = asyncio.ensure_future(_attempt_and_protect())
+            attempt_task.add_done_callback(
+                _alert_orphaned_failure(comp, f"{day}#{condor.entry_number}"))
+            await asyncio.shield(attempt_task)
 
         comp.events.append(DayCompleted(date=day))
         return filled

@@ -137,9 +137,14 @@ def schedule_rows(state, *, today: date, tz) -> list[ScheduledRow]:
     panel showed. Pin-at-Save (v1.47) means these values are already concrete.
     """
     rows: list[ScheduledRow] = []
-    for entry in ScheduleService(state).resolved():
+    # ENT-10(4): stamp each row with its 1-based ORIGINAL position in the saved
+    # schedule. The saved schedule is validated strictly-increasing by time, so
+    # saved order == time order — stamping here (before the sort below, which is
+    # therefore a no-op on well-formed state) gives every row a stable identity
+    # that survives later filtering to a remaining-rows subset.
+    for i, entry in enumerate(ScheduleService(state).resolved(), start=1):
         when = datetime.combine(today, dtime(entry.time.hour, entry.time.minute), tzinfo=tz)
-        rows.append(ScheduledRow(when, entry))
+        rows.append(ScheduledRow(when, entry, number=i))
     return sorted(rows, key=lambda r: r.when)
 
 

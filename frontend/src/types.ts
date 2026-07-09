@@ -125,3 +125,20 @@ export interface FireResult {
   initiator?: string;
   fill_credit?: string;
 }
+
+// ENT-10 / UI-24: the day supervisor's watch state (backend/adapters/api/server.py
+// GET /day/status). `next_entry_at` is an ET ISO datetime; the countdown itself
+// is display-only (UI-03) — the backend's `seconds_to_next` is authoritative.
+export interface DayStatus {
+  started: boolean;
+  running: boolean;
+  armed?: boolean;
+  next_entry_at?: string | null;
+  seconds_to_next?: number | null;
+  entries_remaining?: number;
+  cancelled?: boolean;
+  error?: string | null;
+  filled?: number | null;
+  // RSK-06: the supervisor's last tick failure (repr), null when healthy.
+  supervisor_error?: string | null;
+}

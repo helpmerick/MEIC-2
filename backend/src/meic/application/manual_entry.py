@@ -23,6 +23,8 @@ reports (UC-08).
 """
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -45,6 +47,20 @@ async def _maybe_await(provider):
         return None
     value = provider()
     return await value if inspect.isawaitable(value) else value
+
+
+def _alert_orphaned_failure(comp, context: str):
+    """done-callback for the shielded attempt task: if it fails AFTER its caller
+    was cancelled, nobody is left awaiting it — route the error to the alert sink
+    (RSK-06), never /dev/null."""
+    def _cb(task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            alerts = getattr(comp, "alerts", None)
+            if alerts is not None:
+                alerts.alert("critical",
+                             f"orphaned entry attempt failed after cancel: {context}",
+                             error=repr(task.exception()))
+    return _cb
 
 
 @dataclass(frozen=True)
@@ -156,18 +172,31 @@ class ManualEntry:
 
         # 6. THE identical pipeline. `bypass_window` is the only difference; the
         # ENT-03 chain, RSK-08 and RSK-04 all run inside attempt().
-        outcome = await self._comp.execute.attempt(
-            day=day, scheduled=when, condor=condor, gates=await self._gates(),
-            risk=await _maybe_await(self._risk),   # sync (paper) OR async (live) provider
-            bypass_window=True, stop=_stop(row), initiator=MANUAL)
+        #
+        # ENT-10(3)/STP-01: the attempt is ATOMIC. A cancelled request handler
+        # (client disconnect) must never abandon it mid-ladder — that would
+        # orphan a live resting order at the broker — nor mid-hand-off, which
+        # would leave a filled condor with no stop. The whole attempt→protect
+        # unit is ONE shielded task; ensure_future keeps a strong reference so
+        # it is never GC'd while it finishes in the background.
+        async def _attempt_and_protect():
+            outcome = await self._comp.execute.attempt(
+                day=day, scheduled=when, condor=condor, gates=await self._gates(),
+                risk=await _maybe_await(self._risk),   # sync (paper) OR async (live)
+                bypass_window=True, stop=_stop(row), initiator=MANUAL)
 
-        if outcome.status != "FILLED":
-            return {"result": "skipped", "reason": outcome.reason}
+            if outcome.status != "FILLED":
+                return {"result": "skipped", "reason": outcome.reason}
 
-        entry_id = f"{day}#{condor.entry_number}"
-        await self._comp._on_filled(entry_id, condor, _stop(row))   # STP-01
-        return {"result": "filled", "entry_id": entry_id,
-                "initiator": MANUAL, "fill_credit": str(outcome.fill_credit)}
+            entry_id = f"{day}#{condor.entry_number}"
+            await self._comp._on_filled(entry_id, condor, _stop(row))   # STP-01
+            return {"result": "filled", "entry_id": entry_id,
+                    "initiator": MANUAL, "fill_credit": str(outcome.fill_credit)}
+
+        attempt_task = asyncio.ensure_future(_attempt_and_protect())
+        attempt_task.add_done_callback(
+            _alert_orphaned_failure(self._comp, f"{day}#{condor.entry_number}"))
+        return await asyncio.shield(attempt_task)
 
     def _filled_today(self) -> int:
         """ENT-05 counts FILLS, not attempts — the same rule day_report uses."""
