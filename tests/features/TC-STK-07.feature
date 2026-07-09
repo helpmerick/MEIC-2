@@ -6,7 +6,7 @@ Feature: TC-STK-07
     Then selection proceeds normally
 
   Scenario: Persistent holes skip the entry at window expiry
-    Given the chain never reaches chain_completeness_pct within entry_window_seconds
+    Given the entry's trade-relative reachable strike set never reaches chain_completeness_pct within entry_window_seconds
     Then the entry is SKIPPED with reason "incomplete_chain" and no order is submitted
 
   Scenario: Probe-match integrity invariant (STK-11, v1.39)
@@ -21,3 +21,16 @@ Feature: TC-STK-07
   Scenario: Far-OTM emptiness never trips the gate
     Given strikes outside the ATM band have no bids
     Then the chain-integrity gate still passes
+
+  Scenario: Far-OTM dead strikes never block (v1.51 regression, live 2026-07-09)
+    Given every strike in the entry's reachable set has fresh two-sided marks
+    And calls 55+ points OTM outside the reachable set are listed but never quoted
+    Then the STK-10 gate PASSES and selection proceeds
+
+  Scenario: A dead long wing is caught upfront
+    Given the reachable set includes the wing strike and its quote is missing
+    Then the gate counts it against completeness (no later wing_unmarked surprise)
+
+  Scenario: chain_atm_band_pts is retired
+    Given config contains chain_atm_band_pts
+    Then config validation rejects it as an unknown retired key

@@ -11,7 +11,7 @@ flowchart TD
     FD1 -->|failed| FD2["One-shot fetcher<br/>read-only, never writes marks"]
     FD2 -->|failed| SKIP4["SKIP: data_unavailable"]
 
-    FEED1 -->|healthy| CHAIN{"Chain integrity STK-10:<br/>at least 90% of ATM band marked?"}
+    FEED1 -->|healthy| CHAIN{"Chain integrity STK-10 v1.51:<br/>90% of THIS trade+s reachable strikes<br/>(probe range + wings + shifts) marked?"}
     FD1 -->|healed| CHAIN
     FD2 -->|data ok| CHAIN
 
