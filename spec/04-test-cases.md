@@ -86,6 +86,75 @@ Scenario: Double-click is one attempt
   Then exactly one order exists (idempotency key per press-confirmation)
 ```
 
+**TC-ENT-10** — ENT-10/UI-24 arm runs the day (v1.53)
+```gherkin
+Scenario: Arming starts the watcher and the entry fires at its time
+  Given a composed schedule with one future entry
+  When the operator arms successfully
+  Then the day task is watching and the entry fires at its time through the full gate chain
+
+Scenario: Boot restore resumes the watcher
+  Given persisted state is ARMED with entries remaining
+  When the bot boots
+  Then the day task starts automatically without operator action
+
+Scenario: Disarm stops future entries atomically
+  Given an entry attempt is in flight when the operator disarms
+  Then the attempt completes or cancels cleanly and is never abandoned mid-flight
+  And no further entries fire
+
+Scenario: Mid-day edits can never renumber or drop an entry (durable ids)
+  Given rows A(fired), B(pending 11:15), C(pending 12:35) with durable ids
+  When the operator deletes fired row A while ARMED
+  Then rows B and C keep their ids, B fires at 11:15, and nothing is skipped or double-fired
+
+Scenario: A crashed day task alerts and stays down
+  Given the day task dies with an error while ARMED
+  Then a critical alert is raised and the task is NOT auto-restarted until Disarm then Arm
+```
+
+**TC-DAY-06** — DAY-06 entry-time format & window (v1.53)
+```gherkin
+Scenario Outline: Non-military formats are rejected per row
+  When a schedule row's time is "<bad>"
+  Then validation rejects it with reason "not_24h_military"
+  Examples:
+    | bad    |
+    | 1:53pm |
+    | 0930   |
+    | 24:00  |
+    | 11:60  |
+    | 11-53  |
+
+Scenario: Valid formats pass and dots canonicalise
+  Then 09:32, 9:32, 15:30 and 23:59 pass the format gate
+  And 11.53 persists as 11:53 and 9.32 persists as 09:32
+
+Scenario: The RTH window is enforced on the value
+  Then 08:00 and 16:30 are rejected with reason "outside_market_hours"
+  And 09:30 (the open edge) saves
+  And the format and window checks are backend-authoritative
+```
+
+**TC-UI-05** — UI-23 local-time echo (v1.53)
+```gherkin
+Scenario: ET times echo in the operator's local zone
+  Given the operator's browser zone is Europe/London
+  When a row's ET time is 11:53
+  Then "16:53 London" (approx) renders beneath the cell
+  And DST is tracked automatically per instant
+  And an invalid time shows the precise rejection reason instead of an echo
+```
+
+**TC-UI-06** — UI-24 next-entry countdown (v1.53)
+```gherkin
+Scenario: The countdown proves the schedule is being watched
+  Given the bot is ARMED with a next entry composed
+  Then the panel shows the entry's ET time and a ticking countdown
+  And the value derives from the backend's seconds_to_next, never the browser clock
+  And DISARMED shows "schedule idle" and an exhausted schedule shows "no more entries today"
+```
+
 **TC-ENT-04** — ENT-06/EC-ENT-10: VIX above vix_max ⇒ skip, info-level only; blackout date ⇒ skip.
 
 **TC-ENT-05** — ENT-07/EC-ENT-11
@@ -1084,6 +1153,7 @@ Scenario: Decision moment - give up safely
 | ENT-07 | TC-ENT-05 | | LEX-01→09 | TC-LEX-01→09 |
 | ENT-08 | TC-ENT-06 | | ENT-01a | TC-ENT-07 |
 | ENT-09 / UI-22 | TC-ENT-08 | | ENT-01b | TC-ENT-07 |
+| ENT-10 / UI-24 | TC-ENT-10, TC-UI-06 | | DAY-06 / UI-23 | TC-DAY-06, TC-UI-05 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |

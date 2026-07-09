@@ -166,6 +166,6 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 
 1. `stop_loss_pct` must be a member of {95..300 step 5} — reject anything else, including 94, 96, 300.1. `stop_basis` must be exactly `total_credit` or `short_premium`; `per_side` is rejected with reason `allocation_unverified` while the STP-02d gate is in force (v1.43). (Pre-v1.43 text omitted `short_premium` from the valid set — corrected.)
 2. `short_delta_max ≥ short_delta_target`. (`min_short_premium` and `min_total_credit` have different bases — gross short premium vs total net — so no ordering constraint links them.)
-3. `entry_times` strictly increasing, all within market hours, each ≥ `min_time_before_close` before the (possibly early) close.
+3. `entry_times` strictly increasing, all within market hours, each ≥ `min_time_before_close` before the (possibly early) close. **DAY-06 (v1.53):** each time must be 24-hour military HH:MM ET (dot separator canonicalised), and 09:30 ≤ t < 16:00 ET; violations reject per-row (`not_24h_military` / `outside_market_hours`). **Durable row ids (v1.53, ENT-10):** every saved row carries a durable entry id — all tracking keys on it, never list position.
 4. `max_day_risk` is mandatory before live mode can be enabled. (`daily_max_loss` no longer exists — RSK-02 removed v1.32; the config loader REJECTS it as an unknown key.)
 5. Every config save produces a new immutable version; the active version ID is stamped on every domain event (audit, UC-07).
