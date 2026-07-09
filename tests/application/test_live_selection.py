@@ -203,3 +203,38 @@ def test_a_provider_that_raises_blocks_rather_than_waves_through():
 def test_stale_data_blocks():
     g = _gates(OPEN_NOW, data_fresh=lambda: _async(False))
     assert g.data_fresh is False
+
+
+# --- DXLink symbol format: quotes are keyed by the STREAMER symbol, not OCC -----
+# The bug: snapshot_chain subscribed to DXLink using OCC symbols (s.put), so the
+# streamer silently returned NO quotes — indistinguishable from "no market data".
+# Found only by driving a live production chain. These pin the symbol choice so it
+# cannot regress without touching the network.
+
+def test_streamer_pair_uses_the_dxfeed_streamer_symbol_not_occ():
+    from types import SimpleNamespace
+    from meic.adapters.dxlink.chain_snapshot import streamer_pair, occ_pair
+
+    strike = SimpleNamespace(
+        strike_price=7315.0,
+        put="SPXW  260709P07315000",  call="SPXW  260709C07315000",       # OCC
+        put_streamer_symbol=".SPXW260709P7315", call_streamer_symbol=".SPXW260709C7315")
+
+    # DXLink subscription/quote-matching MUST use the streamer symbols
+    assert streamer_pair(strike) == (".SPXW260709P7315", ".SPXW260709C7315")
+    assert all(s.startswith(".") for s in streamer_pair(strike))   # dxfeed form, never OCC
+    # ...while ORDERS keep the OCC symbols (the ACL/broker speak OCC)
+    assert occ_pair(strike) == ("SPXW  260709P07315000", "SPXW  260709C07315000")
+
+
+def test_build_sides_matches_quotes_that_arrive_by_streamer_symbol():
+    """End of the chain: a quote keyed by the streamer symbol resolves to a mark."""
+    from meic.adapters.dxlink.chain_snapshot import build_sides
+
+    strike_symbols = {D("7300"): (".SPXW260709P7300", ".SPXW260709C7300")}
+    quotes = {".SPXW260709P7300": (D("3.00"), D("3.10")),   # streamer-keyed, as DXLink sends
+              ".SPXW260709C7300": (D("2.50"), D("2.60"))}
+    puts, calls, _, _ = build_sides(spot=D("7300"), strike_symbols=strike_symbols,
+                                    quotes=quotes, band_points=D("120"))
+    assert puts.marks[D("7300")].bid == D("3.00")
+    assert calls.marks[D("7300")].ask == D("2.60")

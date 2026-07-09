@@ -75,6 +75,19 @@ def build_sides(
             put_band, call_band)
 
 
+def streamer_pair(strike) -> tuple[str, str]:
+    """The dxfeed STREAMER symbols for a strike's put and call — what DXLink
+    quotes are keyed by (e.g. '.SPXW260709P7315'). NOT the OCC symbol ('SPXW
+    260709P07315000'): DXLink silently ignores an OCC subscription and sends no
+    quotes, which reads identically to 'no market data' — the bug this fixes."""
+    return (strike.put_streamer_symbol, strike.call_streamer_symbol)
+
+
+def occ_pair(strike) -> tuple[str, str]:
+    """The OCC symbols — what ORDERS name (the ACL/broker speak OCC, not dxfeed)."""
+    return (strike.put, strike.call)
+
+
 async def _first_quote(streamer, quote_cls, symbol: str, timeout_s: float):
     await streamer.subscribe(quote_cls, [symbol])
     async def _wait():
@@ -114,15 +127,19 @@ async def snapshot_chain(
         idx = await _first_quote(streamer, Quote, index_symbol, spot_timeout_s)
         spot = (Decimal(str(idx.bid_price)) + Decimal(str(idx.ask_price))) / 2
 
-        strike_symbols: dict[Decimal, tuple[str, str]] = {}
+        # Two mappings per strike: STREAMER symbols to collect quotes by (DXLink),
+        # and OCC symbols for the returned `.symbols` (what orders would name).
+        strike_streamers: dict[Decimal, tuple[str, str]] = {}
+        strike_occ: dict[Decimal, tuple[str, str]] = {}
         for s in expiration.strikes:
             k = Decimal(str(s.strike_price))
             if abs(k - spot) <= band_points:
-                strike_symbols[k] = (s.put, s.call)
-        if not strike_symbols:
+                strike_streamers[k] = streamer_pair(s)
+                strike_occ[k] = occ_pair(s)
+        if not strike_streamers:
             raise RuntimeError(f"no strikes within +/-{band_points} of spot {spot}")
 
-        wanted = {sym for pair in strike_symbols.values() for sym in pair}
+        wanted = {sym for pair in strike_streamers.values() for sym in pair}
         await streamer.subscribe(Quote, sorted(wanted))
 
         quotes: dict[str, tuple] = {}
@@ -143,11 +160,12 @@ async def snapshot_chain(
         elapsed = asyncio.get_event_loop().time() - started
 
     taken_at = (now() if callable(now) else None) or datetime.now(timezone.utc)
+    # build_sides matches quotes to strikes by the SUBSCRIPTION symbols (streamer).
     put_side, call_side, put_band, call_band = build_sides(
-        spot=spot, strike_symbols=strike_symbols, quotes=quotes, band_points=band_points)
+        spot=spot, strike_symbols=strike_streamers, quotes=quotes, band_points=band_points)
 
     return ChainSnapshot(
         spot=spot, expiration=expiration.expiration_date,
         put_side=put_side, call_side=call_side,
-        put_band=put_band, call_band=call_band, symbols=strike_symbols,
+        put_band=put_band, call_band=call_band, symbols=strike_occ,
         taken_at=taken_at, stale=elapsed > max_age_seconds)
