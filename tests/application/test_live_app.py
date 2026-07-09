@@ -244,3 +244,20 @@ def test_live_app_verifies_the_clock_on_boot_so_the_operator_can_arm(monkeypatch
 
 async def _async(v):
     return v
+
+
+def test_chain_atm_band_pts_is_read_from_config_not_hardcoded():
+    """STK-10 regression: chain_atm_band_pts (doc 06) must be wired, so the operator
+    can narrow the completeness band to where quotes exist. Far-OTM 0DTE strikes are
+    listed but unquoted; a hardcoded wide band fails selection on strikes that will
+    never have a mark. Out-of-range falls back to the spec default (150)."""
+    from decimal import Decimal
+    from meic.adapters.api.server import _chain_band_pts
+
+    assert _chain_band_pts({}) == Decimal("150")                                # spec default
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "70"}) == Decimal("70")  # operator value
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "50"}) == Decimal("50")  # low edge
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "500"}) == Decimal("500")
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "10"}) == Decimal("150")  # < 50 -> default
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "999"}) == Decimal("150") # > 500 -> default
+    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "junk"}) == Decimal("150")

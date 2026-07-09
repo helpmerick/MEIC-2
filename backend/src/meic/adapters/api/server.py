@@ -144,6 +144,19 @@ def paper_app():
     return app
 
 
+def _chain_band_pts(env: dict[str, str]) -> Decimal:
+    """STK-10 `chain_atm_band_pts` (doc 06: range 50-500, default 150) — how far from
+    spot the completeness gate inspects. Read from env (like the other live tunables);
+    an out-of-range value falls back to the spec default rather than trading a silly
+    band. Far-OTM 0DTE strikes are listed but usually unquoted, so this is the knob
+    that keeps STK-10 from failing on strikes that will never have a mark."""
+    try:
+        raw = Decimal(env.get("MEIC_CHAIN_ATM_BAND_PTS", "150"))
+    except (ArithmeticError, ValueError):
+        return Decimal("150")
+    return raw if Decimal("50") <= raw <= Decimal("500") else Decimal("150")
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -166,6 +179,8 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
     max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "2000"))   # DAY-03 v1.48
 
+    chain_band = _chain_band_pts(env)   # STK-10 chain_atm_band_pts, now actually wired
+
     # DAY-03 (v1.48): drift is measured against the BROKER's Date header on the
     # ~60 s session probe — no env var, no NTP. Starts unverified (infinite drift),
     # so entries are blocked until the first probe lands; a reading older than 300 s
@@ -180,7 +195,7 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
 
         async def take(self):
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
-            snap = await snapshot_chain(comp.broker._session)
+            snap = await snapshot_chain(comp.broker._session, band_points=chain_band)
             self.stale = snap.stale
             return snap
 
