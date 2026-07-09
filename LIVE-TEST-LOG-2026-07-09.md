@@ -23,7 +23,8 @@ closed manually within ~minutes. All bugs found are fixed with regression tests.
 | 5b | `incomplete_chain` **recurred** later (spot 7530→7545) | The far-OTM call quote boundary is **not fixed** — it moves with spot/vol. By 13:38 ET, calls 7600–7615 (55–70 pts OTM) had gone unquoted, so band 70 failed again. A **fixed** band cannot track a moving illiquidity boundary | Lowered `MEIC_CHAIN_ATM_BAND_PTS` to **50** (spec minimum); PUT 100% / CALL 100% at that moment. **This is a band-aid, not a fix — see outstanding item 5.** |
 | 6 | Fire skipped: `insufficient_bp` | Account derivative BP was **$3,448**, below the `MEIC_MIN_BUYING_POWER` **$5,000** floor. The trade itself only needed ~$1,665 | Operator lowered the floor to **$2,000** (config, `.env`) |
 | 7 | Fire → **500**, no position | Manual fire called the **async** risk provider without awaiting it → a coroutine hit `dataclasses.replace()` | `manual_entry` now `await _maybe_await(self._risk)` (`7d09b86`) |
-| 8 | **Condor placed, NO stops** (the incident) | Two live-only object-shape bugs (see below) | `c250ac1` |
+| 8 | **Condor placed, NO stops** (incident #1) | Two live-only object-shape bugs (see below) | `c250ac1` |
+| 9 | **Condor placed, NO stops** (incident #2, after the #8 fixes) — 500 `margin_check_failed` | The reprice ladder's gap is **zero in live**: `execute_entry` calls `clock.wait_until(clock.now())` (a past/now deadline returns immediately), so `entry_reprice_seconds=20` is never applied. Sequence: submit condor → it fills at the broker (takes ~1–2s to register as "Filled") → `_filled` checks IMMEDIATELY, sees "Routed", returns False → 0s gap → ladder **replaces** = cancel (no-op, already filled) + submit a **second** condor → `margin_check_failed` → 500 → `_on_filled`/stops never run. Invisible in tests because the paper `SimulatedBroker` fills **synchronously** and the FakeClock makes `wait_until(now)` a no-op too | **NOT YET FIXED** — see outstanding item 6. Position closed manually (order `482331956`). |
 
 ### The incident (failure #8) — a naked position
 
@@ -91,6 +92,26 @@ live object shape** — that is how both bugs shipped.
    passing, the condor's **long** leg must itself be quoted — a fixed far-OTM thin
    zone can still cause `wing_unmarked` on the long, so a trade-relative view helps
    both. Reproduced live at spot 7545: calls unquoted from ~7600 (55 pts OTM).
+
+6. **Reprice ladder has no real gap in live → duplicate-order-on-fill (incident #2).**
+   `execute_entry._work_order` line ~253 does `await self._clock.wait_until(self._clock.now())`
+   — passing *now*, so `SystemClock.wait_until` returns immediately and the configured
+   `entry_reprice_seconds` never applies. Combined with checking `_filled` the instant
+   after submit (before a live fill registers), the ladder reprices a filling order and
+   submits a second condor. **Fix must:** (a) apply a real gap — `wait_until(now + entry_reprice_seconds)`;
+   (b) check `_filled` AFTER the gap (or poll across it), and re-check before any reprice,
+   so a filled order is never replaced; (c) ideally, treat "order acknowledged but terminal
+   state unknown" conservatively — never reprice until the current order is confirmed
+   NOT filled. Reprice tests must advance the FakeClock to simulate the gap.
+
+7. **SYSTEMIC: the live async order/fill/reprice/stop path was only ever tested against a
+   SYNCHRONOUS paper broker.** Three distinct live-only bugs surfaced in one session
+   (object shapes ×2 in #8, zero reprice gap in #9), each capable of leaving a naked
+   position. Recommendation: **stop the fire-and-patch loop.** Before the next real fire,
+   build a **live-shaped async fake broker** (SDK-object shapes, fill LATENCY, partial
+   fills, reject/duplicate on replace-after-fill) and run the full entry→fill→reprice→
+   stop→verify path through it offline; and/or run the `tests/contract/` suite against the
+   cert sandbox. Fix the loop holistically rather than one symptom at a time.
 
 ## Verification state at end of session
 
