@@ -11,7 +11,7 @@ flowchart TD
     FD1 -->|failed| FD2["One-shot fetcher<br/>read-only, never writes marks"]
     FD2 -->|failed| SKIP4["SKIP: data_unavailable"]
 
-    FEED1 -->|healthy| CHAIN{"Chain integrity STK-10:<br/>at least 90% of ATM band marked?"}
+    FEED1 -->|healthy| CHAIN{"Chain integrity STK-10 v1.51:<br/>90% of THIS trade+s reachable strikes<br/>(probe range + wings + shifts) marked?"}
     FD1 -->|healed| CHAIN
     FD2 -->|data ok| CHAIN
 
@@ -72,10 +72,10 @@ flowchart TD
     DCY2 -->|30s or ask rises| DCY4["Cancel buyback,<br/>RE-PLACE stop"]
     DCY4 --> PROT
 
-    LC -->|TPF: profit falls to floor<br/>x2 valid evals| CLS0["CANONICAL CLOSE CLS-01<br/>step 1: cancel stops, confirm<br/>step 2: close all live legs via ladder"]
+    LC -->|TPF: profit falls to floor<br/>x2 valid evals| CLS0["CANONICAL CLOSE CLS-01 v1.50<br/>shorts: REPLACE stop with marketable buy<br/>(protection becomes the exit - never naked,<br/>never two orders) then longs via ladder"]
     LC -->|operator clicks Close trade<br/>instant, no dialog| CLS0
     LC -->|Flatten All or Stop+Flatten<br/>typed FLATTEN| CLS0
-    CLS0 -->|stop fills mid-cancel| LEX1
+    CLS0 -->|replace returns FILLED| LEX1
     CLS0 --> CLOSED["ENTRY CLOSED<br/>initiator recorded"]
 
     LC -->|operator intervenes<br/>AT THE BROKER| OWN1{"What did they do?"}

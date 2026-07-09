@@ -24,8 +24,8 @@ Single source of truth for every configurable parameter. The backend config sche
 | `wing_width` | 10–200 pts, step 5 | 50 | next-entry | STK-03 |
 | `max_strike_shifts` | 0–4 | 2 | next-entry | STK-09 — SHORT's shift budget (3 strikes total incl. original); all blocked ⇒ skip `strike_collision` |
 | `max_long_shifts` | 0–10 | 5 | next-entry | STK-09 — LONG's solo shift budget when its target holds a short; each shift widens the spread (RSK-04 re-evaluates) |
-| `chain_completeness_pct` | 50–100 | 90 | next-entry | STK-10 — % of ATM-band strikes that must be marked before selection |
-| `chain_atm_band_pts` | 50–500 | 150 | next-entry | STK-10 — half-width of the band around spot the gate inspects |
+| `chain_completeness_pct` | 50–100 | 90 | next-entry | STK-10 v1.51 — % of the entry's TRADE-RELATIVE reachable strike set (probe range + wings + shift budgets) that must be marked before selection; MUST be wired, never hardcoded |
+| ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |
 | `min_total_credit` | $0.10–$40.00 | $2.00 | next-entry | STK-06, ORD-03 — floor on total NET condor credit (longs factored); below ⇒ abort |
@@ -129,6 +129,7 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 |---|---|---|---|---|
 | `trading_mode` | paper \| live | paper | next-day, flat book, typed confirm | DAY-05, UC-10 |
 | `max_day_risk` | $ > 0 | required, no default | next-entry | RSK-04 |
+| `min_buying_power` | 0–100,000 | 5000 | next-entry | ENT-03 — entries skip `insufficient_bp` when account derivative BP is below this floor; v1.51: previously env-only (MEIC_MIN_BUYING_POWER, a silent unspecced config — defect class as chain_completeness_pct); operator-tuned per account size (ratified live 2026-07-09: Ash runs 2,000; default stays conservative) |
 | `sanity_price_multiple` | 1.5–10 | 3 | immediate | RSK-05 |
 | `block_entries_on_critical` | bool | true | immediate | RSK-06 |
 | `alert_channels` | list (ui, webhook, email) | [ui] | immediate | RSK-06 |
@@ -165,6 +166,6 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 
 1. `stop_loss_pct` must be a member of {95..300 step 5} — reject anything else, including 94, 96, 300.1. `stop_basis` must be exactly `total_credit` or `short_premium`; `per_side` is rejected with reason `allocation_unverified` while the STP-02d gate is in force (v1.43). (Pre-v1.43 text omitted `short_premium` from the valid set — corrected.)
 2. `short_delta_max ≥ short_delta_target`. (`min_short_premium` and `min_total_credit` have different bases — gross short premium vs total net — so no ordering constraint links them.)
-3. `entry_times` strictly increasing, all within market hours, each ≥ `min_time_before_close` before the (possibly early) close.
+3. `entry_times` strictly increasing, all within market hours, each ≥ `min_time_before_close` before the (possibly early) close. **DAY-06 (v1.53):** each time must be 24-hour military HH:MM ET (dot separator canonicalised), and 09:30 ≤ t < 16:00 ET; violations reject per-row (`not_24h_military` / `outside_market_hours`). **Durable row ids (v1.53, ENT-10):** every saved row carries a durable entry id — all tracking keys on it, never list position.
 4. `max_day_risk` is mandatory before live mode can be enabled. (`daily_max_loss` no longer exists — RSK-02 removed v1.32; the config loader REJECTS it as an unknown key.)
 5. Every config save produces a new immutable version; the active version ID is stamped on every domain event (audit, UC-07).
