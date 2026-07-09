@@ -93,3 +93,21 @@ def test_short_premium_basis_per_side_triggers():
     result = asyncio.run(p.protect(entry_id="e4", basis=StopBasis.SHORT_PREMIUM,
                                    shorts=shorts, pct=D("95")))
     assert result.triggers["PUT"] == D("5.80")  # floor(5.85) in 0.10 regime
+
+
+def test_confirmed_qty_matches_both_fake_order_id_and_live_id_shapes():
+    """Regression (2026-07-09): live working orders are SDK PlacedOrder objects
+    keyed by `.id`; our SimOrder/FakeOrder use `.order_id`. Matching only one left
+    a live stop unconfirmed -> a PROTECTED condor sent down the UNPROTECTED path."""
+    from types import SimpleNamespace
+    live_o = SimpleNamespace(id="7001", legs=[SimpleNamespace(quantity=2), SimpleNamespace(quantity=2)])
+    fake_o = SimpleNamespace(order_id="7002", intent=SimpleNamespace(contracts=1))
+
+    class _B:
+        async def working_orders(self):
+            return [live_o, fake_o]
+
+    p = _protect(_B(), [], RecordingAlerts())
+    assert asyncio.run(p._confirmed_qty("7001")) == 2    # live matched by .id
+    assert asyncio.run(p._confirmed_qty("7002")) == 1    # fake matched by .order_id
+    assert asyncio.run(p._confirmed_qty("9999")) is None

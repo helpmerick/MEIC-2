@@ -65,3 +65,25 @@ def test_gate_failure_skips_before_any_order():
         day="d", scheduled=SCHEDULED, condor=CONDOR, gates=stop_gates))
     assert out.status == "SKIPPED" and out.reason == "stop_trading"
     assert broker._orders == {}
+
+
+def test_fill_matches_handles_paper_dicts_and_live_order_objects():
+    """Regression (2026-07-09 naked position): the paper SimulatedBroker/FakeBroker
+    yield fill records as DICTS, but the live TastytradeAdapter yields SDK order
+    OBJECTS (.id/.status, NO .get). Every pipeline test used the dict shape, so
+    _filled crashed on the object shape in production — AFTER the condor filled,
+    BEFORE stops were placed. _fill_matches must accept both."""
+    from types import SimpleNamespace
+    from meic.application.execute_entry import _fill_matches
+
+    # paper shape: dict
+    assert _fill_matches({"order_id": "O-1"}, "O-1") is True
+    assert _fill_matches({"order_id": "O-1", "partial": True}, "O-1") is False
+    assert _fill_matches({"order_id": "O-2"}, "O-1") is False
+
+    # live shape: an SDK order object with no .get()
+    filled = SimpleNamespace(id=482314017, status="Filled")
+    assert _fill_matches(filled, "482314017") is True          # matches by .id, not .get
+    assert _fill_matches(filled, "999") is False
+    partial = SimpleNamespace(id=482314017, status="Partially Filled")
+    assert _fill_matches(partial, "482314017") is False        # partial is not filled

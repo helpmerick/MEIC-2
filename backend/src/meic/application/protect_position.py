@@ -184,7 +184,11 @@ class ProtectPosition:
         """The working stop's quantity, or None if it isn't working at all.
         An unreadable quantity is 'unknown', which is NOT 'confirmed'."""
         for o in await self._broker.working_orders():
-            if getattr(o, "order_id", None) == order_id:
+            # id lives under `.order_id` on our SimOrder/FakeOrder but `.id` on the
+            # SDK's PlacedOrder — matching only one silently fails to confirm a live
+            # stop, sending a protected condor down the UNPROTECTED path.
+            oid = getattr(o, "order_id", None) or getattr(o, "id", None)
+            if str(oid) == str(order_id):
                 return working_order_qty(o)
         return None
 

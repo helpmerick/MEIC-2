@@ -28,6 +28,22 @@ from meic.domain.ticks import TickTable
 
 from meic.domain.risk import worst_case_loss
 
+
+def _fill_matches(fill, order_id) -> bool:
+    """A non-partial fill record for `order_id`. Broker shapes differ: the paper
+    SimulatedBroker yields dicts (`{"order_id": ..., "partial": ...}`); the live
+    TastytradeAdapter yields SDK order OBJECTS (`.id`, `.status`). Treating one as
+    the other is what left a filled condor unprotected on 2026-07-09 — a live fill
+    object has no `.get`, so fill-confirmation crashed AFTER the order filled but
+    BEFORE stops were placed. This normalises both."""
+    if isinstance(fill, dict):
+        fid = fill.get("order_id") or fill.get("id")
+        partial = bool(fill.get("partial"))
+    else:
+        fid = getattr(fill, "order_id", None) or getattr(fill, "id", None)
+        partial = "partial" in str(getattr(fill, "status", "")).lower()
+    return str(fid) == str(order_id) and not partial
+
 from .entry_gates import GateSnapshot, RiskSnapshot, evaluate_gates, evaluate_risk
 from .leg_book import crosscheck_leg_symbols
 from .order_intent import OrderIntent, condor_legs
@@ -265,6 +281,6 @@ class ExecuteEntryAttempt:
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):
-            if f.get("order_id") == order_id and not f.get("partial"):
+            if _fill_matches(f, order_id):
                 return True
         return False
