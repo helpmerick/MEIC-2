@@ -15,10 +15,12 @@ from meic.application.persistent_state import PersistentState
 class _Commands:
     """Only what the schedule/fire routes touch."""
 
-    def __init__(self, *, can_fire=True, preflight_checks=None):
+    def __init__(self, *, can_fire=True, preflight_checks=None, day="2026-07-10"):
         self._can_fire = can_fire
         self.preflight_checks = preflight_checks
         self.fired: list = []
+        self.simulated: list = []
+        self._day = day
 
     def can_fire(self):
         return self._can_fire
@@ -37,15 +39,27 @@ class _Commands:
             return {"result": "not_confirmed"}
         return {"result": "filled", "entry_id": f"d#{entry_number}", "initiator": "manual_entry"}
 
+    # --- ENT-11/UI-25 ad-hoc manual trade ---------------------------------------
+    async def simulate(self, row):
+        self.simulated.append(row)
+        return {"result": "ok", "put_short": "5990", "put_long": "5940",
+                "call_short": "6060", "call_long": "6110", "put_mid": "3.10",
+                "call_mid": "2.90", "net_credit": "4.00", "worst_case": "4600",
+                "contracts": row.contracts,
+                "estimate_note": "simulation — the real fire re-selects from fresh data and may differ"}
 
-def _client(rows=None, *, commands=None, mode="paper", max_day_risk=None):
+    def day(self):
+        return self._day
+
+
+def _client(rows=None, *, commands=None, mode="paper", max_day_risk=None, events=None):
     state = PersistentState(InMemoryStateStore())
     state.trading_mode = mode
     if rows is not None:
         state.entry_schedule = rows
     if max_day_risk is not None:
         state.max_day_risk = str(max_day_risk)
-    app = create_app(state, [], commands=commands or _Commands())
+    app = create_app(state, events if events is not None else [], commands=commands or _Commands())
     return TestClient(app), state
 
 
@@ -184,3 +198,55 @@ def test_firing_an_unknown_row_is_404():
     c, _ = _client([_row()])
     assert c.post("/entry/9/fire", json={"press_id": "p1", "confirmed": True}).status_code == 404
     assert c.get("/entry/0/fire-preview").status_code == 404
+
+
+# --- ENT-11/UI-25 ad-hoc manual trade -------------------------------------------
+
+def test_manual_simulate_returns_the_simulation_through_the_api():
+    cmds = _Commands()
+    c, _ = _client([], commands=cmds)
+    r = c.post("/manual/simulate", json={"contracts": 2, "target_premium": "3.00"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["result"] == "ok"
+    assert body["put_short"] == "5990" and body["net_credit"] == "4.00"
+    assert cmds.simulated[0].contracts == 2   # the row the endpoint built and passed through
+
+
+def test_manual_simulate_rejects_bad_params_with_422_shaped_errors():
+    c, _ = _client([], commands=_Commands())
+    r = c.post("/manual/simulate", json={"contracts": 11})
+    assert r.status_code == 422
+    assert any(e["field"] == "contracts" for e in r.json()["detail"]["errors"])
+
+
+def test_manual_fire_allocates_a_101_plus_number_and_fires_through_commands():
+    cmds = _Commands(day="2026-07-10")
+    c, _ = _client([_row("10:00")], commands=cmds)  # a schedule row exists at 1 — must not collide
+    r = c.post("/manual/fire", json={"press_id": "p1", "confirmed": True, "contracts": 2})
+    assert r.status_code == 200
+    assert r.json()["result"] == "filled"
+    assert cmds.fired == [("p1", 101, True)]
+
+
+def test_manual_fire_allocates_the_next_number_after_an_existing_ad_hoc_fill():
+    from meic.domain.events import CondorFilled
+    cmds = _Commands(day="2026-07-10")
+    events = [CondorFilled(entry_id="2026-07-10#101", net_credit=D("4.00"))]
+    c, _ = _client([], commands=cmds, events=events)
+    c.post("/manual/fire", json={"press_id": "p1", "confirmed": True})
+    assert cmds.fired[-1][1] == 102
+
+
+def test_manual_fire_requires_confirmed():
+    cmds = _Commands()
+    c, _ = _client([], commands=cmds)
+    r = c.post("/manual/fire", json={"press_id": "p1", "confirmed": False})
+    assert r.json() == {"result": "not_confirmed"}
+    assert cmds.fired == [("p1", 101, False)]  # unconfirmed still records nothing at the domain layer
+
+
+def test_manual_fire_requires_a_press_id():
+    c, _ = _client([], commands=_Commands())
+    r = c.post("/manual/fire", json={"confirmed": True})
+    assert r.status_code == 400

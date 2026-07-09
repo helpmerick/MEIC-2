@@ -147,6 +147,26 @@ export interface FireResult {
   fill_credit?: string;
 }
 
+// ENT-11/UI-25: the ad-hoc manual-trade card's Simulate result. Read-only — it
+// places no order and appends no event. `worst_case` here is REAL (computed from
+// the selector's actual strikes), unlike the schedule row's pre-selection
+// formula estimate; still labelled an estimate because the real fire re-selects
+// from fresh data and may differ.
+export interface ManualSimulation {
+  result: "ok" | "skipped";
+  reason?: string;
+  put_short?: string;
+  put_long?: string;
+  call_short?: string;
+  call_long?: string;
+  put_mid?: string;
+  call_mid?: string;
+  net_credit?: string;
+  worst_case?: string;
+  contracts?: number;
+  estimate_note?: string;
+}
+
 // ENT-10 / UI-24: the day supervisor's watch state (backend/adapters/api/server.py
 // GET /day/status). `next_entry_at` is an ET ISO datetime; the countdown itself
 // is display-only (UI-03) — the backend's `seconds_to_next` is authoritative.

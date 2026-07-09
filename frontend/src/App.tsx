@@ -5,6 +5,7 @@ import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
 import { DayReportView } from "./components/DayReportView";
 import { EntryCards } from "./components/EntryCards";
+import { ManualTradeCard } from "./components/ManualTradeCard";
 import { NextEntryCountdown } from "./components/NextEntryCountdown";
 import { SchedulePanel } from "./components/SchedulePanel";
 import { useLiveBot } from "./useLiveBot";
@@ -124,6 +125,9 @@ export function App() {
         {/* UC-02 composition + ENT-09 fire. The fire button follows the three
             trade-enabling states, exactly as UI-22 requires. */}
         <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
+        {/* ENT-11/UI-25: the ad-hoc lane — fire NOW with explicit parameters,
+            plus a read-only Simulate. Follows the same entries-enabled gate. */}
+        <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
         <div className="report"><DayReportView report={report} /></div>
         <div className="entries-col"><EntryCards entries={entries} onClose={closeEntry} /></div>
         <div className="feed-col"><ActivityFeed activity={activity} /></div>

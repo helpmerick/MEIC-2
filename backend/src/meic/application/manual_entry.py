@@ -122,6 +122,43 @@ class ManualEntry:
         entries (ARMED ∧ Stop Trading OFF ∧ Confirm Live ON)."""
         return self._comp.state.entries_enabled()
 
+    def today(self) -> str:
+        """The day bucket a fire stamps onto its entry_id/events. ENT-11(3): the
+        ad-hoc 101+ numbering lane must scan the SAME day string, so the API
+        layer (which has no access to `_day`) reads it through here rather than
+        guessing its own — a mismatch would let two ad-hoc fires collide."""
+        return self._day() if self._day else self._comp.clock.now().date().isoformat()
+
+    # --- ENT-11/UI-25 --------------------------------------------------------------
+    async def simulate(self, row) -> dict[str, Any]:
+        """UI-25: a READ-ONLY preview. Runs the identical selector as a fire would,
+        against the row's OWN parameters, entry_number 0 (a probe number — it is
+        never persisted anywhere, so it can never collide with a real entry).
+
+        This appends NO event, places NO order, and consumes nothing (ENT-05 is
+        untouched) — it must call ONLY the selector, never `execute.attempt`.
+        On success it shows the strikes/mids/credit/worst-case the row would get
+        IF fired now; the real fire re-selects from fresh data and may differ
+        (v1.46 estimate-honesty precedent) — hence `estimate_note` below.
+        """
+        condor, skip = await self._selector(self._comp.clock.now(), 0, _selection(row))
+        if condor is None:
+            return {"result": "skipped", "reason": skip}
+
+        from .execute_entry import ExecuteEntryAttempt
+
+        return {
+            "result": "ok",
+            "put_short": str(condor.put_short), "put_long": str(condor.put_wing),
+            "call_short": str(condor.call_short), "call_long": str(condor.call_wing),
+            "put_mid": str(condor.put_short_mid), "call_mid": str(condor.call_short_mid),
+            "net_credit": str(condor.mid_credit),
+            "worst_case": str(ExecuteEntryAttempt.worst_case(condor)),
+            "contracts": condor.contracts,
+            "estimate_note": ("simulation — the real fire re-selects from fresh "
+                              "data and may differ"),
+        }
+
     # --- ENT-09 ------------------------------------------------------------------
     async def fire(self, *, press_id: str, entry_number: int, row,
                    confirmed: bool) -> dict[str, Any]:
@@ -137,7 +174,7 @@ class ManualEntry:
             return {"result": "duplicate_press", "press_id": press_id}
         self._consumed.add(press_id)
 
-        day = self._day() if self._day else self._comp.clock.now().date().isoformat()
+        day = self.today()
 
         # 3. The ▶ enablement rule. Refused before an attempt runs, so no order
         # and no EntryWindowOpened — the card shows the skip reason.

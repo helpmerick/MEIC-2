@@ -17,10 +17,12 @@ from fastapi.responses import JSONResponse
 
 from meic.application.persistent_state import PersistentState
 from meic.application.preflight import run_preflight
-from meic.application.schedule_service import ScheduleService
+from meic.application.schedule_service import ScheduleService, spec_from_row
 from meic.config.validation import ConfigRejected, validate_config
 from meic.config.stop_basis import StopBasisRejected
+from meic.domain.events import CondorFilled, EntrySkipped
 from meic.domain.projection import day_report, fold
+from meic.domain.schedule import ScheduleDefaults, resolve, validate_entry
 
 
 def _strike_from_symbol(symbol: str) -> str:
@@ -130,6 +132,55 @@ def _describe(ev: Any) -> dict[str, str] | None:
         if v is not None and str(v) != "0":
             bits.append(f"{sym}${v}")
     return {"icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits)}
+
+
+def _adhoc_row(params: dict[str, Any]):
+    """ENT-11(4): an ad-hoc row validates through the IDENTICAL per-row rules as
+    a schedule row (contracts 1-10, discrete stop set, width steps, per_side
+    rejected) — minus the time rules, which do not apply to an instant fire.
+
+    Reuses the schedule's own resolve/validate path (doc 06 section 37) so an
+    absent field inherits the SAME global defaults a schedule row would, rather
+    than a second, drifting copy of that logic. `time` is a dummy — ENT-11 has
+    none — and is discarded once `resolve` returns a ResolvedEntry.
+    """
+    try:
+        spec = spec_from_row({**params, "time": "10:00"})
+    except (KeyError, ValueError, ArithmeticError) as e:
+        raise HTTPException(status_code=422, detail={
+            "errors": [{"field": "row", "reason": f"unparsable ({e})", "index": 0}]})
+
+    resolved = resolve(spec, ScheduleDefaults())
+    errors = validate_entry(resolved, 0)
+    if errors:
+        raise HTTPException(status_code=422, detail={
+            "errors": [{"field": e.field, "reason": e.reason, "index": e.index} for e in errors]})
+    return resolved
+
+
+def _next_adhoc_number(events: list, day: str) -> int:
+    """ENT-11(3): ad-hoc entries are numbered 101, 102, ... per day, and must
+    NEVER share a number with a schedule row (1..N) — entry_ids key the exposure
+    book, ORD-04 idempotency and the ENT-10 remaining-schedule filter, so a
+    collision could double-count exposure or silently block a scheduled entry.
+
+    Scans both a FILLED ad-hoc entry (CondorFilled, entry_id "{day}#{n}") and a
+    SKIPPED one (EntrySkipped, date == day) so a skipped ad-hoc press still
+    claims its number permanently, exactly like a skipped schedule row does.
+    """
+    prefix = f"{day}#"
+    used: set[int] = set()
+    for ev in events:
+        if isinstance(ev, CondorFilled) and ev.entry_id.startswith(prefix):
+            try:
+                n = int(ev.entry_id[len(prefix):])
+            except ValueError:
+                continue
+            if n >= 101:
+                used.add(n)
+        elif isinstance(ev, EntrySkipped) and ev.date == day and ev.entry_number >= 101:
+            used.add(ev.entry_number)
+    return max(used, default=100) + 1
 
 
 def create_app(
@@ -350,6 +401,30 @@ def create_app(
                 raise HTTPException(status_code=400, detail="press_id_required")
             return await commands.fire(press_id=press_id, entry_number=n,
                                        row=rows[n - 1], confirmed=bool(body.get("confirmed")))
+
+        @app.post("/manual/simulate")
+        async def manual_simulate(body: dict[str, Any]) -> dict[str, Any]:
+            """UI-25: a read-only preview of an ad-hoc trade — no order, no event,
+            nothing consumed (ENT-05 unaffected). POST, not GET, and gated by the
+            SAME auth/origin middleware as every mutating command: a simulation
+            still spends a live selector call against real broker/chain data, a
+            budget worth protecting even though nothing is written."""
+            row = _adhoc_row(body)
+            return await commands.simulate(row)
+
+        @app.post("/manual/fire")
+        async def manual_fire(body: dict[str, Any]) -> dict[str, Any]:
+            """ENT-11: fire an ad-hoc entry now, through the IDENTICAL ENT-09
+            pipeline, numbered in the 101+ lane (ENT-11(3)) so it can never
+            collide with a schedule row. `press_id` and `confirmed` are the same
+            UI-22 idempotency/confirmation contract as `/entry/{n}/fire`."""
+            row = _adhoc_row(body)
+            press_id = str(body.get("press_id", "")).strip()
+            if not press_id:
+                raise HTTPException(status_code=400, detail="press_id_required")
+            n = _next_adhoc_number(events, commands.day())
+            return await commands.fire(press_id=press_id, entry_number=n, row=row,
+                                       confirmed=bool(body.get("confirmed")))
 
         @app.post("/close/{entry_id}")
         async def close_entry(entry_id: str) -> dict[str, Any]:

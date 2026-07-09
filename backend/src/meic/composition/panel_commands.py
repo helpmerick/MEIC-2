@@ -58,6 +58,23 @@ class PanelCommands:
         return await self._manual.fire(press_id=press_id, entry_number=entry_number,
                                        row=row, confirmed=confirmed)
 
+    # --- ENT-11/UI-25 ad-hoc manual trade ---------------------------------------
+    async def simulate(self, row) -> dict:
+        """UI-25: read-only preview passthrough. A wiring-less panel can preview
+        nothing, same as `fire`'s guard above."""
+        if self._manual is None:
+            return {"result": "unavailable", "reason": "manual entry not wired (ENT-09)"}
+        return await self._manual.simulate(row)
+
+    def day(self) -> str:
+        """ENT-11(3): the day bucket a fire will stamp onto its entry_id/events —
+        so the API layer can allocate the next 101+ ad-hoc number in the SAME
+        bucket a fire is about to use. Falls back to the composition's own clock
+        when manual entry isn't wired (nothing will actually fire in that case)."""
+        if self._manual is not None:
+            return self._manual.today()
+        return self._comp.clock.now().date().isoformat()
+
     async def close(self, entry_id: str) -> dict:
         """Close one entry via CLS (manual). No-op if it is already closed —
         projection-based idempotency (a double-click yields exactly one close)."""

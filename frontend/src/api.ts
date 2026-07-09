@@ -4,7 +4,7 @@
 
 import type {
   ActivityLine, DayReport, DayStatus, EntryCard, FirePreview, FireResult,
-  PanelState, Preflight, ScheduleRow, ScheduleView,
+  ManualSimulation, PanelState, Preflight, ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -89,6 +89,16 @@ export const api = {
   // The press_id came from the preview: confirming twice is ONE attempt.
   fire: (n: number, pressId: string) =>
     post<FireResult>(`/entry/${n}/fire`, { press_id: pressId, confirmed: true }),
+
+  // --- ENT-11/UI-25 ad-hoc manual trade --------------------------------------
+  // Read-only: places no order, appends no event. POST (not GET) because it
+  // still spends a live selector call against real broker/chain data — a
+  // budget worth gating behind the same auth/origin middleware as every
+  // mutating command.
+  manualSimulate: (params: Record<string, unknown>) =>
+    post<ManualSimulation>("/manual/simulate", params),
+  manualFire: (params: Record<string, unknown> & { press_id: string; confirmed: boolean }) =>
+    post<FireResult>("/manual/fire", params),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).
