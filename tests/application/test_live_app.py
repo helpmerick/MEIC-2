@@ -30,15 +30,15 @@ def _cert_env(monkeypatch, tmp_path):
 def test_live_app_requires_api_token(monkeypatch, tmp_path):
     from meic.adapters.api.server import live_app
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.delenv("MEIC_API_TOKEN", raising=False)
-    with pytest.raises(RuntimeError, match="MEIC_API_TOKEN"):  # NFR-06
+    monkeypatch.delenv("MEIC_USER_PASSWORD", raising=False)
+    with pytest.raises(RuntimeError, match="MEIC_USER_PASSWORD"):  # NFR-06
         live_app()
 
 
 def test_live_app_wires_live_adapter_with_safe_defaults_and_persistence(monkeypatch, tmp_path):
     from meic.adapters.api.server import live_app
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
 
     app = live_app()
     comp = app.state.composition
@@ -66,7 +66,7 @@ def test_live_app_wires_live_adapter_with_safe_defaults_and_persistence(monkeypa
 
 def test_live_app_refuses_missing_credentials(monkeypatch, tmp_path):
     from meic.adapters.api.server import live_app
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     monkeypatch.setenv("MEIC_LIVE_IS_TEST", "true")
     monkeypatch.setenv("MEIC_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TT_CERT_PROVIDER_SECRET", "")   # explicitly blank overrides .env
@@ -101,7 +101,7 @@ def test_live_app_arms_every_safety_rail(monkeypatch, tmp_path):
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     _compose_schedule(tmp_path)                       # the operator saved a ceiling
 
     runtime = live_app().state.runtime
@@ -118,7 +118,7 @@ def test_an_unconfigured_ceiling_stays_none_and_uc02_refuses_the_live_arm(monkey
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
 
     runtime = live_app().state.runtime                # nothing composed at all
     assert runtime.max_day_risk is None
@@ -131,7 +131,7 @@ def test_live_app_carries_each_rows_own_contracts_into_the_day(monkeypatch, tmp_
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     _compose_schedule(tmp_path, rows=[{"time": "10:00", "contracts": 2, "wing_width": "30"},
                                       {"time": "11:15", "contracts": 1}])
 
@@ -149,7 +149,7 @@ def test_live_app_wires_the_manual_fire_and_a_real_preflight(monkeypatch, tmp_pa
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     _compose_schedule(tmp_path)
 
     app = live_app()
@@ -169,7 +169,7 @@ def test_live_app_blocks_trading_until_the_first_clock_probe_lands(monkeypatch, 
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
 
     runtime = live_app().state.runtime
     assert runtime.measure_drift_ms() == float("inf")     # nothing probed yet
@@ -185,7 +185,7 @@ def test_the_clock_rail_is_fed_by_the_session_probe_not_an_env_var(monkeypatch, 
     from meic.adapters.api.server import live_app
 
     _cert_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     monkeypatch.setenv("MEIC_CLOCK_DRIFT_MS", "42")   # set, and deliberately IGNORED
 
     app = live_app()

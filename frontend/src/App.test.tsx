@@ -98,10 +98,10 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     Object.defineProperty(window, "location", { value: { reload }, writable: true });
 
     render(<App />);
-    await userEvent.click(screen.getByLabelText("API token"));   // 🔓
-    const input = await screen.findByLabelText("api token");
+    await userEvent.click(screen.getByLabelText("user password"));   // 🔓
+    const input = await screen.findByLabelText("user password");
     await userEvent.type(input, "s3cr3t-token");
-    await userEvent.click(screen.getByRole("button", { name: /save api token/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save user password/i }));
 
     expect(localStorage.getItem("meic_api_token")).toBe("s3cr3t-token");
     expect(reload).toHaveBeenCalled();                       // so the next command carries it

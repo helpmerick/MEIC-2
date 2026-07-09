@@ -135,9 +135,9 @@ export function App() {
   );
 }
 
-// NFR-06: the panel's API token. `live_app` requires it — every command (Arm,
-// Confirm Live, ▶, Flatten) carries it in the x-api-token header. Stored in this
-// browser's localStorage only; it's the SAME string you put in MEIC_API_TOKEN.
+// NFR-06: the User Password. `live_app` requires it — every command (Arm, Confirm
+// Live, ▶, Flatten) carries it in the x-api-token header. Stored in this browser's
+// localStorage only; it's the SAME string you put in MEIC_USER_PASSWORD in .env.
 function ApiTokenControl() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(getApiToken());
@@ -153,8 +153,8 @@ function ApiTokenControl() {
   if (!open) {
     return (
       <button className="theme-toggle" onClick={() => setOpen(true)}
-              title={set ? "API token is set — click to change" : "Set the panel API token (MEIC_API_TOKEN)"}
-              aria-label="API token">
+              title={set ? "User Password is set — click to change" : "Set the User Password (MEIC_USER_PASSWORD)"}
+              aria-label="user password">
         {set ? "🔐" : "🔓"}
       </button>
     );
@@ -162,15 +162,15 @@ function ApiTokenControl() {
   return (
     <span className="token-field">
       <input
-        aria-label="api token"
+        aria-label="user password"
         type="password"
         autoFocus
-        placeholder="paste MEIC_API_TOKEN"
+        placeholder="User Password"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setOpen(false); }}
       />
-      <button className="btn" aria-label="save api token" onClick={save}>Save</button>
+      <button className="btn" aria-label="save user password" onClick={save}>Save</button>
     </span>
   );
 }

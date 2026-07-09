@@ -58,7 +58,7 @@ the broker on startup but a connect failure never takes the panel down —
 
 ```bash
 # CERT sandbox (default) — real broker session, fake money:
-MEIC_API_TOKEN=<pick-a-token> \
+MEIC_USER_PASSWORD=<pick-a-token> \
   uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8010
 ```
 

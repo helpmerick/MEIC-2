@@ -9,7 +9,7 @@ token-gated (NFR-06), booting with SAFE DEFAULTS (DISARMED, Confirm Live OFF)
 so nothing trades until the operator deliberately arms and confirms. Defaults
 to the CERT sandbox; MEIC_LIVE_IS_TEST=false selects production credentials:
 
-    MEIC_API_TOKEN=... uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8010
+    MEIC_USER_PASSWORD=... uvicorn meic.adapters.api.server:live_app --factory --host 127.0.0.1 --port 8010
 """
 from __future__ import annotations
 
@@ -248,9 +248,9 @@ def live_app():
 
     env = _read_env()
     is_test = env.get("MEIC_LIVE_IS_TEST", "true").lower() != "false"
-    token = env.get("MEIC_API_TOKEN")
+    token = env.get("MEIC_USER_PASSWORD")
     if not token:
-        raise RuntimeError("live panel requires MEIC_API_TOKEN (NFR-06) — set it in .env/env")
+        raise RuntimeError("live panel requires MEIC_USER_PASSWORD (NFR-06) — set it in .env/env")
 
     # Real money needs a SECOND, deliberate opt-in: flipping one env var must not
     # be enough. The adapter separately asserts the token's issuer is production.

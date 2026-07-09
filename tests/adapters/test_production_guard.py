@@ -64,7 +64,7 @@ def test_adapter_accepts_matching_tokens_construction_is_io_free():
 # --- live_app: two deliberate switches, never one ----------------------------
 
 def _prod_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("MEIC_API_TOKEN", "panel-secret")
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
     monkeypatch.setenv("MEIC_LIVE_IS_TEST", "false")
     monkeypatch.setenv("MEIC_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TT_PROD_PROVIDER_SECRET", "s")
