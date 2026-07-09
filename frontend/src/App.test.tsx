@@ -20,7 +20,7 @@ vi.mock("./useLiveBot", () => ({
 }));
 
 import { App } from "./App";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 beforeEach(() => {
   vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
@@ -92,10 +92,9 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     expect(tag.tagName).toBe("SPAN");                          // status, not <button>
   });
 
-  it("lets the operator set the API token from the UI (into localStorage)", async () => {
+  it("saves the User Password and confirms it was accepted by the backend", async () => {
     localStorage.removeItem("meic_api_token");
-    const reload = vi.fn();
-    Object.defineProperty(window, "location", { value: { reload }, writable: true });
+    const check = vi.spyOn(api, "authCheck").mockResolvedValue({ ok: true });
 
     render(<App />);
     await userEvent.click(screen.getByLabelText("user password"));   // 🔓
@@ -104,6 +103,21 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await userEvent.click(screen.getByRole("button", { name: /save user password/i }));
 
     expect(localStorage.getItem("meic_api_token")).toBe("s3cr3t-token");
-    expect(reload).toHaveBeenCalled();                       // so the next command carries it
+    expect(check).toHaveBeenCalled();                        // validated, not blindly stored
+    // padlock flips to 🔐 (accepted) — no page reload
+    await waitFor(() =>
+      expect(screen.getByLabelText("user password")).toHaveTextContent("🔐"));
+  });
+
+  it("tells the operator when the User Password is wrong (401), staying unlocked", async () => {
+    localStorage.removeItem("meic_api_token");
+    vi.spyOn(api, "authCheck").mockRejectedValue(new ApiError(401, "missing_or_bad_token"));
+
+    render(<App />);
+    await userEvent.click(screen.getByLabelText("user password"));
+    await userEvent.type(await screen.findByLabelText("user password"), "wrong");
+    await userEvent.click(screen.getByRole("button", { name: /save user password/i }));
+
+    await waitFor(() => expect(screen.getByText(/wrong password/i)).toBeInTheDocument());
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, getApiToken, setApiToken, type OutageDrill } from "./api";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { CommandPanel } from "./components/CommandPanel";
@@ -138,24 +138,45 @@ export function App() {
 // NFR-06: the User Password. `live_app` requires it — every command (Arm, Confirm
 // Live, ▶, Flatten) carries it in the x-api-token header. Stored in this browser's
 // localStorage only; it's the SAME string you put in MEIC_USER_PASSWORD in .env.
+// Each request reads it live, so there is NO reload — we VALIDATE it against the
+// backend (/auth/check) and tell the operator whether it was accepted.
+type TokenStatus = "idle" | "checking" | "ok" | "bad";
+
 function ApiTokenControl() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(getApiToken());
-  const set = getApiToken().length > 0;
+  const [status, setStatus] = useState<TokenStatus>("idle");
 
-  function save() {
-    setApiToken(value);
-    setOpen(false);
-    // reload so the very next command uses it (and the WS reconnects with it)
-    window.location.reload();
+  // On mount, verify any already-stored password so the padlock reflects reality
+  // (🔐 only when the backend actually accepts it), not just "a string exists".
+  useEffect(() => {
+    if (!getApiToken()) return;
+    setStatus("checking");
+    api.authCheck().then(() => setStatus("ok")).catch(() => setStatus("bad"));
+  }, []);
+
+  async function save() {
+    setApiToken(value);            // each request reads this live — no reload needed
+    if (!value.trim()) { setStatus("idle"); setOpen(false); return; }
+    setStatus("checking");
+    try {
+      await api.authCheck();       // 200 only if the password matches MEIC_USER_PASSWORD
+      setStatus("ok");
+      setOpen(false);
+    } catch {
+      setStatus("bad");            // 401 -> wrong password; stay open so it can be fixed
+    }
   }
 
+  const locked = status === "ok";
   if (!open) {
     return (
       <button className="theme-toggle" onClick={() => setOpen(true)}
-              title={set ? "User Password is set — click to change" : "Set the User Password (MEIC_USER_PASSWORD)"}
+              title={locked ? "User Password accepted — click to change"
+                            : status === "bad" ? "User Password was rejected — click to fix"
+                            : "Set the User Password (MEIC_USER_PASSWORD)"}
               aria-label="user password">
-        {set ? "🔐" : "🔓"}
+        {locked ? "🔐" : status === "bad" ? "⚠️" : "🔓"}
       </button>
     );
   }
@@ -167,10 +188,15 @@ function ApiTokenControl() {
         autoFocus
         placeholder="User Password"
         value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setOpen(false); }}
+        onChange={(e) => { setValue(e.target.value); if (status === "bad") setStatus("idle"); }}
+        onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setOpen(false); }}
       />
-      <button className="btn" aria-label="save user password" onClick={save}>Save</button>
+      <button className="btn" aria-label="save user password"
+              disabled={status === "checking"} onClick={() => void save()}>
+        {status === "checking" ? "Checking…" : "Save"}
+      </button>
+      {status === "ok" && <span className="tok-msg ok" role="status">✓ accepted</span>}
+      {status === "bad" && <span className="tok-msg bad" role="alert">✗ wrong password</span>}
     </span>
   );
 }

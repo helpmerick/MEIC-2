@@ -120,6 +120,16 @@ def create_app(
                 return JSONResponse({"detail": "missing_or_bad_token"}, status_code=401)
         return await call_next(request)
 
+    # --- auth check -----------------------------------------------------------
+    @app.post("/auth/check")
+    def auth_check() -> dict[str, bool]:
+        """NFR-06: a side-effect-free authenticated ping. Reaching this handler
+        means the security middleware already accepted the x-api-token (or none is
+        required) — so a 200 confirms the User Password, a 401 rejects it. The UI
+        calls this on Save to tell the operator whether the password is right,
+        instead of failing silently on the first real command."""
+        return {"ok": True}
+
     # --- read model -----------------------------------------------------------
     @app.get("/state")
     def get_state() -> dict[str, Any]:

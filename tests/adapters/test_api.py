@@ -47,6 +47,31 @@ def test_tc_nfr_06_token_enforced_when_set():
     assert ok.status_code == 200
 
 
+def test_auth_check_confirms_the_password_without_side_effects():
+    """NFR-06: /auth/check is a side-effect-free authenticated ping the UI uses to
+    tell the operator whether the User Password is right — 200 when it matches,
+    401 when it doesn't, and it never mutates state."""
+    client, state, _ = _client(api_token="secret123")
+    state.armed = False
+
+    # wrong / missing token -> 401 (same gate as any mutating call)
+    assert client.post("/auth/check", headers={"origin": PANEL}).status_code == 401
+    bad = client.post("/auth/check", headers={"origin": PANEL, "x-api-token": "nope"})
+    assert bad.status_code == 401
+
+    # right token -> 200 {ok: true}, and nothing changed
+    ok = client.post("/auth/check", headers={"origin": PANEL, "x-api-token": "secret123"})
+    assert ok.status_code == 200 and ok.json() == {"ok": True}
+    assert state.armed is False
+
+
+def test_auth_check_passes_when_no_password_is_required():
+    """A localhost paper bind sets no token; /auth/check returns 200 for anyone,
+    because there is nothing to prove."""
+    client, _, _ = _client(api_token=None)
+    assert client.post("/auth/check", headers={"origin": PANEL}).status_code == 200
+
+
 def test_tc_nfr_06_non_localhost_bind_requires_token():
     """TC-NFR-06: config with bind_host != 127.0.0.1 and no api_token fails
     validation — structurally cannot expose the panel unauthenticated."""

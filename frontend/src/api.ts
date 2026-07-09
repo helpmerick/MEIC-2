@@ -49,6 +49,9 @@ export class ApiError extends Error {
 }
 
 export const api = {
+  // NFR-06: verify the User Password without side effects. 200 = accepted (or none
+  // required); throws ApiError(401) when the password is wrong or missing.
+  authCheck: () => post<{ ok: boolean }>("/auth/check"),
   getState: () => get<PanelState>("/state"),
   getReport: () => get<DayReport>("/report"),
   getEntries: () => get<EntryCard[]>("/entries"),
