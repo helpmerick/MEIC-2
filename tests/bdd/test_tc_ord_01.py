@@ -57,14 +57,29 @@ def _(world):
     world["clock"] = FakeClock(SCHEDULED)
 
 
+async def _run_advancing(clock, coro):
+    """Drive the ladder by advancing the FakeClock so each entry_reprice_seconds
+    gap elapses. The gap is a REAL wait since the 2026-07-09 incident-#2 fix (a
+    live fill needs a beat to register before the ladder may reprice), so 'elapses
+    5 times' is simulated here by moving time forward rather than a no-op."""
+    task = asyncio.ensure_future(coro)
+    for _ in range(2000):
+        if task.done():
+            break
+        for _ in range(6):
+            await asyncio.sleep(0)   # let pending awaits reach the next clock waiter
+        clock.advance(seconds=5)
+    return await task
+
+
 @when('entry_reprice_seconds elapses 5 times')
 def _(world):
     events: list = []
     svc = ExecuteEntryAttempt(world["broker"], world["clock"], events, SPX,
                               entry_reprice_attempts=5)
     world["events"] = events
-    world["outcome"] = asyncio.run(svc.attempt(
-        day="2026-07-06", scheduled=SCHEDULED, condor=CONDOR, gates=GATES_PASS))
+    world["outcome"] = asyncio.run(_run_advancing(world["clock"], svc.attempt(
+        day="2026-07-06", scheduled=SCHEDULED, condor=CONDOR, gates=GATES_PASS)))
 
 
 @then('the limit was repriced down one tick each time')

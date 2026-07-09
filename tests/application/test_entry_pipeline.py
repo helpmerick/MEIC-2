@@ -22,6 +22,20 @@ def _svc(broker, events, clock, **kw):
     return ExecuteEntryAttempt(broker, clock, events, SPX, **kw)
 
 
+async def _drive(clock, coro):
+    """Run an attempt() that POLLS the clock for a live fill, advancing the FakeClock
+    so the reprice-interval gaps actually elapse. The live gap is real (v-2026-07-09
+    incident #2 fix); tests simulate its passage rather than block forever."""
+    task = asyncio.ensure_future(coro)
+    for _ in range(2000):
+        if task.done():
+            break
+        for _ in range(6):
+            await asyncio.sleep(0)   # let pending awaits resolve to the next clock waiter
+        clock.advance(seconds=5)     # nudge time forward to release the reprice wait
+    return await task
+
+
 def test_gate_order_first_failure_wins():
     # armed off AND stop trading on -> disarmed reported first (ENT-03 order)
     s = GateSnapshot(armed=False, confirm_live=True, stop_trading=True, flatten_in_progress=False,
@@ -51,8 +65,8 @@ def test_fills_at_mid_first_rung():
 def test_ord03_floor_reached_unfilled_cancels_and_skips():
     broker, events = FakeBroker(), []  # default: every submit stays WORKING (never fills)
     clock = FakeClock(SCHEDULED)
-    out = asyncio.run(_svc(broker, events, clock, entry_reprice_attempts=5).attempt(
-        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+    out = asyncio.run(_drive(clock, _svc(broker, events, clock, entry_reprice_attempts=5).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS)))
     assert out.status == "SKIPPED" and out.reason == "unfilled_at_floor"  # EC-ENT-05
     assert any(isinstance(e, EntrySkipped) for e in events)
 

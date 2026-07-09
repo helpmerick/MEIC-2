@@ -118,6 +118,7 @@ class ExecuteEntryAttempt:
         entry_window_seconds: int = 120,
         entry_reprice_seconds: int = 20,
         entry_reprice_attempts: int = 5,
+        entry_fill_poll_seconds: float = 2.0,
         stop_basis: StopBasis = StopBasis.TOTAL_CREDIT,
         stop_loss_pct: Decimal = Decimal("95"),
         stop_rebate_markup: Decimal = Decimal("0"),
@@ -136,6 +137,7 @@ class ExecuteEntryAttempt:
         self._window = entry_window_seconds
         self._reprice_seconds = entry_reprice_seconds
         self._reprice_attempts = entry_reprice_attempts
+        self._poll_seconds = entry_fill_poll_seconds
         self._basis = stop_basis
         self._pct = stop_loss_pct
         self._markup = stop_rebate_markup
@@ -226,6 +228,7 @@ class ExecuteEntryAttempt:
         expiration = condor.expiration or self._clock.now().date()
 
         working_id = None
+        working_price = None
         for step in rungs:
             # ENT-04 (v1.44): the size is THIS ROW's `contracts`, not a global knob.
             intent = OrderIntent(
@@ -241,21 +244,56 @@ class ExecuteEntryAttempt:
             if working_id is None:
                 working_id = await self._broker.submit(intent)
             else:
-                working_id = await self._broker.replace(working_id, intent)  # ORD-02 reprice
+                # ORD-02 reprice — but NEVER reprice an order that has already
+                # filled. A live fill registers a beat after it happens at the
+                # broker; blindly repricing it cancels nothing and submits a SECOND
+                # condor (2026-07-09 incident #2: margin_check_failed, and the first
+                # fill went unprotected). Re-confirm not-filled immediately first.
+                if await self._filled(working_id):
+                    return await self._record_fill(entry_id, working_id, condor, expiration,
+                                                   working_price, initiator)
+                working_id = await self._broker.replace(working_id, intent)
+            working_price = step.price
 
-            if await self._filled(working_id):
-                fill_credit = step.price
-                legs = await self._fill_legs(working_id, condor, expiration)
-                self._events.append(CondorFilled(
-                    entry_id=entry_id, net_credit=fill_credit, legs=legs,
-                    initiator=initiator))   # ENT-09 / UC-08 tagging
-                return EntryOutcome("FILLED", fill_credit=fill_credit)
-            await self._clock.wait_until(self._clock.now())  # advance-controlled reprice gap
+            # Paper fills are synchronous, so this returns on the FIRST poll without
+            # waiting; a live fill needs a beat to register, so we POLL across the
+            # reprice interval and stop the moment it fills — never waiting the whole
+            # interval (that would leave the fill unprotected) and never repricing a
+            # filled order.
+            if await self._await_fill(working_id, self._reprice_seconds):
+                return await self._record_fill(entry_id, working_id, condor, expiration,
+                                               working_price, initiator)
 
-        # ORD-03 / EC-ENT-05: floor reached unfilled ⇒ cancel and skip
+        # ORD-03 / EC-ENT-05: floor reached unfilled ⇒ cancel and skip. Last guard:
+        # it may have filled right at the final deadline.
         if working_id is not None:
+            if await self._filled(working_id):
+                return await self._record_fill(entry_id, working_id, condor, expiration,
+                                               working_price, initiator)
             await self._broker.cancel(working_id)
         return self._skip(day, n, "unfilled_at_floor")
+
+    async def _await_fill(self, working_id, seconds: float) -> bool:
+        """Poll for `working_id`'s fill for up to `seconds`, returning True as soon
+        as it fills. The first check is immediate (synchronous paper fills return
+        here with no wait); otherwise it re-checks every `entry_fill_poll_seconds`.
+        Returning True is what keeps the ladder from repricing a filled order."""
+        deadline = self._clock.now() + timedelta(seconds=seconds)
+        while True:
+            if await self._filled(working_id):
+                return True
+            if self._clock.now() >= deadline:
+                return False
+            nxt = min(deadline, self._clock.now() + timedelta(seconds=self._poll_seconds))
+            await self._clock.wait_until(nxt)
+
+    async def _record_fill(self, entry_id, working_id, condor: Condor, expiration: date,
+                           fill_credit, initiator: str) -> EntryOutcome:
+        legs = await self._fill_legs(working_id, condor, expiration)
+        self._events.append(CondorFilled(
+            entry_id=entry_id, net_credit=fill_credit, legs=legs,
+            initiator=initiator))   # ENT-09 / UC-08 tagging
+        return EntryOutcome("FILLED", fill_credit=fill_credit)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:
         """ORD-09: record what the BROKER said it filled.

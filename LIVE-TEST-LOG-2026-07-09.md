@@ -24,7 +24,7 @@ closed manually within ~minutes. All bugs found are fixed with regression tests.
 | 6 | Fire skipped: `insufficient_bp` | Account derivative BP was **$3,448**, below the `MEIC_MIN_BUYING_POWER` **$5,000** floor. The trade itself only needed ~$1,665 | Operator lowered the floor to **$2,000** (config, `.env`) |
 | 7 | Fire → **500**, no position | Manual fire called the **async** risk provider without awaiting it → a coroutine hit `dataclasses.replace()` | `manual_entry` now `await _maybe_await(self._risk)` (`7d09b86`) |
 | 8 | **Condor placed, NO stops** (incident #1) | Two live-only object-shape bugs (see below) | `c250ac1` |
-| 9 | **Condor placed, NO stops** (incident #2, after the #8 fixes) — 500 `margin_check_failed` | The reprice ladder's gap is **zero in live**: `execute_entry` calls `clock.wait_until(clock.now())` (a past/now deadline returns immediately), so `entry_reprice_seconds=20` is never applied. Sequence: submit condor → it fills at the broker (takes ~1–2s to register as "Filled") → `_filled` checks IMMEDIATELY, sees "Routed", returns False → 0s gap → ladder **replaces** = cancel (no-op, already filled) + submit a **second** condor → `margin_check_failed` → 500 → `_on_filled`/stops never run. Invisible in tests because the paper `SimulatedBroker` fills **synchronously** and the FakeClock makes `wait_until(now)` a no-op too | **NOT YET FIXED** — see outstanding item 6. Position closed manually (order `482331956`). |
+| 9 | **Condor placed, NO stops** (incident #2, after the #8 fixes) — 500 `margin_check_failed` | The reprice ladder's gap is **zero in live**: `execute_entry` calls `clock.wait_until(clock.now())` (a past/now deadline returns immediately), so `entry_reprice_seconds=20` is never applied. Sequence: submit condor → it fills at the broker (takes ~1–2s to register as "Filled") → `_filled` checks IMMEDIATELY, sees "Routed", returns False → 0s gap → ladder **replaces** = cancel (no-op, already filled) + submit a **second** condor → `margin_check_failed` → 500 → `_on_filled`/stops never run. Invisible in tests because the paper `SimulatedBroker` fills **synchronously** and the FakeClock makes `wait_until(now)` a no-op too | **FIXED** — the ladder now POLLS for the fill across the real reprice interval (`_await_fill`), never reprices a filled order, and stops the moment it fills. Position closed manually (order `482331956`). |
 
 ### The incident (failure #8) — a naked position
 
@@ -107,11 +107,19 @@ live object shape** — that is how both bugs shipped.
 7. **SYSTEMIC: the live async order/fill/reprice/stop path was only ever tested against a
    SYNCHRONOUS paper broker.** Three distinct live-only bugs surfaced in one session
    (object shapes ×2 in #8, zero reprice gap in #9), each capable of leaving a naked
-   position. Recommendation: **stop the fire-and-patch loop.** Before the next real fire,
-   build a **live-shaped async fake broker** (SDK-object shapes, fill LATENCY, partial
-   fills, reject/duplicate on replace-after-fill) and run the full entry→fill→reprice→
-   stop→verify path through it offline; and/or run the `tests/contract/` suite against the
-   cert sandbox. Fix the loop holistically rather than one symptom at a time.
+   position. **ADDRESSED (coverage):** built a **live-shaped async fake broker**
+   (`tests/harness/live_broker.py`: SDK-object shapes, fill LATENCY, reject-on-replace-
+   after-fill) and an end-to-end test (`tests/application/test_live_fill_path.py`) that
+   runs the real entry→fill→stops→verify path through it and asserts `PROTECTED`.
+   Verified it FAILS against the pre-fix code (reproduces incident #2) and passes after.
+   Still recommended: run `tests/contract/` against the cert sandbox for real-SDK coverage.
+
+8. **Auto-close on stop-placement failure — STILL NOT WIRED.** `ProtectPosition` has no
+   `close_entry` hook in either composition (outstanding item 1). With #9 fixed the happy
+   path now rests stops, and the live-shaped test proves it; but a genuine stop-placement
+   FAILURE still only alerts (loudly, to the panel) rather than auto-flattening. This is
+   the last safeguard to wire before UNsupervised live use. The live-shaped harness now
+   makes it straightforward to test.
 
 ## Verification state at end of session
 
