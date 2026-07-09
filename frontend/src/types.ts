@@ -30,6 +30,16 @@ export type EntryStatus =
   | "PENDING" | "PROTECTED" | "STOPPED" | "LEX_RECOVERED"
   | "EXPIRED" | "DECAY_CLOSED" | "CLOSED";
 
+// FEATURE 2 (v1.46 card): one broker-allocated leg — strike parsed from the OCC
+// symbol, price null when the broker reported no allocation (paper/simulated).
+export interface EntryLeg {
+  side: "PUT" | "CALL";
+  role: "short" | "long";
+  strike: string;
+  price: string | null;
+  qty: number;
+}
+
 export interface EntryCard {
   entry_id: string;
   status: EntryStatus;
@@ -39,6 +49,17 @@ export interface EntryCard {
   sides_expired: string[];
   recovered: boolean;
   close_initiator: string | null;
+  // FEATURE 1: fill time (ISO, with offset), null until a fill is recorded.
+  placed_at?: string | null;
+  // FEATURE 2: per-side strikes/prices, and the derived premium per side (null
+  // when either leg's price is unknown — paper carries no allocation).
+  legs?: EntryLeg[];
+  premium_received?: { PUT: string | null; CALL: string | null };
+  // FEATURE 3 (live only; paper always sends these absent/null — no fabricated
+  // estimate). Updates on the ~60s health-loop cadence; null means "—", never a
+  // guess (stale/absent snapshot or a mark outside the ATM band).
+  live_pnl?: string | null;
+  live_pnl_asof?: string | null;
 }
 
 export interface ActivityLine {

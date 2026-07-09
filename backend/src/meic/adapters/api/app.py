@@ -9,6 +9,7 @@ unauthenticated.
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -20,6 +21,42 @@ from meic.application.schedule_service import ScheduleService
 from meic.config.validation import ConfigRejected, validate_config
 from meic.config.stop_basis import StopBasisRejected
 from meic.domain.projection import day_report, fold
+
+
+def _strike_from_symbol(symbol: str) -> str:
+    """The OCC symbol's last 8 chars are the strike x1000 (adapters/occ.py) —
+    the reverse of `occ_symbol`, for card display only (never re-used for orders:
+    ORD-09's stops/LEX/closes all take the leg's own recorded `.symbol`)."""
+    return str(Decimal(symbol[-8:]) / 1000)
+
+
+def _card_legs(legs) -> list[dict[str, Any]]:
+    """FEATURE 2 (v1.46 card): per-side strikes + the broker-allocated fill price,
+    Decimals kept as strings in JSON. `qty` rides along so the live-P&L enricher
+    (server.py) can size its estimate without re-deriving contracts elsewhere."""
+    return [{
+        "side": leg.side, "role": leg.role,
+        "strike": _strike_from_symbol(leg.symbol),
+        "price": None if leg.price is None else str(leg.price),
+        "qty": leg.qty,
+    } for leg in legs]
+
+
+def _premium_received(legs) -> dict[str, str | None]:
+    """FEATURE 2: short.price - long.price per side, only when BOTH prices are
+    known (paper/simulated fills carry no allocation — null is the honest answer,
+    never a fabricated number)."""
+    by_side: dict[str, dict[str, Any]] = {"PUT": {}, "CALL": {}}
+    for leg in legs:
+        by_side.setdefault(leg.side, {})[leg.role] = leg
+    out: dict[str, str | None] = {}
+    for side in ("PUT", "CALL"):
+        short, long_ = by_side[side].get("short"), by_side[side].get("long")
+        if short is not None and long_ is not None and short.price is not None and long_.price is not None:
+            out[side] = str(short.price - long_.price)
+        else:
+            out[side] = None
+    return out
 
 
 _LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -102,6 +139,8 @@ def create_app(
     api_token: str | None = None,
     panel_origin: str = "http://127.0.0.1",
     commands: Any = None,
+    entries_enricher: Any = None,  # FEATURE 3: optional (list[dict]) -> list[dict] hook,
+    # e.g. live's snapshot-derived P/L (server.py); paper passes None (unchanged).
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -194,8 +233,13 @@ def create_app(
                 "sides_expired": list(e.sides_expired),
                 "recovered": e.recoveries != 0,
                 "close_initiator": e.close_initiator,
+                "placed_at": e.placed_at,               # FEATURE 1: fill time, null if absent
+                "legs": _card_legs(e.legs),              # FEATURE 2: per-side strikes/prices
+                "premium_received": _premium_received(e.legs) if e.legs else {"PUT": None, "CALL": None},
             })
         cards.sort(key=lambda c: c["entry_id"])
+        if entries_enricher is not None:  # FEATURE 3: live P/L, or any future hook
+            cards = entries_enricher(cards)
         return cards
 
     @app.get("/activity")

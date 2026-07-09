@@ -3,6 +3,8 @@
 Uses the in-process TestClient — no network. Prose-TC functions named
 test_tc_* so the traceability checker counts them.
 """
+from decimal import Decimal as D
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +12,7 @@ from meic.adapters.api.app import create_app
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.application.persistent_state import PersistentState
 from meic.config.validation import ConfigRejected, validate_bind
+from meic.domain.events import CondorFilled, FilledLeg
 
 PANEL = "http://127.0.0.1"
 
@@ -205,3 +208,57 @@ def test_tc_nfr_06_save_from_the_browsers_own_origin_succeeds():
     evil = client.post("/schedule", json={"rows": [{"time": "10:00"}]},
                        headers={"origin": "https://evil.example", "host": "127.0.0.1:8010"})
     assert evil.status_code == 403 and evil.json()["detail"] == "foreign_origin"
+
+
+# --- FEATURE 1/2: card carries placed_at, legs, premium_received --------------
+
+def test_get_entries_card_carries_placed_at_legs_and_premium_received():
+    client, _state, events = _client()
+    events.append(CondorFilled(
+        entry_id="e1", net_credit=D("3.60"), at="2026-07-09T14:32:00+00:00",
+        legs=(
+            FilledLeg(symbol="SPXW260709P07535000", right="P", role="short", qty=1, price=D("1.80")),
+            FilledLeg(symbol="SPXW260709P07510000", right="P", role="long", qty=1, price=D("0.08")),
+            FilledLeg(symbol="SPXW260709C07540000", right="C", role="short", qty=1, price=D("1.95")),
+            FilledLeg(symbol="SPXW260709C07565000", right="C", role="long", qty=1, price=D("0.07")),
+        )))
+    cards = client.get("/entries").json()
+    assert len(cards) == 1
+    c = cards[0]
+    assert c["placed_at"] == "2026-07-09T14:32:00+00:00"
+    assert len(c["legs"]) == 4
+    put_short = next(l for l in c["legs"] if l["side"] == "PUT" and l["role"] == "short")
+    assert put_short["strike"] == "7535" and put_short["price"] == "1.80" and put_short["qty"] == 1
+    assert c["premium_received"] == {"PUT": "1.72", "CALL": "1.88"}
+
+
+def test_get_entries_placed_at_and_legs_are_null_empty_when_absent():
+    """Schema evolution / paper fills: no `at`, no allocated legs -> honest nulls,
+    never a fabricated timestamp or premium."""
+    client, _state, events = _client()
+    events.append(CondorFilled(entry_id="e1", net_credit=D("4.00")))
+    c = client.get("/entries").json()[0]
+    assert c["placed_at"] is None
+    assert c["legs"] == []
+    assert c["premium_received"] == {"PUT": None, "CALL": None}
+
+
+# --- FEATURE 3: the entries_enricher hook, and that /ws reuses it -------------
+
+def test_entries_enricher_hook_enriches_both_rest_and_websocket_snapshot():
+    state = PersistentState(InMemoryStateStore())
+    events: list = []
+
+    def enricher(cards):
+        for c in cards:
+            c["live_pnl"] = "999"
+        return cards
+
+    app = create_app(state, events, panel_origin=PANEL, entries_enricher=enricher)
+    client = TestClient(app)
+    events.append(CondorFilled(entry_id="e1", net_credit=D("4.00")))
+
+    assert client.get("/entries").json()[0]["live_pnl"] == "999"
+    with client.websocket_connect("/ws", headers={"origin": PANEL}) as ws:
+        snap = ws.receive_json()
+        assert snap["entries"][0]["live_pnl"] == "999"

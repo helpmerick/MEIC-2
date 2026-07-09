@@ -32,6 +32,7 @@ from .events import (
     EntryCompleted,
     Event,
     EntrySkipped,
+    FilledLeg,
     LongSold,
     ShortStopped,
     SideClosed,
@@ -53,6 +54,8 @@ class EntryProjection:
     sides_expired: tuple[str, ...] = ()
     close_initiator: str | None = None  # CLS-04: how the entry closed
     completed: bool = False
+    placed_at: str | None = None  # UI card: fill time (CondorFilled.at), ISO, null if absent
+    legs: tuple[FilledLeg, ...] = ()  # ORD-09: broker-reported strikes/prices for the card
 
     @property
     def pnl(self) -> Decimal:
@@ -110,7 +113,8 @@ def apply(state: DayState, event: Event) -> DayState:
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
             e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee,
-            short_premium=e.short_premium + event.short_premium)))
+            short_premium=e.short_premium + event.short_premium,
+            placed_at=event.at, legs=event.legs)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(

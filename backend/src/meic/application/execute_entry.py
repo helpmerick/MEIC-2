@@ -290,10 +290,24 @@ class ExecuteEntryAttempt:
     async def _record_fill(self, entry_id, working_id, condor: Condor, expiration: date,
                            fill_credit, initiator: str) -> EntryOutcome:
         legs = await self._fill_legs(working_id, condor, expiration)
+        # BUG FIX (2026-07-09 incident): `fill_credit` here is only the working
+        # ladder RUNG price (an estimate) — the day the rung read 3.50, the
+        # broker's actual per-leg allocations netted 3.60 (sold 1.80+1.95, bought
+        # 0.08+0.07), and the bot recorded the rung's 3.50. ORD-09/STP-02d: the
+        # broker-ALLOCATED per-leg prices are the source of truth for what was
+        # actually paid/received, so use them whenever every leg carries one.
+        # Falls back to the rung estimate for the honest cases where it can't:
+        # paper/simulated fills (no allocation exists) or a real fill the broker
+        # reported with a leg missing its allocation.
+        actual = fill_credit
+        if legs and all(leg.price is not None for leg in legs):
+            actual = (sum(leg.price for leg in legs if leg.role == "short")
+                     - sum(leg.price for leg in legs if leg.role == "long"))
         self._events.append(CondorFilled(
-            entry_id=entry_id, net_credit=fill_credit, legs=legs,
-            initiator=initiator))   # ENT-09 / UC-08 tagging
-        return EntryOutcome("FILLED", fill_credit=fill_credit)
+            entry_id=entry_id, net_credit=actual, legs=legs,
+            initiator=initiator,             # ENT-09 / UC-08 tagging
+            at=self._clock.now().isoformat()))  # UI card: fill time
+        return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:
         """ORD-09: record what the BROKER said it filled.

@@ -138,7 +138,7 @@ def test_cancel_mid_ladder_never_orphans_a_working_entry_order():
         comp.state.stop_trading = False
         comp.execute = ExecuteEntryAttempt(broker, clock, events, SPX)
 
-        async def on_filled(entry_id, condor, stop=None):
+        async def on_filled(entry_id, condor, stop=None, fill_credit=None):
             protected.append(entry_id)
         comp._on_filled = on_filled
 

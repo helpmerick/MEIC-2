@@ -187,6 +187,11 @@ class CondorFilled(Event):
     # ENT-09: how this entry came to be. "schedule" | "manual_entry". Reports tag
     # manual actions (UC-08); the default keeps every pre-v1.44 log entry replayable.
     initiator: str = "schedule"
+    # UI card feature (2026-07-09): the wall-clock fill time, ISO, so the operator
+    # can see WHEN an entry actually filled. Optional/additive with a None default
+    # so a log entry recorded before this field existed still replays (from_dict's
+    # generic "field absent -> fall back to default" path handles it, same as `fee`).
+    at: str | None = None
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ from meic.domain.events import (
     DayArmed,
     DayCompleted,
     EntryCompleted,
+    FilledLeg,
     LongSold,
     ShortStopped,
     SideExpired,
@@ -97,6 +98,33 @@ def test_replay_from_persisted_roundtrip_is_identical(tmp_path):
     reloaded = fold(SqliteEventStore(tmp_path / "log.db").read("day-2026-07-06"))
     assert reloaded == original
     assert reloaded.day_pnl == original.day_pnl == D("2.50")
+
+
+def test_condor_filled_at_and_legs_carry_through_to_the_projection():
+    """FEATURE 1/2 (card): CondorFilled's `at` and `legs` project straight onto
+    the EntryProjection so the API layer can build the card's placed_at/legs/
+    premium_received without re-reading the event log itself."""
+    legs = (
+        FilledLeg(symbol="SPXW260709P07535000", right="P", role="short", qty=1, price=D("1.80")),
+        FilledLeg(symbol="SPXW260709P07510000", right="P", role="long", qty=1, price=D("0.08")),
+        FilledLeg(symbol="SPXW260709C07540000", right="C", role="short", qty=1, price=D("1.95")),
+        FilledLeg(symbol="SPXW260709C07565000", right="C", role="long", qty=1, price=D("0.07")),
+    )
+    events = [
+        DayArmed(date="d", entry_count=1),
+        CondorFilled(entry_id="e", net_credit=D("3.60"), legs=legs, at="2026-07-09T14:32:00+00:00"),
+    ]
+    e = fold(events).entries["e"]
+    assert e.placed_at == "2026-07-09T14:32:00+00:00"
+    assert e.legs == legs
+
+
+def test_condor_filled_without_at_or_legs_projects_null_placed_at():
+    """Schema evolution / paper fills: no `at`, no legs -> an honest empty card."""
+    events = [DayArmed(date="d", entry_count=1), CondorFilled(entry_id="e", net_credit=D("4.00"))]
+    e = fold(events).entries["e"]
+    assert e.placed_at is None
+    assert e.legs == ()
 
 
 def test_incremental_fold_equals_full_fold():

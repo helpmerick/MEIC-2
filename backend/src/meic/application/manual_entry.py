@@ -189,7 +189,9 @@ class ManualEntry:
                 return {"result": "skipped", "reason": outcome.reason}
 
             entry_id = f"{day}#{condor.entry_number}"
-            await self._comp._on_filled(entry_id, condor, _stop(row))   # STP-01
+            # STP-02 (2026-07-09 fix): protect off the ACTUAL fill credit.
+            await self._comp._on_filled(entry_id, condor, _stop(row),
+                                        fill_credit=outcome.fill_credit)   # STP-01
             return {"result": "filled", "entry_id": entry_id,
                     "initiator": MANUAL, "fill_credit": str(outcome.fill_credit)}
 

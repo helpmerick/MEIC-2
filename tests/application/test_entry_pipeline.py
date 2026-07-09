@@ -1,11 +1,11 @@
 """ExecuteEntryAttempt + ENT-03 gates — unit tests (ENT-02/03, ORD-02/03)."""
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal as D
 
 from meic.application.entry_gates import GateSnapshot, evaluate_gates
 from meic.application.execute_entry import Condor, ExecuteEntryAttempt, within_window
-from meic.domain.events import CondorFilled, EntrySkipped
+from meic.domain.events import CondorFilled, EntrySkipped, FilledLeg
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
 from tests.harness.fake_clock import ET, FakeClock
@@ -79,6 +79,57 @@ def test_gate_failure_skips_before_any_order():
         day="d", scheduled=SCHEDULED, condor=CONDOR, gates=stop_gates))
     assert out.status == "SKIPPED" and out.reason == "stop_trading"
     assert broker._orders == {}
+
+
+# --- BUG 1 (2026-07-09 incident): record the BROKER-ACTUAL net fill credit ----
+
+def test_record_fill_uses_broker_allocated_prices_when_all_present():
+    """The incident: the ladder's last rung was 3.50, but the broker's per-leg
+    allocations netted 3.60 (sold 1.80+1.95, bought 0.08+0.07) and the bot
+    recorded the rung's 3.50. ORD-09/STP-02d: the allocated prices are the
+    source of truth for what was actually paid/received whenever every leg
+    carries one."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill"))
+
+    async def fake_fill_legs(order_id):
+        return (
+            FilledLeg(symbol="SPXW260709P07535000", right="P", role="short", qty=1, price=D("1.80")),
+            FilledLeg(symbol="SPXW260709P07510000", right="P", role="long", qty=1, price=D("0.08")),
+            FilledLeg(symbol="SPXW260709C07540000", right="C", role="short", qty=1, price=D("1.95")),
+            FilledLeg(symbol="SPXW260709C07565000", right="C", role="long", qty=1, price=D("0.07")),
+        )
+    broker.fill_legs = fake_fill_legs
+
+    condor = Condor(1, D("7535"), D("7540"), D("1.85"), D("2.00"), D("3.50"), D("2.00"),
+                    put_long=D("7510"), call_long=D("7565"), expiration=date(2026, 7, 9))
+    clock = FakeClock(SCHEDULED)
+    out = asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=condor, gates=PASS))
+
+    assert out.status == "FILLED"
+    assert out.fill_credit == D("3.60")   # actual, not the 3.50 rung
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert len(filled) == 1
+    assert filled[0].net_credit == D("3.60")
+    assert filled[0].at is not None   # FEATURE 1: fill time stamped
+
+
+def test_record_fill_falls_back_to_rung_price_when_any_leg_price_is_missing():
+    """The honest paper/missing-allocation case: FakeBroker's simulated fills
+    always report price=None, so this is also today's default suite behaviour —
+    asserted explicitly so a future change can't silently start fabricating a
+    number STP-02d exists to reconcile against."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
+    clock = FakeClock(SCHEDULED)
+    out = asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+
+    assert out.status == "FILLED" and out.fill_credit == D("4.00")  # the mid rung
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert filled[0].net_credit == D("4.00")
+    assert all(leg.price is None for leg in filled[0].legs)
 
 
 def test_fill_matches_handles_paper_dicts_and_live_order_objects():

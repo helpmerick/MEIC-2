@@ -58,7 +58,7 @@ def test_cancelling_fire_during_the_handoff_still_places_the_stop():
         release = asyncio.Event()
         protected: list[str] = []
 
-        async def slow_on_filled(entry_id, condor, stop=None):
+        async def slow_on_filled(entry_id, condor, stop=None, fill_credit=None):
             handoff_started.set()
             await release.wait()           # the cancel lands in THIS window
             protected.append(entry_id)

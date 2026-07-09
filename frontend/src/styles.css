@@ -220,6 +220,10 @@ body {
 .ec-meta .tag { margin-left: 0; }
 .tag.lex { background: rgba(168,85,247,0.16); color: var(--accent-2); }
 .tag.exp { background: var(--good-dim); color: var(--good); }
+.ec-placed { font-size: 11px; color: var(--faint); margin-top: 6px; }
+.ec-legs { font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.ec-leg { line-height: 1.5; }
+.ec-livepnl { font-size: 12px; font-weight: 700; margin-top: 6px; color: var(--faint); }
 
 /* --- activity feed ------------------------------------------------------- */
 .feed { list-style: none; margin: 14px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }

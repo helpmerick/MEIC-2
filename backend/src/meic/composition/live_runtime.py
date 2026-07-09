@@ -205,7 +205,9 @@ class LiveRuntime:
                     entry_id = f"{day}#{condor.entry_number}"
                     # RSK-04: on the books — counts against every entry that follows.
                     self._worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
-                    await comp._on_filled(entry_id, condor, row.stop)  # STP-01 hand-off
+                    # STP-02 (2026-07-09 fix): protect off the ACTUAL fill credit.
+                    await comp._on_filled(entry_id, condor, row.stop,
+                                         fill_credit=outcome.fill_credit)  # STP-01 hand-off
                 return outcome
 
             attempt_task = asyncio.ensure_future(_attempt_and_protect())

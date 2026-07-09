@@ -84,7 +84,7 @@ class LiveComposition:
         mids = {"PUT": condor.put_short_mid, "CALL": condor.call_short_mid}
         return [ShortLeg(l.side, mids[l.side], Decimal("0.50"), symbol=l.symbol) for l in shorts]
 
-    async def _on_filled(self, entry_id: str, condor, stop=None) -> None:
+    async def _on_filled(self, entry_id: str, condor, stop=None, fill_credit=None) -> None:
         # RSK-04: record what this entry can lose, so later entries see the headroom.
         self.worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
         await self.protect.protect(
@@ -94,6 +94,11 @@ class LiveComposition:
             pct=(stop.pct if stop else self.execute.default_stop.pct),
             markup=(stop.markup if stop else self.execute.default_stop.markup),
             shorts=self._shorts(entry_id, condor),
-            total_net_credit=condor.mid_credit,
+            # BUG FIX (STP-02, 2026-07-09 incident): "trigger = pct x net credit"
+            # means the ACTUAL fill credit, not the mid estimate — on the incident
+            # day the stop rested at pct x mid instead of pct x the real 3.60
+            # fill. `fill_credit` is the caller's ExecuteEntryAttempt.attempt()
+            # outcome (None only when no fill is known, e.g. older call sites).
+            total_net_credit=(fill_credit if fill_credit is not None else condor.mid_credit),
             # ENT-04 (v1.44): each stop is sized to the condor it protects.
             contracts=condor.contracts)

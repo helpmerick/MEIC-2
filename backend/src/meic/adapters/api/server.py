@@ -273,6 +273,60 @@ async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn
             alerts.alert("critical", f"ENT-10: day supervisor tick failed: {err}")
 
 
+# Terminal card states — no further P/L to estimate once here (matches the
+# frontend's own TERMINAL list, EntryCards.tsx).
+_TERMINAL_STATUSES = {"CLOSED", "EXPIRED", "DECAY_CLOSED"}
+
+
+def _leg_mid(side_chain, strike: Decimal):
+    """The current mid mark for `strike` on one ChainSide, or None if unmarked
+    (far-OTM/no quote — the honest '—' case, never a fabricated number)."""
+    mark = side_chain.marks.get(strike)
+    return None if mark is None else mark.mid
+
+
+def _live_pnl_enricher(snaps):
+    """FEATURE 3: live P/L on OPEN entry cards, from the chain snapshot already
+    held for selection/DAT-02 — no new subscription. Reads `snaps.last`, so it
+    updates on the same ~60s health-loop cadence that refreshes it (see
+    `_wire_live_day`/`_probe_once`); a mark outside the ATM band, or a stale/
+    absent snapshot, yields an honest null ("—" in the UI) rather than a guess.
+    """
+
+    def enrich(cards: list[dict]) -> list[dict]:
+        snap = getattr(snaps, "last", None)
+        for card in cards:
+            card["live_pnl"] = None
+            card["live_pnl_asof"] = None
+            legs = card.get("legs")
+            if card.get("status") in _TERMINAL_STATUSES or not legs:
+                continue
+            if snap is None or snap.stale:
+                continue
+            by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
+            for leg in legs:
+                by_side.setdefault(leg["side"], {})[leg["role"]] = leg
+            put_short, put_long = by_side["PUT"].get("short"), by_side["PUT"].get("long")
+            call_short, call_long = by_side["CALL"].get("short"), by_side["CALL"].get("long")
+            if not (put_short and put_long and call_short and call_long):
+                continue
+            put_short_mid = _leg_mid(snap.put_side, Decimal(put_short["strike"]))
+            put_long_mid = _leg_mid(snap.put_side, Decimal(put_long["strike"]))
+            call_short_mid = _leg_mid(snap.call_side, Decimal(call_short["strike"]))
+            call_long_mid = _leg_mid(snap.call_side, Decimal(call_long["strike"]))
+            if None in (put_short_mid, put_long_mid, call_short_mid, call_long_mid):
+                continue  # a mark outside the band/no quote -> honest null, never a guess
+            current_value = (put_short_mid - put_long_mid) + (call_short_mid - call_long_mid)
+            contracts = int(put_short["qty"])
+            net_credit = Decimal(card["net_credit"])
+            live_pnl = (net_credit - current_value) * 100 * contracts
+            card["live_pnl"] = str(live_pnl)
+            card["live_pnl_asof"] = snap.taken_at.isoformat()
+        return cards
+
+    return enrich
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -306,13 +360,18 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     class _Snapshots:
         """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
         the UC-02 pre-flight — reflect the data the selector actually used.
-        Starts STALE: unknown freshness is never 'fresh'."""
+        Starts STALE: unknown freshness is never 'fresh'. Also holds the snapshot
+        ITSELF (`.last`) — FEATURE 3 (live P/L card) reads marks off it directly
+        rather than opening a second subscription; it refreshes on the same ~60s
+        health-loop cadence as everything else that reads `.stale`."""
         stale = True
+        last = None
 
         async def take(self):
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
             snap = await snapshot_chain(comp.broker._session, band_points=chain_band)
             self.stale = snap.stale
+            self.last = snap
             return snap
 
     snaps = _Snapshots()
@@ -366,6 +425,9 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # market_data pre-flight) reflect live data. The health loop runs it; the
         # selector also takes its own snapshot at fire time.
         "data_probe": snaps.take,
+        # FEATURE 3: the holder itself, so live_app can build the live-P/L
+        # entries_enricher off `.last`/`.stale` — no new subscription.
+        "snapshots": snaps,
     }
 
 
@@ -423,7 +485,10 @@ def live_app():
     live = _wire_live_day(comp, env)
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"])
-    app = create_app(comp.state, comp.events, api_token=token, commands=commands)
+    # FEATURE 3: live P/L off the already-held chain snapshot; paper_app passes
+    # no enricher (SIM-01 marks are synthetic, nothing honest to show).
+    app = create_app(comp.state, comp.events, api_token=token, commands=commands,
+                     entries_enricher=_live_pnl_enricher(live["snapshots"]))
     app.state.composition = comp
     app.state.commands = commands
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source

@@ -75,7 +75,7 @@ class _Comp:
         self.clock = None
         self.execute = None
 
-    async def _on_filled(self, entry_id, condor, stop=None):
+    async def _on_filled(self, entry_id, condor, stop=None, fill_credit=None):
         pass
 
 

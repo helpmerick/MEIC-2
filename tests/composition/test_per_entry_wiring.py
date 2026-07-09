@@ -120,7 +120,7 @@ class _Comp:
         self.state = _State()
         self.protected: list = []
 
-    async def _on_filled(self, entry_id, condor, stop=None):
+    async def _on_filled(self, entry_id, condor, stop=None, fill_credit=None):
         self.protected.append((entry_id, condor.contracts, stop))
 
 
