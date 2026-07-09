@@ -13,6 +13,16 @@ from meic.adapters.tastytrade.adapter import TastytradeAdapter
 from meic.application.persistent_state import PersistentState
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    """Tests must NOT read the operator's real gitignored .env -- a populated .env
+    (production creds, User Password) would mask the absence these tests assert.
+    Isolate live_app's env to os.environ, which monkeypatch fully controls."""
+    import os as _os
+    from meic.adapters.api import server
+    monkeypatch.setattr(server, "_read_env", lambda: dict(_os.environ))
+
+
 def _jwt(iss: str) -> str:
     def seg(d):
         return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
