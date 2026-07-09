@@ -20,6 +20,7 @@ closed manually within ~minutes. All bugs found are fixed with regression tests.
 | 3 | Arm blocked: `clock NOT verified (DAY-03)` | `live_app` exposed the session/clock probe but **never ran it on a timer** — the "health loop" the pre-flight assumes didn't exist. AND `_probe_response` used a non-existent `async_client`/GET; SDK v13 is `_client` + POST `/sessions/validate`, so `server_time()` always returned None | Added the periodic health loop (+ immediate probe on connect); fixed the probe attribute/method (`6c34e78`) |
 | 4 | Arm blocked: `market_data stale (DAT-02)` | Same missing health loop — nothing refreshed the chain snapshot | Health loop now also refreshes the snapshot (`6c34e78`) |
 | 5 | Fire skipped: `incomplete_chain` | STK-10 completeness inspected a ±120 band and required 90% marked, but far-OTM 0DTE **calls (81–116 pts OTM) are listed yet unquoted** — dead strikes failed the gate. `chain_atm_band_pts` (spec config) was **defined but never wired** (hardcoded 120) | Wired `MEIC_CHAIN_ATM_BAND_PTS` (spec default 150); set to **70** in `.env` (covers the trade's reach, inside the ~80pt quote boundary). Verified PUT 100% / CALL 100% (`e418404`) |
+| 5b | `incomplete_chain` **recurred** later (spot 7530→7545) | The far-OTM call quote boundary is **not fixed** — it moves with spot/vol. By 13:38 ET, calls 7600–7615 (55–70 pts OTM) had gone unquoted, so band 70 failed again. A **fixed** band cannot track a moving illiquidity boundary | Lowered `MEIC_CHAIN_ATM_BAND_PTS` to **50** (spec minimum); PUT 100% / CALL 100% at that moment. **This is a band-aid, not a fix — see outstanding item 5.** |
 | 6 | Fire skipped: `insufficient_bp` | Account derivative BP was **$3,448**, below the `MEIC_MIN_BUYING_POWER` **$5,000** floor. The trade itself only needed ~$1,665 | Operator lowered the floor to **$2,000** (config, `.env`) |
 | 7 | Fire → **500**, no position | Manual fire called the **async** risk provider without awaiting it → a coroutine hit `dataclasses.replace()` | `manual_entry` now `await _maybe_await(self._risk)` (`7d09b86`) |
 | 8 | **Condor placed, NO stops** (the incident) | Two live-only object-shape bugs (see below) | `c250ac1` |
@@ -57,7 +58,7 @@ live object shape** — that is how both bugs shipped.
 
 ## Config changed on the account (in `.env`, not committed)
 
-- `MEIC_CHAIN_ATM_BAND_PTS=70` (was unset → hardcoded 120; spec default 150)
+- `MEIC_CHAIN_ATM_BAND_PTS=70` → later **50** (was unset → hardcoded 120; spec default 150). Had to be retuned mid-session as spot moved — see outstanding item 5.
 - `MEIC_MIN_BUYING_POWER=2000` (was 5000)
 
 ---
@@ -77,6 +78,19 @@ live object shape** — that is how both bugs shipped.
 4. Contract tests (`tests/contract/`, 13) exercise the real sandbox and were not run
    this session (need creds/network) — run them to cover the live order/fill/stop
    path offline against cert.
+5. **STK-10 completeness is brittle against a moving illiquidity boundary (recurring
+   `incomplete_chain`).** A *fixed* `chain_atm_band_pts` cannot track the far-OTM call
+   quote boundary, which moves with spot/vol — the band had to be retuned 70→50
+   mid-session (failures 5 and 5b). Options to make it robust, in preference order:
+   (a) **trade-relative band** — judge completeness only over the strikes the condor
+   can actually reach (≈ short target ± wing width), not a wide fixed ATM band;
+   (b) **wire `chain_completeness_pct`** (also spec-defined, currently unwired at 90)
+   so the operator can lower the bar; (c) **exclude never-quoted strikes** from the
+   denominator (a listed strike with no two-sided market all snapshot long isn't a
+   "hole"). (a) is the real fix and stops the recurrence. NOTE: even with the gate
+   passing, the condor's **long** leg must itself be quoted — a fixed far-OTM thin
+   zone can still cause `wing_unmarked` on the long, so a trade-relative view helps
+   both. Reproduced live at spot 7545: calls unquoted from ~7600 (55 pts OTM).
 
 ## Verification state at end of session
 
