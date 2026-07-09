@@ -8,9 +8,16 @@ import type {
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
-// it. Read it from a meta tag or localStorage; empty on a plain localhost bind.
+// it. Read it from localStorage; empty on a plain localhost bind (paper demo).
+const TOKEN_KEY = "meic_api_token";
 function apiToken(): string {
-  return localStorage.getItem("meic_api_token") ?? "";
+  return localStorage.getItem(TOKEN_KEY) ?? "";
+}
+export const getApiToken = (): string => apiToken();
+export function setApiToken(value: string): void {
+  const v = value.trim();
+  if (v) localStorage.setItem(TOKEN_KEY, v);
+  else localStorage.removeItem(TOKEN_KEY);
 }
 
 async function get<T>(path: string): Promise<T> {

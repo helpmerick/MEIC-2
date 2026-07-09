@@ -15,6 +15,7 @@ export function CommandPanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; err: boolean } | null>(null);
   const [pct, setPct] = useState(95);
+  const [liveModal, setLiveModal] = useState(false);   // the type-LIVE gate
 
   async function run(
     name: string,
@@ -39,7 +40,24 @@ export function CommandPanel({
   const armed = state?.armed ?? false;
   const stop = state?.stop_trading ?? false;
   const cl = state?.confirm_live ?? false;
+  const live = state?.trading_mode === "live";
   const label = (n: string, t: string) => (busy === n ? <><span className="spin" />{t}</> : t);
+
+  // Turning Confirm Live ON is the deliberate "ready to trade live" gate (ENT-01b).
+  // ON => a typed-LIVE modal (real money demands more than an OK). OFF => instant,
+  // because DISABLING a safety gate should never have friction.
+  function toggleConfirmLive() {
+    if (cl) {
+      void run("cl", () => api.confirmLive(false), { optimistic: { confirm_live: false } });
+    } else {
+      setLiveModal(true);
+    }
+  }
+
+  async function confirmLiveOn() {
+    setLiveModal(false);
+    await run("cl", () => api.confirmLive(true), { optimistic: { confirm_live: true } });
+  }
 
   return (
     <section className="card">
@@ -59,10 +77,7 @@ export function CommandPanel({
           {label("stop", stop ? "Resume Trading" : "Stop Trading")}
         </button>
         <button className={`btn ${cl ? "" : "danger"}`} disabled={busy !== null}
-          onClick={() => run("cl", () => api.confirmLive(!cl), {
-            optimistic: { confirm_live: !cl },
-            confirm: !cl ? "Turn Confirm Live ON? Entries can fire once armed." : undefined,
-          })}>
+          onClick={toggleConfirmLive}>
           {label("cl", cl ? "Confirm Live: ON" : "Confirm Live: OFF")}
         </button>
       </div>
@@ -84,6 +99,71 @@ export function CommandPanel({
       </div>
 
       <p className={`msg ${msg?.err ? "err" : ""}`}>{msg?.text ?? ""}</p>
+
+      {liveModal && (
+        <ConfirmLiveModal
+          live={live}
+          onCancel={() => setLiveModal(false)}
+          onConfirm={() => void confirmLiveOn()}
+        />
+      )}
     </section>
+  );
+}
+
+// Type LIVE to arm the real-money gate (ENT-01b Confirm Live). Requires the exact
+// word — Enter or the button submits; anything else is refused. What "live" MEANS
+// is set by which process you launched: in `live_app` this readies REAL orders; in
+// the paper demo it toggles the simulator, because that process has no live broker.
+export function ConfirmLiveModal({
+  live, onCancel, onConfirm,
+}: {
+  live: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [text, setText] = useState("");
+  const ok = text.trim().toUpperCase() === "LIVE";
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm live trading">
+      <div className="modal">
+        <h3>Ready the bot to trade live?</h3>
+        <p className="sub">
+          Turning Confirm Live ON is one of the three switches that let entries fire
+          (ARMED ∧ Confirm Live ∧ Stop Trading off).
+        </p>
+
+        {live ? (
+          <p className="msg warn" role="alert">
+            This session is <strong>LIVE — real money</strong>. Once armed, entries can place real orders.
+          </p>
+        ) : (
+          <p className="msg" role="status">
+            This session is <strong>PAPER</strong> (simulator). This readies paper trading only —
+            real money requires launching the live app.
+          </p>
+        )}
+
+        <label className="field" style={{ marginTop: 12 }}>
+          <span>Type LIVE to confirm</span>
+          <input
+            aria-label="type LIVE to confirm"
+            autoFocus
+            value={text}
+            placeholder="LIVE"
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && ok) onConfirm(); }}
+          />
+        </label>
+
+        <div className="modal-actions">
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" disabled={!ok} onClick={onConfirm}>
+            Confirm Live
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

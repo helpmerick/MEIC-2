@@ -97,6 +97,7 @@ def paper_app():
     from meic.domain.projection import fold
 
     comp = PaperComposition(clock=MutableClock(datetime(2026, 7, 7, 9, 30, tzinfo=timezone.utc)), ticks=SPX)
+    comp.state.trading_mode = "paper"   # honest: this process holds the simulator
     runtime = PaperDemoRuntime(comp, step_seconds=3.0)
 
     async def selector(when, n, config=None):
@@ -272,6 +273,9 @@ def live_app():
     comp = LiveComposition(
         clock=SystemClock(), ticks=SPX, provider_secret=secret, refresh_token=refresh,
         is_test=is_test, state_store=SqliteStateStore(data_dir / "state.db"))
+    # The mode pill reflects the process: this one is bound to the REAL broker,
+    # so the UI shows LIVE (and the Confirm-Live modal shows the real-money warning).
+    comp.state.trading_mode = "live"
 
     # The live day, assembled with EVERY safety rail armed. Built BEFORE create_app
     # so the panel's ▶ button and pre-flight get the real thing, not stubs. See

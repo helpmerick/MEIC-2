@@ -83,24 +83,27 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     expect(screen.getByText(/SIM-06/)).toBeInTheDocument(); // honesty caveat shown
   });
 
-  it("Promote to live prompts for the typed LIVE and stages for next day", async () => {
-    const spy = vi.spyOn(api, "modeSwitch").mockResolvedValue({ staged: true, target: "live", effective: "next_day" });
-    vi.spyOn(window, "prompt").mockReturnValue("LIVE");
-
+  it("shows mode as a status tag reflecting the running process, not a switch", async () => {
+    // paper_app reports PAPER; the tag is not a button (you switch by launching
+    // the other process, not by clicking here).
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: /paper ⇄/i }));
-
-    expect(spy).toHaveBeenCalledWith("live", "LIVE");
-    await waitFor(() => expect(screen.getByText(/live mode staged — effective next trading day/i)).toBeInTheDocument());
+    const tag = await screen.findByTitle(/Launch live_app/);   // the header mode tag
+    expect(tag).toHaveTextContent(/PAPER/);
+    expect(tag.tagName).toBe("SPAN");                          // status, not <button>
   });
 
-  it("Promote to live does nothing if the confirmation prompt is cancelled", async () => {
-    const spy = vi.spyOn(api, "modeSwitch").mockResolvedValue({ staged: true, target: "live", effective: "next_day" });
-    vi.spyOn(window, "prompt").mockReturnValue(null); // cancelled
+  it("lets the operator set the API token from the UI (into localStorage)", async () => {
+    localStorage.removeItem("meic_api_token");
+    const reload = vi.fn();
+    Object.defineProperty(window, "location", { value: { reload }, writable: true });
 
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: /paper ⇄/i }));
+    await userEvent.click(screen.getByLabelText("API token"));   // 🔓
+    const input = await screen.findByLabelText("api token");
+    await userEvent.type(input, "s3cr3t-token");
+    await userEvent.click(screen.getByRole("button", { name: /save api token/i }));
 
-    expect(spy).not.toHaveBeenCalled();
+    expect(localStorage.getItem("meic_api_token")).toBe("s3cr3t-token");
+    expect(reload).toHaveBeenCalled();                       // so the next command carries it
   });
 });

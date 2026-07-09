@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { api, ApiError, type OutageDrill } from "./api";
+import { api, ApiError, getApiToken, setApiToken, type OutageDrill } from "./api";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
@@ -47,29 +47,6 @@ export function App() {
     }
   }, [flash, refresh]);
 
-  // UC-10 / DAY-05: stage a paper<->live switch. Live requires a typed LIVE; a
-  // flat book is required and the change takes effect next day (server-enforced).
-  const switchMode = useCallback(async () => {
-    if (!state) return;
-    const target = state.trading_mode === "paper" ? "live" : "paper";
-    let confirmation = "";
-    if (target === "live") {
-      const typed = window.prompt("Promoting to LIVE (real money). Type LIVE to stage it for next day:");
-      if (typed === null) return;
-      confirmation = typed;
-    }
-    try {
-      await api.modeSwitch(target, confirmation);
-      flash(`${target === "live" ? "LIVE" : "Paper"} mode staged — effective next trading day`, "ok");
-      refresh();
-    } catch (e) {
-      const reason = e instanceof ApiError ? String(e.detail) : String(e);
-      const msg = reason === "book_not_flat" ? "Book must be flat first (close every entry)"
-        : reason === "confirmation_required" ? "Type LIVE exactly to confirm"
-        : `Mode switch refused: ${reason}`;
-      flash(msg, "err");
-    }
-  }, [state, flash, refresh]);
 
   // UC-12: the stop-independence drill — simulate a bot outage and show the
   // evidence that resting stops stayed working throughout.
@@ -110,12 +87,18 @@ export function App() {
         >
           {theme === "dark" ? "☀️" : "🌙"}
         </button>
+        <ApiTokenControl />
         <span className={`live-dot ${connected ? "" : "off"}`} title={connected ? "live" : "offline"} />
         {state && (
-          <button className={`mode-tag mode-switch ${state.trading_mode}`} onClick={switchMode}
-                  title={`Stage a switch to ${state.trading_mode === "paper" ? "live" : "paper"} (next day)`}>
-            {state.trading_mode} ⇄
-          </button>
+          // The mode reflects which PROCESS is running (paper_app = simulator,
+          // live_app = real broker). You don't toggle it here — you launch the
+          // corresponding app. It's a status indicator, not a switch.
+          <span className={`mode-tag ${state.trading_mode}`}
+                title={state.trading_mode === "live"
+                  ? "LIVE — bound to the real broker (this is the live_app process)"
+                  : "PAPER — simulator (the paper_app demo). Launch live_app for real trading."}>
+            {state.trading_mode === "live" ? "● LIVE" : "○ PAPER"}
+          </span>
         )}
       </header>
 
@@ -149,5 +132,45 @@ export function App() {
         Read-only projections + commands · no trading logic in the frontend (UI-03) · localhost-bound (NFR-06)
       </footer>
     </div>
+  );
+}
+
+// NFR-06: the panel's API token. `live_app` requires it — every command (Arm,
+// Confirm Live, ▶, Flatten) carries it in the x-api-token header. Stored in this
+// browser's localStorage only; it's the SAME string you put in MEIC_API_TOKEN.
+function ApiTokenControl() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(getApiToken());
+  const set = getApiToken().length > 0;
+
+  function save() {
+    setApiToken(value);
+    setOpen(false);
+    // reload so the very next command uses it (and the WS reconnects with it)
+    window.location.reload();
+  }
+
+  if (!open) {
+    return (
+      <button className="theme-toggle" onClick={() => setOpen(true)}
+              title={set ? "API token is set — click to change" : "Set the panel API token (MEIC_API_TOKEN)"}
+              aria-label="API token">
+        {set ? "🔐" : "🔓"}
+      </button>
+    );
+  }
+  return (
+    <span className="token-field">
+      <input
+        aria-label="api token"
+        type="password"
+        autoFocus
+        placeholder="paste MEIC_API_TOKEN"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setOpen(false); }}
+      />
+      <button className="btn" aria-label="save api token" onClick={save}>Save</button>
+    </span>
   );
 }
