@@ -155,14 +155,23 @@ def test_an_unparsable_row_is_an_error_not_a_crash():
 
 # --- entry times must be 24-hour military, within market hours --------------------
 
-@pytest.mark.parametrize("bad", ["11.53", "1:53pm", "0930", "24:00", "11:60", "9:5", "noon", ""])
+@pytest.mark.parametrize("bad", ["1:53pm", "0930", "24:00", "11:60", "9:5", "noon", "11-53", ""])
 def test_entry_time_must_be_24_hour_military(bad):
-    """Entry times are 24-hour HH:MM; am/pm, dotted, 4-digit and out-of-range are
-    refused with a precise per-row reason, not a generic crash."""
+    """Entry times are 24-hour HH:MM; am/pm, 4-digit, out-of-range and unknown
+    separators are refused with a precise per-row reason, not a generic crash."""
     out = _svc([]).save([_row(bad)])
     assert out["result"] == "invalid"
     err = out["errors"][0]
     assert err["field"] == "time" and err["reason"] == "not_24h_military" and err["index"] == 0
+
+
+@pytest.mark.parametrize("dotted,canonical", [("11.53", "11:53"), ("9.32", "09:32"), ("15.30", "15:30")])
+def test_a_dot_separator_is_accepted_and_canonicalised_to_a_colon(dotted, canonical):
+    """People write times with a dot (UK-style 11.53). It means 11:53 — accept it
+    and persist the canonical colon form."""
+    out = _svc([]).save([_row(dotted)])
+    assert out["result"] == "saved"
+    assert out["rows"][0]["time"] == canonical
 
 
 @pytest.mark.parametrize("good", ["09:32", "9:32", "10:00", "15:30", "23:59", "00:00"])

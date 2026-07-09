@@ -43,9 +43,11 @@ Ruling captured 2026-07-09 via the panel question: **"Within RTH session"** —
 ### New — DAY-06 (doc 06 validation): entry times are 24-hour, within RTH
 
 > **DAY-06 — Entry-time format & window.** A schedule entry time MUST be a
-> 24-hour ("military") wall-clock time `HH:MM` in ET, hour `00`–`23`, minute
-> `00`–`59` (leading zero on the hour optional). am/pm, dotted (`11.53`), compact
-> 4-digit (`0930`), and out-of-range values are rejected per-row with reason
+> 24-hour ("military") wall-clock time in ET, hour `00`–`23`, minute `00`–`59`
+> (leading zero on the hour optional). The separator may be a colon or a dot
+> (`11:53` and the UK-style `11.53` both mean 11:53); the persisted form is
+> canonicalised to `HH:MM` (colon). am/pm, compact 4-digit (`0930`), unknown
+> separators (`11-53`), and out-of-range values are rejected per-row with reason
 > `not_24h_military`. The time MUST fall within regular trading hours
 > **09:30 ≤ t < 16:00 ET** (reason `outside_market_hours`); this is in addition
 > to — not a replacement for — the DAY-02 `min_time_before_close` buffer, which
@@ -66,9 +68,10 @@ it and adds the `not_24h_military` format gate.)*
 - A not-yet-valid time shows the reason instead of an echo (military / market-hours).
 
 ### TC-DAY-06 — entry-time format & window (backend)
-- `11.53`, `1:53pm`, `0930`, `24:00`, `11:60`, `""` → `invalid`, per-row
+- `1:53pm`, `0930`, `24:00`, `11:60`, `11-53`, `""` → `invalid`, per-row
   `time / not_24h_military`.
 - `09:32`, `9:32`, `15:30`, `23:59` → pass the format gate.
+- `11.53` (dot) → saved and persisted as `11:53`; `9.32` → `09:32` (canonicalised).
 - `08:00` (pre-market) and `16:30` (after close) → `invalid` (`outside_market_hours`).
 - `09:30` (open edge) → saved.
 

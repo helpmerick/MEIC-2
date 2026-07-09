@@ -39,7 +39,8 @@ function offsetMs(utcMs: number, zone: string): number {
  * Returns null if the input isn't a valid 24-hour time. DST-aware.
  */
 export function etToZone(hhmm: string, zone = localZone()): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  // Accept either separator: "11:53" or the UK-style "11.53" — both mean 11:53.
+  const m = /^(\d{1,2})[.:](\d{2})$/.exec(hhmm.trim());
   if (!m) return null;
   const h = +m[1], min = +m[2];
   if (h > 23 || min > 59) return null;
@@ -55,10 +56,19 @@ export function etToZone(hhmm: string, zone = localZone()): string | null {
 }
 
 // A 24-hour "HH:MM" (military) time. 0-23 : 00-59. Leading zero optional on the
-// hour; the backend is authoritative — this only decides the inline hint.
-const MILITARY = /^([01]?\d|2[0-3]):[0-5]\d$/;
+// hour; the separator may be a colon OR a dot ("11:53" / "11.53" both = 11:53) —
+// people write times both ways. am/pm and out-of-range are still refused. The
+// backend canonicalises to "HH:MM" on save; this only decides the inline hint.
+const MILITARY = /^([01]?\d|2[0-3])[.:][0-5]\d$/;
 export function isMilitaryTime(hhmm: string): boolean {
   return MILITARY.test(hhmm.trim());
+}
+
+/** Canonical "HH:MM" for a valid military time (dot or colon), else the input. */
+export function canonicalTime(hhmm: string): string {
+  const m = /^(\d{1,2})[.:](\d{2})$/.exec(hhmm.trim());
+  if (!m) return hhmm;
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
 }
 
 // Regular trading hours in ET: an entry time is only valid while the market is
@@ -69,7 +79,7 @@ export function isMilitaryTime(hhmm: string): boolean {
 export const RTH_OPEN_LABEL = "09:30";
 export const RTH_CLOSE_LABEL = "16:00";
 export function withinMarketHours(hhmm: string): boolean {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  const m = /^(\d{1,2})[.:](\d{2})$/.exec(hhmm.trim());
   if (!m) return false;
   const mins = +m[1] * 60 + +m[2];
   return mins >= 9 * 60 + 30 && mins <= 16 * 60;

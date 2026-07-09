@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { etToZone, isMilitaryTime, withinMarketHours, zoneLabel } from "./time";
+import { canonicalTime, etToZone, isMilitaryTime, withinMarketHours, zoneLabel } from "./time";
 
 // ET entry times shown in the operator's local zone. We pass an explicit zone so
 // the assertion is deterministic regardless of the CI box's timezone; the DST
@@ -22,20 +22,31 @@ describe("etToZone — ET entry time in the operator's local zone", () => {
     expect(etToZone("15:30", "America/New_York")).toBe("15:30");
   });
 
+  it("accepts a UK-style dot separator (11.53 == 11:53)", () => {
+    expect(etToZone("11.53", "Europe/London")).toBe("16:53");
+  });
+
   it("returns null for a non-24-hour input", () => {
-    expect(etToZone("11.53", "Europe/London")).toBeNull();
+    expect(etToZone("11-53", "Europe/London")).toBeNull();
     expect(etToZone("25:00", "Europe/London")).toBeNull();
     expect(etToZone("", "Europe/London")).toBeNull();
   });
 });
 
-describe("isMilitaryTime — 24-hour HH:MM only", () => {
-  it.each(["09:32", "9:32", "00:00", "23:59", "15:30"])("accepts %s", (t) => {
+describe("isMilitaryTime — 24-hour HH:MM, colon or dot", () => {
+  it.each(["09:32", "9:32", "11.53", "00:00", "23:59", "15:30"])("accepts %s", (t) => {
     expect(isMilitaryTime(t)).toBe(true);
   });
-  it.each(["11.53", "1:53pm", "24:00", "11:60", "0930", "noon", ""])("rejects %s", (t) => {
+  it.each(["1:53pm", "24:00", "11:60", "0930", "11-53", "noon", ""])("rejects %s", (t) => {
     expect(isMilitaryTime(t)).toBe(false);
   });
+});
+
+describe("canonicalTime — normalise to HH:MM", () => {
+  it.each([["11.53", "11:53"], ["9:32", "09:32"], ["9.5", "9.5"], ["15:30", "15:30"]])(
+    "%s -> %s", (input, out) => {
+      expect(canonicalTime(input)).toBe(out);
+    });
 });
 
 describe("withinMarketHours — 09:30-16:00 ET", () => {

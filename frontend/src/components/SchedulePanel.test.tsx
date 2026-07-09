@@ -78,7 +78,7 @@ describe("composing the schedule", () => {
 
   it("discloses that max_day_risk covers bot-placed risk only (RSK-04 v1.49)", async () => {
     vi.spyOn(api, "getSchedule").mockResolvedValue({
-      ...VIEW, risk_scope_note: "max day risk caps BOT-PLACED risk only � foreign positions excluded",
+      ...VIEW, risk_scope_note: "max day risk caps BOT-PLACED risk only � foreign positions excluded",
     });
     await renderPanel();
     expect(screen.getByTestId("risk-scope")).toHaveTextContent(/BOT-PLACED risk only/);
@@ -311,9 +311,15 @@ describe("entry time — local equivalent + military/market-hours hints", () => 
     expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/≈\s*\d{2}:\d{2}/);
   });
 
-  it("flags a non-military (non 24-hour) time", async () => {
+  it("accepts a UK-style dot separator (11.53 shows a local echo, not an error)", async () => {
     await renderPanel();
     fireEvent.change(screen.getByLabelText("time 1"), { target: { value: "11.53" } });
+    expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/≈\s*\d{2}:\d{2}/);
+  });
+
+  it("flags a non-military (am/pm) time", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("time 1"), { target: { value: "1:53pm" } });
     expect(screen.getAllByTestId("time-hint")[0].textContent).toMatch(/24-hour HH:MM/);
   });
 

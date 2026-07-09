@@ -114,9 +114,11 @@ class ScheduleView:
 
 
 # A 24-hour "military" wall-clock time: HH:MM, hour 00-23, minute 00-59. Leading
-# zero on the hour is optional (9:32 or 09:32) but the separator MUST be a colon
-# and there is NO am/pm — rejecting "11.53", "1:53pm", "24:00", "11:60".
-_MILITARY_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+# zero on the hour is optional (9:32 or 09:32) and the separator may be a colon OR
+# a dot ("11:53" / "11.53" both = 11:53) — people write times both ways. There is
+# NO am/pm — rejecting "1:53pm", "24:00", "11:60", "0930". Persisted times are
+# canonicalised to "HH:MM" (colon) via `pinned_row`'s strftime.
+_MILITARY_RE = re.compile(r"^([01]?\d|2[0-3])[.:][0-5]\d$")
 
 
 def _military_time_errors(rows: list[dict[str, Any]]) -> list[ScheduleError]:
@@ -131,7 +133,7 @@ def _military_time_errors(rows: list[dict[str, Any]]) -> list[ScheduleError]:
 
 
 def _parse_time(raw: str) -> time:
-    h, m = raw.split(":")[:2]
+    h, m = re.split(r"[.:]", raw.strip())[:2]  # colon or dot separator
     return time(int(h), int(m))
 
 
