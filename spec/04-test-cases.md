@@ -872,6 +872,36 @@ Scenario: A real stop-out is never mislabeled
 
 **TC-OWN-09** — OWN-10 partial reduction: operator buys back 1 of the bot's 2 shorts ⇒ entry SUSPENDED, ledger written down, **zero order actions by the bot** (the 2-lot stop is left untouched); critical alert spells out the over-buy chain ("trigger closes 1, OPENS 1 long"); one-click Resize-stop and Cancel-stop actions each work when clicked and are tagged as operator actions in the event log.
 
+**TC-OWN-11** — OWN-03 never-block / RSK-03 genuine-mismatch / STK-09 foreign occupancy / RSK-04 scope (v1.49 shared-account)
+```gherkin
+Scenario: Pre-existing positions do not block arming or entries
+  Given the broker account holds positions with no bot fills behind them
+  When startup reconcile runs
+  Then the positions are classified FOREIGN with a critical alert and persistent banner
+  And arming succeeds and scheduled entries fire normally
+
+Scenario: A genuine shortfall still blocks
+  Given the bot ledger records 2 contracts of a symbol and the broker reports 1
+  Then a ReconciliationMismatch is logged and RSK-03 blocks entries until reconciled
+
+Scenario: Foreign-occupied strikes block both types
+  Given a FOREIGN long at the put side's target strike
+  When strike selection runs
+  Then the strike is treated as blocked and the shift budget applies
+  And a FOREIGN short at a candidate long strike also blocks (no stacking onto foreign lots)
+
+Scenario: max_day_risk counts only the bot's book
+  Given foreign positions of any size and no open bot entries
+  When an entry whose worst case fits max_day_risk is attempted
+  Then RSK-04 passes — the foreign book does not consume the ceiling
+  And the buying-power gate still evaluates broker reality including the foreign book
+
+Scenario: Never touch survives the whole day
+  Given trading proceeds alongside FOREIGN positions all day
+  Then no bot order ever references a foreign lot (OWN-04 caps at ledger)
+  And EOD verification ignores foreign working orders it did not place
+```
+
 **TC-OWN-10** — OWN-11 operator cancels respected (Ash's override rule)
 ```gherkin
 Scenario: Operator cancels the bot's stop in the app, keeps the position
@@ -1004,7 +1034,8 @@ Scenario: Decision moment - give up safely
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
 | ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |
 | RSK-01a/01b | TC-FLT-01/02/03 | | UI-17/20 / UC-15 | TC-FLT-01/03 |
-| OWN-01→11 | TC-OWN-01→10 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
+| OWN-01→11 | TC-OWN-01→11 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
+| RSK-03 (genuine mismatch) | TC-OWN-11 | | STK-09 (foreign) | TC-OWN-11 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |

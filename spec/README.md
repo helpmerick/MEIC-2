@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.49 — 2026-07-09
+- v1.49 changes (operator-ratified shared-account amendment — Ash runs ONE account with existing positions; single-account operation is first-class): **OWN-03** — FOREIGN is an explained state, never a block: presence alone must not stop arming/entries. **RSK-03** — blocks only GENUINE mismatch, exactly enumerated: bot-symbol shortfall vs ledger, unaccounted bot order/fill, or attribution impossible; OWN-02-explained foreign never trips it. **STK-09** — foreign-occupied strikes block BOTH types (stacking onto foreign = bot-initiated sharing, forbidden by OWN-08); foreign working orders count as occupancy; normal shift budgets. **RSK-04 scope ruling** — ceiling caps the bot's own book only; foreign book constrains via the broker BP gate; UI must disclose. Never-touch (OWN-03/04) unchanged and re-asserted. TC-OWN-11 added (5 scenarios).
 - Version: 1.48 — 2026-07-08
 - v1.48 changes (operator-ratified after A/B/C debate): **DAY-03 clock source = broker `Date` header (option B)** — drift measured continuously on the ~60 s session probes against tastytrade's own clock; no new dependency or network path; threshold default 1000→2000 ms (range 1000–10000) respecting ~1 s header resolution; unmeasured or >300 s-stale reading = blocked (`clock_drift`), preserving the agent's unmeasured=unverified=blocked default while removing the manual env-var step that fought the indefinitely-armed design. NTP (new blockable dependency) and manual readings (operator-as-component, stale over long uptimes) rejected with reasons pinned in DAY-03.
 - Version: 1.47 — 2026-07-08
