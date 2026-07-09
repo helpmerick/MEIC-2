@@ -103,6 +103,12 @@ class ScheduleView:
             "estimate_note": ("worst case ESTIMATED from row parameters "
                               "((width - target premium) x 100 x contracts); "
                               "RSK-04 re-prices from real strikes at fire time"),
+            # RSK-04 (v1.49): the ceiling caps the BOT's placed risk only; any
+            # foreign positions on the account are excluded and constrain via the
+            # broker buying-power gate instead. The UI MUST disclose this scope.
+            "risk_scope_note": ("max day risk caps BOT-PLACED risk only — foreign "
+                                "positions on this account are excluded (they "
+                                "constrain via the broker's buying-power gate)"),
         }
 
 

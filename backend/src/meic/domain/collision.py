@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Mapping
 
-# Occupancy: strike -> set of {"short", "long"} covering positions AND
-# in-flight working orders (in-flight matters for opposite-type checks only,
-# and the caller builds the map accordingly — same-type in-flight never blocks).
+# Occupancy: strike -> set of {"short", "long", "foreign"} covering positions AND
+# in-flight working orders (in-flight matters for opposite-type checks only, and
+# the caller builds the map accordingly — same-type in-flight never blocks). A
+# "foreign" marker (v1.49) blocks BOTH leg types at that strike (OWN-08); foreign
+# working orders are folded in as "foreign" too.
 Occupancy = Mapping[Decimal, frozenset[str]]
 
 
@@ -38,7 +40,10 @@ class Abort:
 
 
 def _blocked(occupancy: Occupancy, strike: Decimal, by: str) -> bool:
-    return by in occupancy.get(strike, frozenset())
+    covering = occupancy.get(strike, frozenset())
+    # Same-type BOT lots stack (no shift); opposite type blocks. FOREIGN blocks
+    # BOTH types (v1.49/OWN-08) — a "foreign" marker blocks regardless of `by`.
+    return by in covering or "foreign" in covering
 
 
 def resolve_collisions(

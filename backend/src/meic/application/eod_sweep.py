@@ -35,19 +35,30 @@ class SweepResult:
 
 
 class EndOfDaySweep:
-    def __init__(self, broker, alerts) -> None:
+    def __init__(self, broker, alerts, *, own_order_ids=None) -> None:
         self._broker = broker
         self._alerts = alerts
+        # OWN-03 (v1.49): the sweep touches ONLY the bot's OWN working orders. A
+        # foreign working order the bot did not place is ignored — never cancelled,
+        # never flagged uncancellable. `None` means "all are ours" (a dedicated /
+        # flat account, and every pre-v1.49 caller). On a shared account the
+        # composition passes the set of order IDs the bot actually placed.
+        self._own_order_ids = None if own_order_ids is None else set(own_order_ids)
+
+    def _is_own(self, oid: str) -> bool:
+        return self._own_order_ids is None or oid in self._own_order_ids
 
     async def sweep(self) -> SweepResult:
         result = SweepResult()
 
-        # cancel every working order (resting stops for expired/closed positions)
-        before = [_order_id(o) for o in await self._broker.working_orders()]
+        # cancel the bot's OWN resting orders only (foreign orders are never touched)
+        before = [_order_id(o) for o in await self._broker.working_orders()
+                  if self._is_own(_order_id(o))]
         for oid in before:
             await self._broker.cancel(oid)
 
-        # EOD-03: CONFIRM zero remain; whatever is still working is uncancellable
+        # EOD-03: CONFIRM the bot's own orders are gone; a foreign order still
+        # working is EXPECTED and ignored — the confirmation only covers ours.
         remaining = {_order_id(o) for o in await self._broker.working_orders()}
         for oid in before:
             if oid in remaining:

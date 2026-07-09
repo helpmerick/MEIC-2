@@ -56,9 +56,10 @@ def _run(**kw):
 
 # --- the critical case: a FRESH bot must not touch pre-existing positions -----
 
-def test_fresh_boot_quarantines_every_unknown_position_and_blocks_entries():
-    """Empty ledger => the bot has no recorded fills, so the account's existing
-    positions are FOREIGN: quarantined, alerted, and entries blocked (OWN-03)."""
+def test_fresh_boot_quarantines_every_unknown_position_but_does_not_block(monkeypatch):
+    """v1.49 (operator-ratified): empty ledger => the account's existing positions
+    are FOREIGN — quarantined and alerted, but their presence alone NEVER blocks
+    arming or entries. Single-account operation is first-class (OWN-03)."""
     broker = FakeBroker(positions=[
         {"symbol": "SPXW_5990P", "quantity": 2, "quantity_direction": "Short"},
         {"symbol": "AAPL", "quantity": 100, "quantity_direction": "Long"},
@@ -68,9 +69,11 @@ def test_fresh_boot_quarantines_every_unknown_position_and_blocks_entries():
     r = _run(broker=broker, events=events, state=state, alerts=alerts)
 
     assert set(r.foreign) == {"SPXW_5990P", "AAPL"} and r.adopted == []
-    assert r.entries_blocked is True                       # REC-02 -> RSK-03
-    assert entries_blocked_by_reconcile(events) is True    # durable, survives restart
-    assert any(isinstance(e, ReconciliationMismatch) for e in events)
+    # FOREIGN is an EXPLAINED state, not a mismatch — it does NOT block
+    assert r.entries_blocked is False
+    assert entries_blocked_by_reconcile(events) is False
+    assert not any(isinstance(e, ReconciliationMismatch) for e in events)
+    # ...but it IS surfaced: a critical alert per foreign position (banner)
     assert all(lvl == "critical" for lvl, _ in alerts.alerts) and len(alerts.alerts) == 2
 
     # OWN-03: quarantine means NO orders — not even for the naked short
@@ -165,7 +168,8 @@ def test_parser_reads_real_tastytrade_position_objects():
 
 def test_real_position_objects_are_quarantined_end_to_end():
     """Feed real CurrentPosition objects through reconcile_on_boot: a naked short
-    the bot does not own must be FOREIGN, alerted, and block entries (OWN-03)."""
+    the bot does not own is FOREIGN — alerted and quarantined, but (v1.49) its
+    presence does NOT block entries. Even a foreign naked short is alert-only."""
     import pytest as _pytest
     _pytest.importorskip("tastytrade")
     from decimal import Decimal
@@ -180,6 +184,6 @@ def test_real_position_objects_are_quarantined_end_to_end():
     r = _run(broker=broker, events=events, state=state, alerts=alerts)
 
     assert r.foreign == ["SPXW  260707P03000000"] and r.adopted == []
-    assert r.entries_blocked is True
+    assert r.entries_blocked is False                      # v1.49: FOREIGN never blocks
     assert any(lvl == "critical" for lvl, _ in alerts.alerts)
     assert broker.submitted == []  # even a foreign NAKED SHORT is alert-only

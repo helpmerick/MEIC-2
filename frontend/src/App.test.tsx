@@ -29,7 +29,7 @@ beforeEach(() => {
   // App now mounts the SchedulePanel, which loads the composed schedule on mount.
   vi.spyOn(api, "getSchedule").mockResolvedValue({
     rows: [], day_total_estimate: "0", max_day_risk: null, headroom: null,
-    exceeds_max_day_risk: false, config_version: null, estimate_note: "",
+    exceeds_max_day_risk: false, config_version: null, estimate_note: "", risk_scope_note: "",
   });
 });
 

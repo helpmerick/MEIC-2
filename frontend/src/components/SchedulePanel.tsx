@@ -270,6 +270,8 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
       )}
       {saved && <p className="msg ok" role="status">Saved as config {saved}.</p>}
       <p className="note">{view.estimate_note}</p>
+      {/* RSK-04 (v1.49): disclose that the ceiling covers bot-placed risk only. */}
+      <p className="note" data-testid="risk-scope">{view.risk_scope_note}</p>
 
       {preflight && <PreflightList preflight={preflight} />}
 

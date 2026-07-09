@@ -78,6 +78,7 @@ export interface ScheduleView {
   exceeds_max_day_risk: boolean;
   config_version: string | null;
   estimate_note: string;
+  risk_scope_note: string;
 }
 
 export interface ScheduleError {

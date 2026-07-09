@@ -7,12 +7,15 @@ Before a live bot may trade it must adopt broker truth. On boot:
   2. Read broker positions and classify each against the ledger (OWN-02/03/05/06):
        OWNED     -> the bot's own; manage normally (crash orphan adopted).
        FOREIGN   -> not the bot's. QUARANTINE: never stop it, never close it,
-                    never count it. Critical alert. Even a naked short is
+                    never count it. Critical alert + banner. Even a naked short is
                     alert-only (OWN-03).
        SHORTFALL -> broker shows less than the ledger: SUSPEND, write down (OWN-06).
-  3. Any FOREIGN/SHORTFALL is a ReconciliationMismatch: it BLOCKS NEW ENTRIES
-     until the operator resolves it (REC-02 -> RSK-03). Protection and recovery
-     still run — blocking entries is not blocking safety.
+  3. v1.49 (operator-ratified): FOREIGN is an EXPLAINED state, NOT a mismatch — its
+     presence alone NEVER blocks arming or entries. The bot trades alongside the
+     operator's book (single-account operation is first-class), subject to STK-09's
+     foreign-occupancy rule and the broker BP gate. Only a GENUINE mismatch blocks
+     (RSK-03): a ledger shortfall (case a) here, plus the unaccounted-order /
+     attribution-impossible cases the reconcile pass detects.
   4. Run the REC-04 stop triage over the tracked shorts (re-place genuinely
      missing stops, resume LEX, cancel stale entry orders), idempotency-keyed.
 
@@ -100,10 +103,20 @@ async def reconcile_on_boot(
         else:  # OWNED or SHARED — the bot's, manage at ledger quantities
             adopted.append(symbol)
 
-    mismatches = [f"FOREIGN position {s}: quarantined — never stopped, closed or counted (OWN-03)"
-                  for s in foreign]
-    mismatches += [f"ledger shortfall on {s}: entry SUSPENDED, ledger written down (OWN-06)"
-                   for s in shortfall]
+    # OWN-03 (v1.49): FOREIGN is an EXPLAINED state, NOT a mismatch. Critical alert
+    # + persistent banner, but its presence alone NEVER blocks arming or entries —
+    # the bot trades alongside the operator's book (single-account operation is
+    # first-class). Only a genuine mismatch blocks (RSK-03).
+    for s in foreign:
+        alerts.alert("critical", f"FOREIGN position {s}: quarantined — never stopped, "
+                     "closed or counted (OWN-03). Trading continues alongside it; the "
+                     "strike is blocked from selection (STK-09) and its margin is carried "
+                     "by the broker BP gate.")
+
+    # RSK-03 genuine mismatch (v1.49) case (a): a ledger shortfall (broker qty <
+    # ledger — someone closed the bot's lots). This DOES block until reconciled.
+    mismatches = [f"ledger shortfall on {s}: broker qty < ledger — entry SUSPENDED, "
+                  f"ledger written down (OWN-06 / RSK-03a)" for s in shortfall]
     for detail in mismatches:
         alerts.alert("critical", detail)
     for s in shortfall:  # OWN-06: adopt broker truth, never fire compensating orders

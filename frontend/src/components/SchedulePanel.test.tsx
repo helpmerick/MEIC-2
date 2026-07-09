@@ -18,6 +18,7 @@ const VIEW: ScheduleView = {
   exceeds_max_day_risk: false,
   config_version: "v3",
   estimate_note: "worst case ESTIMATED from row parameters; RSK-04 re-prices from real strikes at fire time",
+  risk_scope_note: "max day risk caps BOT-PLACED risk only",
 };
 
 const PREVIEW: FirePreview = {
@@ -73,6 +74,15 @@ describe("composing the schedule", () => {
     await renderPanel();
     expect(screen.getByText(/ESTIMATED/)).toBeInTheDocument();
     expect(screen.getByText(/RSK-04 re-prices from real strikes/)).toBeInTheDocument();
+  });
+
+  it("discloses that max_day_risk covers bot-placed risk only (RSK-04 v1.49)", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue({
+      ...VIEW, risk_scope_note: "max day risk caps BOT-PLACED risk only — foreign positions excluded",
+    });
+    await renderPanel();
+    expect(screen.getByTestId("risk-scope")).toHaveTextContent(/BOT-PLACED risk only/);
+    expect(screen.getByTestId("risk-scope")).toHaveTextContent(/foreign/i);
   });
 
   it("warns, but does not block, when the composed day exceeds the ceiling", async () => {
