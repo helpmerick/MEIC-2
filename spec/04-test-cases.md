@@ -383,6 +383,32 @@ Scenario: Paper records simulator symbols identically
   Then the fill event carries simulator-assigned leg symbols in the same fields
 ```
 
+**TC-ORD-08** — ORD-09/STP-02: recorded fill credit is the BROKER'S, never the order's (live incident 2026-07-09, order 482390058: limit 3.50, broker-allocated net 3.60)
+```gherkin
+Scenario: Net credit comes from the broker's fill, not the working limit
+  Given a 4-leg entry limit working at net credit 3.50
+  And the broker reports per-leg fill allocations: shorts 1.80 and 1.95, longs 0.08 and 0.07
+  When the fill is recorded
+  Then the entry's net credit is 3.60 (sum of allocated legs)
+  And never the 3.50 working limit or any pre-fill estimate
+
+Scenario: Missing allocations are never fabricated
+  Given the broker reports the fill without a usable per-leg allocation
+  When the fill is recorded
+  Then the order-level fill price is used for net credit
+  And no per-leg price is ever fabricated (ORD-09; the STP-02d reconciliation record logs FAIL)
+```
+
+**TC-STP-19** — STP-02: stops are computed from the ACTUAL credit received (live incident 2026-07-09)
+```gherkin
+Scenario: Trigger uses the actual net fill credit
+  Given an entry filled at actual net credit 3.60 with stop_basis total_credit at 95 percent
+  When protective stops are placed
+  Then each trigger = floor_to_tick(0.95 * 3.60) = 3.40
+  And never 95 percent of the 3.50 working limit or the pre-fill mid estimate
+  And this agrees with TC-STP-16 vector 3 (3.42 floors to 3.40)
+```
+
 ## Stops
 
 **TC-STP-01** — STP-01/STP-02
@@ -1063,6 +1089,7 @@ Scenario: Decision moment - give up safely
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
 | ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |
+| ORD-09 (fill credit) | TC-ORD-08 | | STP-02 (actual fill) | TC-STP-19 |
 | RSK-01a/01b | TC-FLT-01/02/03 | | UI-17/20 / UC-15 | TC-FLT-01/03 |
 | OWN-01→11 | TC-OWN-01→11 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
 | RSK-03 (genuine mismatch) | TC-OWN-11 | | STK-09 (foreign) | TC-OWN-11 |

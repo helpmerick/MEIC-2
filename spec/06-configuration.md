@@ -129,6 +129,7 @@ The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurab
 |---|---|---|---|---|
 | `trading_mode` | paper \| live | paper | next-day, flat book, typed confirm | DAY-05, UC-10 |
 | `max_day_risk` | $ > 0 | required, no default | next-entry | RSK-04 |
+| `min_buying_power` | 0–100,000 | 5000 | next-entry | ENT-03 — entries skip `insufficient_bp` when account derivative BP is below this floor; v1.51: previously env-only (MEIC_MIN_BUYING_POWER, a silent unspecced config — defect class as chain_completeness_pct); operator-tuned per account size (ratified live 2026-07-09: Ash runs 2,000; default stays conservative) |
 | `sanity_price_multiple` | 1.5–10 | 3 | immediate | RSK-05 |
 | `block_entries_on_critical` | bool | true | immediate | RSK-06 |
 | `alert_channels` | list (ui, webhook, email) | [ui] | immediate | RSK-06 |
