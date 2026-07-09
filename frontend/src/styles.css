@@ -297,3 +297,11 @@ body {
 .auth-pill { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 8px; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; cursor: pointer; border: 1px solid var(--line); background: var(--panel-2); color: var(--faint); }
 .auth-pill.ok { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.35); }
 .auth-pill.bad { color: var(--bad); background: var(--bad-dim); border-color: rgba(248,113,113,0.4); }
+.auth-wrap { position: relative; display: inline-flex; align-items: center; }
+.auth-mark { font-weight: 900; font-size: 13px; line-height: 1; }
+.auth-mark.ok { color: var(--good); }
+.auth-mark.bad { color: var(--bad); }
+.auth-toast { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; white-space: nowrap; padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; box-shadow: 0 6px 20px rgba(0,0,0,0.28); animation: auth-fade 3.5s ease forwards; }
+.auth-toast.ok { color: #052e1a; background: var(--good); }
+.auth-toast.bad { color: #fff; background: var(--bad); }
+@keyframes auth-fade { 0% { opacity: 0; transform: translateY(-4px); } 10% { opacity: 1; transform: translateY(0); } 85% { opacity: 1; } 100% { opacity: 0; } }

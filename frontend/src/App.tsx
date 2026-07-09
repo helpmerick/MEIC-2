@@ -146,31 +146,54 @@ function ApiTokenControl() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(getApiToken());
   const [status, setStatus] = useState<TokenStatus>("idle");
+  const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // A little popup that flashes the result, then fades on its own.
+  function flash(text: string, ok: boolean) {
+    setToast({ text, ok });
+    window.setTimeout(() => setToast((t) => (t?.text === text ? null : t)), 3500);
+  }
 
   // On mount, verify any already-stored password so the control reflects reality
   // (Unlocked only when the backend actually accepts it), not just "a string exists".
   useEffect(() => {
     if (!getApiToken()) return;
     setStatus("checking");
-    api.authCheck().then(() => setStatus("ok")).catch(() => setStatus("bad"));
+    api.authCheck()
+      .then(() => { setStatus("ok"); flash("Password accepted", true); })
+      .catch(() => { setStatus("bad"); flash("Wrong password", false); });
   }, []);
 
   async function save() {
     setApiToken(value);            // each request reads this live — no reload needed
-    if (!value.trim()) { setStatus("idle"); setOpen(false); return; }
+    if (!value.trim()) { setStatus("idle"); setToast(null); setOpen(false); return; }
     setStatus("checking");
     try {
       await api.authCheck();       // 200 only if the password matches MEIC_USER_PASSWORD
       setStatus("ok");
       setOpen(false);
+      flash("Password accepted", true);
     } catch {
       setStatus("bad");            // 401 -> wrong password; stay open so it can be fixed
+      flash("Wrong password", false);
     }
   }
 
   // Intuitive direction: UNLOCKED (🔓) = authenticated, you CAN command; LOCKED
-  // (🔒) = you must enter the password first. The word carries the meaning so the
-  // icon direction is never a guess.
+  // (🔒) = you must enter the password first. A green ✓ / red ✗ sits right next to
+  // it, and a popup flashes the result on each check.
+  const mark = status === "ok"
+    ? <span className="auth-mark ok" role="status" aria-label="password correct">✓</span>
+    : status === "bad"
+      ? <span className="auth-mark bad" role="alert" aria-label="password wrong">✗</span>
+      : null;
+
+  const popup = toast && (
+    <span className={`auth-toast ${toast.ok ? "ok" : "bad"}`} role="status">
+      {toast.ok ? "✓" : "✗"} {toast.text}
+    </span>
+  );
+
   if (!open) {
     const unlocked = status === "ok";
     const label = unlocked ? "Unlocked"
@@ -182,29 +205,34 @@ function ApiTokenControl() {
       : status === "bad" ? "Password was rejected — click to re-enter."
       : "Enter your User Password to enable commands.";
     return (
-      <button className={`auth-pill ${status}`} onClick={() => setOpen(true)}
-              title={title} aria-label="user password">
-        <span aria-hidden>{icon}</span> {label}
-      </button>
+      <span className="auth-wrap">
+        <button className={`auth-pill ${status}`} onClick={() => setOpen(true)}
+                title={title} aria-label="user password">
+          <span aria-hidden>{icon}</span> {label} {mark}
+        </button>
+        {popup}
+      </span>
     );
   }
   return (
-    <span className="token-field">
-      <input
-        aria-label="user password"
-        type="password"
-        autoFocus
-        placeholder="User Password"
-        value={value}
-        onChange={(e) => { setValue(e.target.value); if (status === "bad") setStatus("idle"); }}
-        onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setOpen(false); }}
-      />
-      <button className="btn" aria-label="save user password"
-              disabled={status === "checking"} onClick={() => void save()}>
-        {status === "checking" ? "Checking…" : "Save"}
-      </button>
-      {status === "ok" && <span className="tok-msg ok" role="status">✓ accepted</span>}
-      {status === "bad" && <span className="tok-msg bad" role="alert">✗ wrong password</span>}
+    <span className="auth-wrap">
+      <span className="token-field">
+        <input
+          aria-label="user password"
+          type="password"
+          autoFocus
+          placeholder="User Password"
+          value={value}
+          onChange={(e) => { setValue(e.target.value); if (status === "bad") setStatus("idle"); }}
+          onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setOpen(false); }}
+        />
+        <button className="btn" aria-label="save user password"
+                disabled={status === "checking"} onClick={() => void save()}>
+          {status === "checking" ? "Checking…" : "Save"}
+        </button>
+        {mark}
+      </span>
+      {popup}
     </span>
   );
 }

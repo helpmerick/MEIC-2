@@ -104,12 +104,14 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
 
     expect(localStorage.getItem("meic_api_token")).toBe("s3cr3t-token");
     expect(check).toHaveBeenCalled();                        // validated, not blindly stored
-    // control flips to "Unlocked" (accepted) — intuitive direction, no page reload
+    // control flips to "Unlocked" with a green tick, and a popup flashes the result
     await waitFor(() =>
       expect(screen.getByLabelText("user password")).toHaveTextContent(/unlocked/i));
+    expect(screen.getByLabelText("password correct")).toHaveTextContent("✓");
+    expect(screen.getByText(/password accepted/i)).toBeInTheDocument();  // the popup
   });
 
-  it("tells the operator when the User Password is wrong (401), staying unlocked", async () => {
+  it("shows a red cross and a popup when the User Password is wrong (401)", async () => {
     localStorage.removeItem("meic_api_token");
     vi.spyOn(api, "authCheck").mockRejectedValue(new ApiError(401, "missing_or_bad_token"));
 
@@ -118,6 +120,7 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await userEvent.type(await screen.findByLabelText("user password"), "wrong");
     await userEvent.click(screen.getByRole("button", { name: /save user password/i }));
 
-    await waitFor(() => expect(screen.getByText(/wrong password/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("password wrong")).toHaveTextContent("✗"));
+    expect(screen.getByText(/wrong password/i)).toBeInTheDocument();     // the popup
   });
 });
