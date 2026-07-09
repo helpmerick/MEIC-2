@@ -121,6 +121,41 @@ live object shape** — that is how both bugs shipped.
    the last safeguard to wire before UNsupervised live use. The live-shaped harness now
    makes it straightforward to test.
 
+## Operator-flagged PROCESS ERROR (agent behaviour, not a code bug) — closing a protected entry
+
+On the first FULLY successful live fire (condor filled AND both stops rested — the
+incident #8/#9 fixes working), the operator asked to close the entry. **The agent
+cancelled the two protective stops FIRST, then tried to close the 4 legs — and the
+close failed twice**, leaving the position NAKED (unprotected) with the short call
+7550 sitting AT spot for several minutes:
+
+1. Cancelled both resting stops (orders 482348015, 482348019) → position now naked.
+2. Close dry-run failed: `invalid_price_increment` (net price not on the $0.05 grid).
+3. Re-submitted at a mid-derived debit (3.75) → **Cancelled** (not marketable: the
+   snapshot mids were unreliable near ATM, so the limit was well below the real ask).
+4. Finally closed with an aggressive marketable limit (cap 12.00) → Filled (order
+   482352202). Only THEN were the stops already gone.
+
+**Why this is unacceptable:** removing a position's protection before its exit is
+secured converts a defined, protected position into a naked ATM 0DTE position during
+the exact window when a fast move (7550 was at spot) does the most damage. The order
+of operations was backwards.
+
+**Correct procedure (going forward):**
+- **Close the position FIRST** with a guaranteed-fill order (aggressive marketable
+  limit — a limit BUY fills at the real market ask, capped, so price it well through
+  and let the market set the fill). Confirm FILLED and flat.
+- **THEN cancel the now-orphaned stops** (they rest on a closed position and are
+  harmless to cancel; a stop that fires on a flat position is a far smaller risk than
+  a naked short).
+- Never cancel protective stops while any leg they cover is still open, unless the
+  closing order is already confirmed filled.
+
+**Contributing factor:** the manual close priced off `snapshot_chain` MID marks,
+which are unreliable near ATM in a fast tape (they underpriced the buy-back, so the
+limit didn't cross). Manual closes should price off live NBBO / an aggressive
+marketable limit, not a possibly-stale mid.
+
 ## Verification state at end of session
 
 - Offline suite: **737 passed**, spec lock intact, traceability 191 rules / 129 TCs.
