@@ -135,8 +135,8 @@ export function ConfirmLiveModal({
         </p>
 
         {live ? (
-          <p className="msg warn" role="alert">
-            This session is <strong>LIVE — real money</strong>. Once armed, entries can place real orders.
+          <p className="msg live-banner" role="alert">
+            This session is <strong>LIVE</strong> — real money. Once armed, entries can place real orders.
           </p>
         ) : (
           <p className="msg" role="status">

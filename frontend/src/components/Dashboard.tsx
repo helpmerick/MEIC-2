@@ -36,7 +36,7 @@ export function Dashboard({ state, connected }: { state: PanelState | null; conn
       </div>
 
       <div className="pills">
-        <span className={`pill ${state.trading_mode === "paper" ? "info" : "warn"}`}>
+        <span className={`pill ${state.trading_mode === "paper" ? "info" : "live-mode"}`}>
           <span className="pdot" /> {state.trading_mode.toUpperCase()}
         </span>
         <Pill label="Armed" on={state.armed} kind="good" />
