@@ -18,6 +18,15 @@ CERT = "https://api.sandbox.tastyworks.com"
 PROD = "https://api.tastytrade.com"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    """Do not read the operator's real .env (production creds would defeat the
+    guard tests that assert refusal). Isolate to os.environ."""
+    import os as _os
+    from meic.adapters.api import server
+    monkeypatch.setattr(server, "_read_env", lambda: dict(_os.environ))
+
+
 def _jwt(iss: str) -> str:
     def seg(d):
         return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
