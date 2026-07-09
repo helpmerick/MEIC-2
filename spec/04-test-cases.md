@@ -1139,6 +1139,118 @@ Scenario: Decision moment - give up safely
 
 ---
 
+## Results dashboard (doc 10)
+
+**TC-RPT-01** — RPT-01/02/UI-25
+```gherkin
+Scenario: Period buckets and trust stamps
+  Given fills across two ET days, one broker-reconciled and one pending
+  Then Today shows only today's entries with a bot-computed badge
+  And the month badge reads "1/2 days broker-confirmed"
+  And paper fills never appear in live periods or exports
+
+Scenario: Disarmed flat days do not dilute averages
+  Given 5 trading days and 2 disarmed flat days in a month
+  Then day-based means and win rates use n=5
+```
+
+**TC-RPT-02** — RPT-04 pinned return vectors
+```gherkin
+Scenario: The canonical five-day vector computes exactly
+  Given capital base 10000 and daily nets +400, +20, -360, +400, +20
+  Then ROC = 4.80 percent, annualized Sharpe = 4.79, max drawdown = 360 dollars (3.60 percent)
+  And profit factor = 2.33, expectancy = +96 dollars per entry, day win rate = 80 percent
+
+Scenario: Sharpe gates on sample size
+  Given 19 trading days
+  Then Sharpe and Sortino render "insufficient data" and ROC still renders
+```
+
+**TC-RPT-03** — RPT-03 outcome taxonomy & contract audit
+```gherkin
+Scenario: Outcomes classify exactly once and honor the v1.38 contract
+  Given the 4.00-credit canonical trade stopped on the put side only
+  Then the entry is ONE_SIDE_STOPPED with realized >= +20 dollars minus recorded slippage
+  And a both-sides day classifies BOTH_SIDES_STOPPED with realized >= -360 dollars minus recorded slippage
+
+Scenario: A contract breach flags red
+  Given a ONE_SIDE_STOPPED entry whose realized loss exceeds the recorded slippage allowance
+  Then the dashboard renders a contract-breach flag with a drill-down to its fills
+```
+
+**TC-RPT-04** — RPT-05/06/07 decomposition
+```gherkin
+Scenario: Targeting decomposition separates causes
+  Given target 3.00, matched probe 2.95 at probe number 2, short filled 2.93
+  Then selection gap = -0.05, execution gap = -0.02, probe depth = 2
+
+Scenario: Slippage-in can be positive
+  Given first-rung credit 3.50 and fill credit 3.60
+  Then slippage-in = +0.10 price improvement
+
+Scenario: Stop slippage reports from EC-STP-03 records
+  Given a stop with trigger 3.80 filled at 3.90
+  Then slippage-out = 0.10 = 2 ticks and it enters the mean and p90
+```
+
+**TC-RPT-05** — RPT-10 determinism
+```gherkin
+Scenario: Replay reproduces the dashboard
+  Given any event log
+  When the log is replayed from genesis into a fresh projection
+  Then every dashboard number is byte-identical to the incremental projection
+```
+
+**TC-RPT-06** — RPT-01 read-only isolation
+```gherkin
+Scenario: The reporting module cannot trade
+  Then the reporting module has no order-action dependency on the broker gateway
+  And no /reports endpoint can mutate trading state
+  And its only broker access is the RPT-15 read-only reconciliation fetch
+```
+
+**TC-RPT-07** — RPT-11 waterfall reconciliation
+```gherkin
+Scenario: The waterfall reconciles to the cent
+  Given a period with credits 8400, stop costs 2600, recoveries 310, buybacks 145, fees 220, slippage 95
+  Then the waterfall bars sum exactly to the period net of 5650
+  And premium capture ratio = 67.3 percent
+  And any nonzero attribution residual renders an error state, never a silently adjusted bar
+```
+
+**TC-RPT-08** — RPT-12/13 excursions & slots
+```gherkin
+Scenario: MAE measures trigger-distance consumed
+  Given a short filled at 3.00 with trigger 3.80 whose recorded mark peaked at 3.60 before expiry
+  Then the entry MAE = 75 percent of trigger distance and it counts as survived
+  And missing samples render as gaps, never interpolated
+
+Scenario: Slot analytics attribute to the scheduled slot
+  Given entries fired from the 10:00 and 12:35 slots across a month
+  Then win rate, expectancy, and premium capture render per slot
+  And manual entries group under a "manual" slot
+```
+
+**TC-RPT-09** — RPT-15 EOD broker reconcile-and-correct (operator rule: zero drift)
+```gherkin
+Scenario: A matching day is stamped broker-confirmed
+  Given the day's projected fills, cash delta, fees, and flat check match the broker
+  Then the day is stamped broker-confirmed and UI-25 shows the tick
+
+Scenario: A mismatch corrects to broker truth, never silently
+  Given the broker reports fees 2.40 where the projection assumed 2.20
+  Then a CorrectionRecord event enters the log storing both values and the diff
+  And the dashboard renders the broker value with the correction visible in the drill-down
+  And an alert fires and the RPT-08 correction count increments
+
+Scenario: No dashboard number ever changes without a CorrectionRecord
+  Then any divergence between rendered numbers and the projection fold is a test failure
+
+Scenario: Broker unreachable never auto-confirms
+  Given the EOD reconcile fetch fails
+  Then the day remains bot-computed and reconciliation retries at the next boot or reconcile
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1164,6 +1276,7 @@ Scenario: Decision moment - give up safely
 | OWN-01→11 | TC-OWN-01→11 | | EC-API-04 (rev.) | TC-OWN-01/02/04 |
 | RSK-03 (genuine mismatch) | TC-OWN-11 | | STK-09 (foreign) | TC-OWN-11 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
+| RPT-01→15 / UI-25/26/27 | TC-RPT-01→09 | | RPT-15 (zero drift) | TC-RPT-09 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
