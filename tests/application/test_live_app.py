@@ -213,5 +213,34 @@ def test_the_clock_rail_is_fed_by_the_session_probe_not_an_env_var(monkeypatch, 
     assert abs(runtime.measure_drift_ms()) < 2000.0       # verified, inside tolerance
 
 
+def test_live_app_verifies_the_clock_on_boot_so_the_operator_can_arm(monkeypatch, tmp_path):
+    """DAY-03 regression: the live app must actually RUN the session/clock probe on
+    startup, not merely expose it. Before this, live_app wired `session_probe` but
+    nothing called it on a timer, so the clock was never verified and the arm
+    pre-flight blocked forever. Startup must take one reading."""
+    from datetime import datetime, timezone
+    from fastapi.testclient import TestClient
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+    runtime = app.state.runtime
+    now = datetime.now(timezone.utc)
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+    comp.broker._inner.positions = lambda: _async([])      # empty book -> reconcile clean
+    comp.broker._inner.working_orders = lambda: _async([])
+    comp.broker._inner.server_time = lambda: _async(now)   # broker clock == ours
+
+    assert runtime.measure_drift_ms() == float("inf")      # nothing probed yet
+    with TestClient(app):                                  # runs startup: connect -> probe
+        assert abs(runtime.measure_drift_ms()) < 2000.0    # clock verified on boot
+
+
 async def _async(v):
     return v

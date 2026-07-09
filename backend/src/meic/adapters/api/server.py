@@ -227,6 +227,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # the ~60s session probe, which also records the DAY-03 clock reading. The
         # health loop runs it live; exposed so the wiring test can drive one tick.
         "session_probe": _session_valid,
+        # DAT-02: refresh the chain snapshot so `data_fresh` (and the UC-02
+        # market_data pre-flight) reflect live data. The health loop runs it; the
+        # selector also takes its own snapshot at fire time.
+        "data_probe": snaps.take,
     }
 
 
@@ -305,6 +309,21 @@ def live_app():
             broker=comp.broker, events=comp.events, state=comp.state, alerts=alerts)
         app.state.reconcile = result
 
+    async def _probe_once() -> None:
+        """One health tick: the NFR-02 session probe (which records the DAY-03
+        broker-clock reading off the response's Date header) and a DAT-02 chain
+        snapshot refresh (so `market_data` reflects live data). Each is best-effort
+        and independent — a failure in one is surfaced but never blocks the other or
+        crashes the loop; the next tick retries."""
+        try:
+            await live["session_probe"]()
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+        try:
+            await live["data_probe"]()
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+
     @app.on_event("startup")
     async def _connect() -> None:
         # A broker/network hiccup must NOT take down the operator's control
@@ -313,8 +332,34 @@ def live_app():
             await comp.connect(account)
             app.state.broker_connected = True
             await _boot_reconcile()
+            # DAY-03: take one clock reading immediately so the operator can arm
+            # without waiting a whole health-loop interval for the first probe.
+            await _probe_once()
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
+
+    # NFR-02 + DAY-03: the periodic health loop the gates and pre-flight assume
+    # exists. It keeps the session-liveness and broker-clock reading FRESH (a
+    # reading older than 300 s is treated as unverified). Without it the clock is
+    # never verified and the arm pre-flight blocks forever. Runs on the main event
+    # loop — the SAME loop comp.connect bound the broker session to — so awaiting
+    # broker calls here is safe (unlike the threadpool pre-flight route).
+    health_interval_s = float(env.get("MEIC_HEALTH_INTERVAL_S", "60"))
+
+    @app.on_event("startup")
+    async def _start_health_loop() -> None:
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(health_interval_s)
+                if app.state.broker_connected:
+                    await _probe_once()
+        app.state.health_task = asyncio.create_task(_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_health_loop() -> None:
+        task = getattr(app.state, "health_task", None)
+        if task:
+            task.cancel()
 
     @app.post("/broker/connect")
     async def broker_connect() -> dict:
@@ -324,6 +369,7 @@ def live_app():
             app.state.broker_connected = True
             app.state.broker_error = None
             await _boot_reconcile()
+            await _probe_once()   # DAY-03: verify the clock on reconnect too
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False
             app.state.broker_error = repr(exc)

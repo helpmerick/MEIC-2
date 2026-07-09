@@ -111,3 +111,26 @@ def test_server_time_is_none_when_the_header_is_missing_or_the_probe_fails():
         raise RuntimeError("network down")
     adapter._probe_response = boom
     assert asyncio.run(adapter.server_time()) is None   # degrades to blocked, never raises
+
+
+def test_probe_response_uses_the_sdk_client_and_validate_endpoint():
+    """Regression: the real probe must reach the SDK's httpx client (`_client` in
+    v13) and POST `/sessions/validate` — the attribute/method the SDK actually
+    exposes. The prior `async_client`/GET pair silently returned None, so the
+    DAY-03 clock never verified and arming was blocked forever."""
+    import asyncio
+    from types import SimpleNamespace
+
+    calls = []
+
+    class _Client:
+        async def post(self, path):
+            calls.append(("post", path))
+            return SimpleNamespace(headers={"date": "Wed, 08 Jul 2026 15:00:00 GMT"})
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._session = SimpleNamespace(_client=_Client())   # v13 attribute name
+
+    resp = asyncio.run(adapter._probe_response())
+    assert calls == [("post", "/sessions/validate")]
+    assert resp.headers["date"].endswith("GMT")

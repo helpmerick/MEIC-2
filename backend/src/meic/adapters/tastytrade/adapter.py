@@ -228,14 +228,19 @@ class TastytradeAdapter:
             return None
 
     async def _probe_response(self):
-        """A light authenticated GET whose response carries the broker `Date`
+        """A light authenticated call whose response carries the broker `Date`
         header. Overridable so `server_time` is testable without a session; in
         production it reuses the SDK's authenticated async client (the same session
-        the ~60 s probe already uses — no new network path)."""
-        client = getattr(self._session, "async_client", None)
+        the ~60 s probe already uses — no new network path).
+
+        SDK v13 exposes its httpx client as `Session._client` and validates the
+        session with a POST to `/sessions/validate` (see `Session.validate`). Both
+        matter: the previous `async_client`/GET pair silently returned None, so the
+        DAY-03 clock never verified and arming was blocked forever."""
+        client = getattr(self._session, "_client", None) or getattr(self._session, "async_client", None)
         if client is None:
             return None
-        return await client.get("/sessions/validate")
+        return await client.post("/sessions/validate")
 
     async def positions(self) -> list[Any]:
         return await self._account.get_positions(self._session)
