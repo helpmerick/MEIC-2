@@ -387,3 +387,48 @@ def test_preflight_predicates_are_synchronous():
     for fn in _checks(_Comp()).values():
         assert not inspect.iscoroutinefunction(fn)
         assert not inspect.isawaitable(fn())
+
+
+def test_manual_fire_awaits_an_async_risk_provider():
+    """Regression (live 500): live's risk provider is ASYNC — it awaits a real
+    buying-power call. The manual fire path must AWAIT it via _maybe_await, not pass
+    an un-awaited coroutine into execute.attempt (where dataclasses.replace() blew
+    up with 'replace() should be called on dataclass instances')."""
+    import asyncio
+    import datetime
+    from types import SimpleNamespace
+
+    from meic.application.entry_gates import RiskSnapshot
+    from meic.application.manual_entry import ManualEntry
+
+    captured = {}
+
+    class _Execute:
+        async def attempt(self, **kw):
+            captured["risk"] = kw["risk"]
+            return SimpleNamespace(status="SKIPPED", reason="stop_here")
+
+    st = _state()
+    st.armed = True
+    st.confirm_live = True
+    st.stop_trading = False                       # -> entries_enabled()
+    comp = _Comp(state=st)
+    comp.execute = _Execute()
+    comp.clock = SimpleNamespace(now=lambda: datetime.datetime(2026, 7, 9, 12, 0))
+
+    row = ScheduleService(st).resolved()[0]
+
+    async def async_risk():                        # exactly like build_manual_entry
+        return RiskSnapshot(new_worst_case=D("0"), buying_power=D("3448"))
+
+    async def sel(when, n, config=None):
+        return SimpleNamespace(entry_number=1), None
+
+    async def gates():
+        return object()
+
+    manual = ManualEntry(comp, sel, gates, risk=async_risk, day=lambda: "2026-07-09")
+    asyncio.run(manual.fire(press_id="p1", entry_number=1, row=row, confirmed=True))
+
+    assert isinstance(captured["risk"], RiskSnapshot)   # awaited, not a coroutine
+    assert captured["risk"].buying_power == D("3448")

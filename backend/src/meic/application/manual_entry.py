@@ -158,7 +158,7 @@ class ManualEntry:
         # ENT-03 chain, RSK-08 and RSK-04 all run inside attempt().
         outcome = await self._comp.execute.attempt(
             day=day, scheduled=when, condor=condor, gates=await self._gates(),
-            risk=self._risk() if self._risk else None,
+            risk=await _maybe_await(self._risk),   # sync (paper) OR async (live) provider
             bypass_window=True, stop=_stop(row), initiator=MANUAL)
 
         if outcome.status != "FILLED":
