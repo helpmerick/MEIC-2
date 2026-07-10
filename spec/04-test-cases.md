@@ -1303,6 +1303,17 @@ Scenario: No dashboard number ever changes without a CorrectionRecord
 Scenario: Broker unreachable never auto-confirms
   Given the EOD reconcile fetch fails
   Then the day remains bot-computed and reconciliation retries at the next boot or reconcile
+
+Scenario: Settlement cash is included or the day cannot confirm (v1.59, real 2026-07-09 vector)
+  Given 4 entry legs netting +355.12 and a short C7540 with SPX settling at 7543.64
+  Then the journaled settlement event records -369.00 from the broker's Receive-Deliver records
+  And the day's true net is -13.88 and only then may it stamp broker-confirmed
+  And a reconciler reading trade transactions only MUST fail this scenario
+
+Scenario: Settlement journaling is idempotent and never guesses
+  Given the settlement backfill runs three times
+  Then settlement records exist exactly once per attributable expiring symbol
+  And an OWN-03-ambiguous symbol is withheld with reason "ambiguous_settlement"
 ```
 
 **TC-TPT-01** — TPT-01→07 take-profit target (v1.58, vectors = operator's worked examples)
