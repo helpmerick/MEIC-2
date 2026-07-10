@@ -19,7 +19,7 @@ def read(name):
 
 def main() -> int:
     tests_doc = read("04-test-cases.md")
-    rules = set(re.findall(r"\*\*((?:DAY|ENT|STK|ORD|STP|LEX|EOD|RSK|DAT|REC|PNL|CLS|TPF|DCY|OWN|NLE|SIM)-\d{2}[a-d]?)", read("01-strategy-rules.md")))
+    rules = set(re.findall(r"\*\*((?:DAY|ENT|STK|ORD|STP|LEX|EOD|RSK|DAT|REC|PNL|CLS|TPF|DCY|OWN|NLE|SIM|TPT)-\d{2}[a-d]?)", read("01-strategy-rules.md")))
     rules |= set(re.findall(r"\*\*(EC-[A-Z]+-\d{2})", read("02-edge-cases.md")))
     rules |= set(re.findall(r"\*\*(NFR-\d{2})", read("05-architecture-ddd.md")))
     rules |= set(re.findall(r"\*\*(RPT-\d{2})", read("10-results-dashboard.md")))

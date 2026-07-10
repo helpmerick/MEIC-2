@@ -34,7 +34,7 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
 
 - **RPT-03 Outcome taxonomy & contract conformance.** Every closed entry
   classifies exactly once: FULL_EXPIRY, ONE_SIDE_STOPPED, BOTH_SIDES_STOPPED,
-  TPF_CLOSE, DECAY_CLOSE, MANUAL_CLOSE, MANUAL_FLATTEN, EOD_CLOSE,
+  TPF_CLOSE, TPT_CLOSE (v1.58), DECAY_CLOSE, MANUAL_CLOSE, MANUAL_FLATTEN, EOD_CLOSE,
   INFEASIBLE_STOP, EXTERNAL (operator acted at broker — in cash totals, out of
   strategy-quality metrics, D5). Outcome distribution per period PLUS the
   standing **contract audit** (v1.38, before slippage): ONE_SIDE_STOPPED must
