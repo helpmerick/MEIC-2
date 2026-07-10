@@ -34,7 +34,7 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
 
 - **RPT-03 Outcome taxonomy & contract conformance.** Every closed entry
   classifies exactly once: FULL_EXPIRY, ONE_SIDE_STOPPED, BOTH_SIDES_STOPPED,
-  TPF_CLOSE, DECAY_CLOSE, MANUAL_CLOSE, MANUAL_FLATTEN, EOD_CLOSE,
+  TPF_CLOSE, TPT_CLOSE (v1.58), DECAY_CLOSE, MANUAL_CLOSE, MANUAL_FLATTEN, EOD_CLOSE,
   INFEASIBLE_STOP, EXTERNAL (operator acted at broker — in cash totals, out of
   strategy-quality metrics, D5). Outcome distribution per period PLUS the
   standing **contract audit** (v1.38, before slippage): ONE_SIDE_STOPPED must
@@ -114,7 +114,12 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
 - **RPT-15 End-of-day broker reconcile-and-correct (operator rule: zero
   drift).** After EOD settlement (EOD-01) each trading day, the dashboard's
   day numbers are verified against the broker: positions (flat/held check),
-  the day's fills, cash delta, and fees, via a READ-ONLY fetch. **Match** ⇒
+  the day's fills, cash delta, and fees, via a READ-ONLY fetch — **the cash
+  check spans EVERY cash-affecting transaction class for bot symbols: trades,
+  fees, AND cash settlements / Receive-Deliver records (v1.59 — settlements
+  post outside the trade window; a checker that reads trades only will
+  false-confirm an ITM expiry). A day with any bot position expiring ITM MUST
+  NOT stamp broker-confirmed until its settlement records are matched.** **Match** ⇒
   the day is stamped broker-confirmed (UI-25). **Mismatch** ⇒ the dashboard
   CORRECTS to broker truth — never silently: a `CorrectionRecord` event enters
   the log (replay-safe) storing both values and the diff; an alert fires; the

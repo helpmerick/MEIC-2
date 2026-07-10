@@ -86,6 +86,33 @@ Scenario: Double-click is one attempt
   Then exactly one order exists (idempotency key per press-confirmation)
 ```
 
+**TC-ENT-09** — ENT-09b manual minimum short-strike floors (v1.57)
+```gherkin
+Scenario: A floor filters the walk without changing it
+  Given SPX at 7480 and a manual fire with put floor 7450
+  And the probe walk would normally match the 7460 put
+  Then strikes inside the floor are excluded and the walk selects at or beyond 7450
+  And the call side runs default behaviour when no call floor is set
+
+Scenario: Credit rules are never weakened by a floor
+  Given floors that leave no strike satisfying 1.00 gross and 2.00 total net
+  Then the fire skips with reason "no_valid_strikes" and no order is placed
+
+Scenario: Refuse and re-pick when spot crosses a floor
+  Given the dialog opened with SPX 7480 and call floor 7500 selected
+  When SPX is 7505 at OK time
+  Then the fire is REFUSED with reason "floor_inside_spot"
+  And the operator must re-select before any order can be placed
+
+Scenario: Dropdowns come from the validated universe only
+  Then every selectable strike has fresh two-sided quotes at dialog population
+  And each row shows strike, points from spot, and live mid
+
+Scenario: Floors are evented for audit
+  Given a manual fire with put floor 7450 and no call floor
+  Then the entry events record the floors and the day report shows them
+```
+
 **TC-ENT-10** — ENT-10/UI-24 arm runs the day (v1.53)
 ```gherkin
 Scenario: Arming starts the watcher and the entry fires at its time
@@ -479,6 +506,33 @@ Scenario: Trigger uses the actual net fill credit
 ```
 
 ## Stops
+
+**TC-STK-09** — STK-10 v1.55 baseline pre-validation
+```gherkin
+Scenario: Dead-at-baseline strikes never count as holes
+  Given warm-up validates 24 of 28 reachable strikes (4 far wings listed but never quoted)
+  And at fire time 23 of the 24 validated strikes are still fresh
+  Then completeness = 95.8 percent and the gate PASSES
+  And under the pre-v1.55 rule the same day would have falsely skipped at 85.7 percent
+
+Scenario: A genuine feed regression still fails
+  Given warm-up validated 24 strikes and only 12 remain fresh at fire time
+  Then the gate fails and the entry retries then skips incomplete_chain
+
+Scenario: A sliver baseline cannot trivially pass
+  Given warm-up finds only 5 validated strikes on the call side with min_validated_strikes = 10
+  Then a warm-up alert fires 60 seconds before the window and the entry retries
+  And an unhealed baseline skips incomplete_chain
+
+Scenario: A dead wing is a candidate skip, not an entry failure
+  Given a candidate short whose wing strike is not in the validated universe
+  Then that candidate is skipped and the probe walk continues
+  And the entry fails only if no valid candidate remains
+
+Scenario: Manual entries baseline at press
+  Given the operator fires manually with no warm-up
+  Then the validated universe is captured at press time under the same rules
+```
 
 **TC-STP-01** — STP-01/STP-02
 ```gherkin
@@ -1249,6 +1303,56 @@ Scenario: No dashboard number ever changes without a CorrectionRecord
 Scenario: Broker unreachable never auto-confirms
   Given the EOD reconcile fetch fails
   Then the day remains bot-computed and reconciliation retries at the next boot or reconcile
+
+Scenario: Settlement cash is included or the day cannot confirm (v1.59, real 2026-07-09 vector)
+  Given 4 entry legs netting +355.12 and a short C7540 with SPX settling at 7543.64
+  Then the journaled settlement event records -369.00 from the broker's Receive-Deliver records
+  And the day's true net is -13.88 and only then may it stamp broker-confirmed
+  And a reconciler reading trade transactions only MUST fail this scenario
+
+Scenario: Settlement journaling is idempotent and never guesses
+  Given the settlement backfill runs three times
+  Then settlement records exist exactly once per attributable expiring symbol
+  And an OWN-03-ambiguous symbol is withheld with reason "ambiguous_settlement"
+```
+
+**TC-TPT-01** — TPT-01→07 take-profit target (v1.58, vectors = operator's worked examples)
+```gherkin
+Scenario: Target fires on the way up through the canonical close
+  Given an entry with actual net credit 4.00 and take-profit target 60 percent
+  When whole-entry profit holds at or above 60 percent for 2 consecutive valid evaluations
+  Then CloseEntry runs with initiator "take_profit_target"
+  And the order sequence is identical to a manual close of the same position
+
+Scenario: A passed target is rejected, never acted on
+  Given a live entry currently up 35 percent
+  When the operator submits a target of 30 percent
+  Then it is REJECTED with "target already passed - current profit 35%"
+  And 40 percent is the lowest selectable target
+
+Scenario: The target disarms permanently when any stop fills
+  Given credit 4.00, target 5 percent, and the put stop fills at 3.80
+  And the long put recovers 0.30 and the call side is closable for 0.20
+  Then whole-entry profit is +30 dollars = 7.5 percent and NO close fires
+  And the card shows the target as disarmed and the call side rides its resting stop
+
+Scenario: Armed feedback shows dollars
+  Given actual net credit 4.00 and target 60 percent
+  Then the card shows "closes at debit <= 1.60" and "keep >= 240 dollars"
+
+Scenario: Floor and target coexist
+  Given a floor at 20 percent and a target at 70 percent on one entry
+  Then rising to 70 first closes with initiator "take_profit_target"
+  And falling to 20 first closes with initiator "take_profit"
+
+Scenario: Never broker-resting
+  Then no resting take-profit order ever exists at the broker
+  And each short leg has at most ONE working buy order at all times
+
+Scenario: Recovery order of operations
+  Given the bot restarts on an entry whose put stop filled while it was down
+  Then the synthesized stop event disarms the target BEFORE any target evaluation
+  And a stop-free entry above target on recovery closes immediately
 ```
 
 ## Traceability matrix
@@ -1266,6 +1370,8 @@ Scenario: Broker unreachable never auto-confirms
 | ENT-08 | TC-ENT-06 | | ENT-01a | TC-ENT-07 |
 | ENT-09 / UI-22 | TC-ENT-08 | | ENT-01b | TC-ENT-07 |
 | ENT-10 / UI-24 | TC-ENT-10, TC-UI-06 | | DAY-06 / UI-23 | TC-DAY-06, TC-UI-05 |
+| ENT-09b (manual floors) | TC-ENT-09 | | | |
+| STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
@@ -1277,6 +1383,7 @@ Scenario: Broker unreachable never auto-confirms
 | RSK-03 (genuine mismatch) | TC-OWN-11 | | STK-09 (foreign) | TC-OWN-11 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
 | RPT-01→15 / UI-25/26/27 | TC-RPT-01→09 | | RPT-15 (zero drift) | TC-RPT-09 |
+| TPT-01→07 | TC-TPT-01 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
