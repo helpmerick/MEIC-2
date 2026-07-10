@@ -102,8 +102,10 @@ export const api = {
     post<{ result: string; entry_id: string }>(`/entries/${encodeURIComponent(entryId)}/tpt/clear`),
   flatten: (confirmation: string) =>
     post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
-  outageDrill: () =>
-    post<OutageDrill>("/drill/outage", { outage_seconds: 2 }),
+  // UC-12 v1.56: LIVE mode requires a typed DRILL confirmation; PAPER needs
+  // none (the caller passes "" and the backend simply ignores it there).
+  outageDrill: (confirmation: string = "") =>
+    post<OutageDrill>("/drill/outage", { outage_seconds: 2, confirmation }),
   modeSwitch: (target: "paper" | "live", confirmation: string) =>
     post<{ staged: boolean; target: string; effective: string }>("/mode-switch", { target, confirmation }),
 
@@ -176,12 +178,16 @@ export const api = {
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).
 export interface OutageDrill {
+  result: "ok";
   outage_seconds: number;
   stops_before: { order_id: string; received_at: string; entry_id: string; leg: string }[];
   stops_after: { order_id: string; received_at: string; entry_id: string; leg: string }[];
   survived: boolean;
   timestamps_unbroken: boolean;
   honesty_note: string;
+  // UC-12 v1.56: advisory-only warnings (near-trigger marks / an entry due
+  // soon) — never a block, the operator is supervising.
+  guidance: string[];
 }
 
 // Discrete stop-pct set (UI-04) — in production generated from the config

@@ -35,9 +35,34 @@ function nonEmpty(params: ManualParams): Record<string, unknown> {
   return out;
 }
 
+// ENT-09b (v1.57): minimum short-strike floors. Toggle default OFF — the
+// dialog is unchanged until enabled. FLOOR semantics (never a pin): puts
+// select short <= the floor, calls select short >= the floor; either, both,
+// or neither side may be set. NO TRADING LOGIC HERE (UI-03) — the backend
+// filters the walk, re-validates credit rules, and can refuse the fire
+// outright (`floor_inside_spot`) if spot crosses a selected floor before OK;
+// this form only collects the two optional numbers and shows back whatever
+// the server decided.
+interface FloorParams {
+  enabled: boolean;
+  put_floor: string;
+  call_floor: string;
+}
+
+const BLANK_FLOORS: FloorParams = { enabled: false, put_floor: "", call_floor: "" };
+
+function floorFields(floors: FloorParams): Record<string, unknown> {
+  if (!floors.enabled) return {};
+  const out: Record<string, unknown> = {};
+  if (floors.put_floor !== "") out.put_floor = floors.put_floor;
+  if (floors.call_floor !== "") out.call_floor = floors.call_floor;
+  return out;
+}
+
 export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [params, setParams] = useState<ManualParams>({ ...BLANK });
+  const [floors, setFloors] = useState<FloorParams>({ ...BLANK_FLOORS });
   const [simResult, setSimResult] = useState<ManualSimulation | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [simulating, setSimulating] = useState(false);
@@ -72,7 +97,8 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
     setFiring(true);
     try {
       const result = await api.manualFire({
-        press_id: crypto.randomUUID(), confirmed: true, ...nonEmpty(params),
+        press_id: crypto.randomUUID(), confirmed: true,
+        ...nonEmpty(params), ...floorFields(floors),
       });
       setFireResult(result);
     } finally {
@@ -143,6 +169,44 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
             </label>
           </div>
 
+          <div className="manual-floors">
+            <label className="field floor-toggle">
+              <input
+                type="checkbox"
+                aria-label="enable minimum strike floors"
+                checked={floors.enabled}
+                onChange={(e) => setFloors((f) => ({ ...f, enabled: e.target.checked }))}
+              />
+              <span>Minimum strikes (ENT-09b)</span>
+            </label>
+            {floors.enabled && (
+              <>
+                <label className="field">
+                  <span>Put floor</span>
+                  <input
+                    aria-label="manual put floor"
+                    value={floors.put_floor}
+                    placeholder="none"
+                    onChange={(e) => setFloors((f) => ({ ...f, put_floor: e.target.value }))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Call floor</span>
+                  <input
+                    aria-label="manual call floor"
+                    value={floors.call_floor}
+                    placeholder="none"
+                    onChange={(e) => setFloors((f) => ({ ...f, call_floor: e.target.value }))}
+                  />
+                </label>
+                <p className="note">
+                  Puts select short at or below the floor; calls select short at or above it.
+                  A floor can only cause a skip — it never weakens the credit rules.
+                </p>
+              </>
+            )}
+          </div>
+
           <div className="manual-actions">
             <button className="btn" onClick={() => void simulate()} disabled={simulating}>
               {simulating ? "Simulating…" : "Simulate trade"}
@@ -196,6 +260,7 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
       {confirmOpen && (
         <ManualFireDialog
           params={params}
+          floors={floors}
           worstCase={lastWorstCase}
           busy={firing}
           onCancel={() => setConfirmOpen(false)}
@@ -212,12 +277,14 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
 // says plainly when none has — never a fabricated number.
 function ManualFireDialog({
   params,
+  floors,
   worstCase,
   busy,
   onCancel,
   onConfirm,
 }: {
   params: ManualParams;
+  floors: FloorParams;
   worstCase: string | null;
   busy: boolean;
   onCancel: () => void;
@@ -229,6 +296,10 @@ function ManualFireDialog({
     ["Wing width", params.wing_width === "" ? "(default)" : params.wing_width],
     ["Stop", params.stop_loss_pct === "" ? "(default)" : `${params.stop_loss_pct}%`],
   ];
+  if (floors.enabled) {
+    rows.push(["Put floor", floors.put_floor === "" ? "(none)" : floors.put_floor]);
+    rows.push(["Call floor", floors.call_floor === "" ? "(none)" : floors.call_floor]);
+  }
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm manual entry">

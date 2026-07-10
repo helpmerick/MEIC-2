@@ -80,7 +80,7 @@ async def _gates():
 
 
 def _manual(comp, *, risk=None, max_entries=None):
-    async def selector(when, n, config=None):
+    async def selector(when, n, config=None, put_floor=None, call_floor=None):
         return _condor(n, config.contracts if config else 1), None
 
     return ManualEntry(comp, selector, _gates, max_entries_per_day=max_entries,

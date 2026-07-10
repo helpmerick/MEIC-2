@@ -220,10 +220,17 @@ def build_live_runtime(
 def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None,
                        day: Callable[[], str] | None = None,
                        drift: BrokerClockProbe | None = None,
-                       max_clock_drift_ms: float = 2000.0) -> ManualEntry:
+                       max_clock_drift_ms: float = 2000.0,
+                       spot_provider: Callable[[], Any] | None = None) -> ManualEntry:
     """ENT-09. The manual fire crosses the identical rails as a scheduled entry —
     the SAME max_day_risk, the SAME open worst cases, the SAME reconcile block and
-    clock-drift check. Only the ENT-02 window is bypassed."""
+    clock-drift check. Only the ENT-02 window is bypassed.
+
+    `spot_provider` (ENT-09b v1.57): () -> Decimal|None, the live chain
+    snapshot's spot -- feeds the refuse-and-re-pick check (`floor_inside_spot`).
+    `None` (the default) means "spot unknowable", which `ManualEntry` treats
+    as "skip the check" rather than refuse on a guess.
+    """
     from meic.application.entry_gates import clock_drift_blocks_entry
 
     drift = drift or BrokerClockProbe()
@@ -248,7 +255,7 @@ def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None
 
     return ManualEntry(comp, selector, market_gates,
                        max_entries_per_day=max_entries_per_day, risk=risk, day=day,
-                       blocks=blocks)
+                       blocks=blocks, spot_provider=spot_provider)
 
 
 def live_preflight_checks(comp, *, data_fresh: Callable[[], bool],

@@ -136,6 +136,18 @@ def _describe(ev: Any) -> dict[str, str] | None:
     return {"icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits)}
 
 
+def _floor(raw: Any) -> Decimal | None:
+    """ENT-09b v1.57: parse an optional manual-fire strike floor. Absent/blank
+    -> None (that side's floor toggle was off); unparsable -> REJECTED (422),
+    never silently dropped -- a typo must not fire with a floor quietly gone."""
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        raise HTTPException(status_code=422, detail={"reason": "unparsable_floor"})
+
+
 def _adhoc_row(params: dict[str, Any]):
     """ENT-11(4): an ad-hoc row validates through the IDENTICAL per-row rules as
     a schedule row (contracts 1-10, discrete stop set, width steps, per_side
@@ -476,6 +488,15 @@ def create_app(
             preview = commands.fire_preview(n, row)
             return {**preview.to_dict(), "can_fire": commands.can_fire()}
 
+        @app.get("/entry/{n}/floor-candidates")
+        def entry_floor_candidates(n: int) -> dict[str, Any]:
+            """ENT-09b v1.57: the ▶ dialog's floor dropdowns for a scheduled row --
+            per-side candidates from the row's live VALIDATED UNIVERSE."""
+            row = _resolved_row_for_id(n)
+            if row is None:
+                raise HTTPException(status_code=404, detail="unknown_entry")
+            return commands.floor_candidates(row)
+
         @app.post("/entry/{n}/fire")
         async def fire_entry(n: int, body: dict[str, Any]) -> dict[str, Any]:
             """ENT-09: manual fire. Bypasses ONLY the ENT-02 window; the full
@@ -484,7 +505,9 @@ def create_app(
             `press_id` makes a double-click exactly one attempt; `confirmed` is the
             simple OK acknowledgement (UI-22 — never a typed phrase), required in
             BOTH paper and live. `n` is the row's DURABLE entry id — see
-            `_resolved_row_for_id`."""
+            `_resolved_row_for_id`. `put_floor`/`call_floor` (ENT-09b v1.57,
+            optional) are the operator's minimum short-strike floors, if the
+            dialog's toggle was on."""
             row = _resolved_row_for_id(n)
             if row is None:
                 raise HTTPException(status_code=404, detail="unknown_entry")
@@ -492,7 +515,9 @@ def create_app(
             if not press_id:
                 raise HTTPException(status_code=400, detail="press_id_required")
             return await commands.fire(press_id=press_id, entry_number=n,
-                                       row=row, confirmed=bool(body.get("confirmed")))
+                                       row=row, confirmed=bool(body.get("confirmed")),
+                                       put_floor=_floor(body.get("put_floor")),
+                                       call_floor=_floor(body.get("call_floor")))
 
         @app.post("/manual/simulate")
         async def manual_simulate(body: dict[str, Any]) -> dict[str, Any]:
@@ -504,19 +529,30 @@ def create_app(
             row = _adhoc_row(body)
             return await commands.simulate(row)
 
+        @app.post("/manual/floor-candidates")
+        def manual_floor_candidates(body: dict[str, Any]) -> dict[str, Any]:
+            """ENT-09b v1.57: the ad-hoc ▶ dialog's floor dropdowns, for the
+            ad-hoc row's OWN parameters (POST: it needs the row body, not just
+            an id — the row doesn't exist as a saved schedule entry)."""
+            row = _adhoc_row(body)
+            return commands.floor_candidates(row)
+
         @app.post("/manual/fire")
         async def manual_fire(body: dict[str, Any]) -> dict[str, Any]:
             """ENT-11: fire an ad-hoc entry now, through the IDENTICAL ENT-09
             pipeline, numbered in the 101+ lane (ENT-11(3)) so it can never
             collide with a schedule row. `press_id` and `confirmed` are the same
-            UI-22 idempotency/confirmation contract as `/entry/{n}/fire`."""
+            UI-22 idempotency/confirmation contract as `/entry/{n}/fire`.
+            `put_floor`/`call_floor` (ENT-09b v1.57, optional) as above."""
             row = _adhoc_row(body)
             press_id = str(body.get("press_id", "")).strip()
             if not press_id:
                 raise HTTPException(status_code=400, detail="press_id_required")
             n = _next_adhoc_number(events, commands.day())
             return await commands.fire(press_id=press_id, entry_number=n, row=row,
-                                       confirmed=bool(body.get("confirmed")))
+                                       confirmed=bool(body.get("confirmed")),
+                                       put_floor=_floor(body.get("put_floor")),
+                                       call_floor=_floor(body.get("call_floor")))
 
         @app.post("/close/{entry_id}")
         async def close_entry(entry_id: str) -> dict[str, Any]:
@@ -579,9 +615,19 @@ def create_app(
         @app.post("/drill/outage")
         async def outage_drill(body: dict[str, Any] | None = None) -> dict[str, Any]:
             """UC-12: simulate a bot outage and return evidence that the resting
-            stops stayed working (with unbroken timestamps) throughout."""
-            seconds = float((body or {}).get("outage_seconds", 2.0))
-            return await commands.run_outage_drill(seconds)
+            stops stayed working (with unbroken timestamps) throughout.
+
+            v1.56: LIVE mode requires a typed DRILL `confirmation` -- absent or
+            wrong, the drill is REFUSED (400, never run) rather than silently
+            skipped. `outage_seconds` omitted uses the `drill_outage_seconds`
+            config default."""
+            raw = (body or {}).get("outage_seconds")
+            seconds = float(raw) if raw is not None else None
+            result = await commands.run_outage_drill(
+                seconds, str((body or {}).get("confirmation", "")))
+            if result.get("result") == "confirmation_required":
+                raise HTTPException(status_code=400, detail="confirmation_required")
+            return result
 
         @app.post("/mode-switch")
         async def mode_switch(body: dict[str, Any]) -> dict[str, Any]:

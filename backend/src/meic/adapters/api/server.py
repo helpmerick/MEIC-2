@@ -101,9 +101,12 @@ def paper_app():
     comp.state.trading_mode = "paper"   # honest: this process holds the simulator
     runtime = PaperDemoRuntime(comp, step_seconds=3.0)
 
-    async def selector(when, n, config=None):
+    async def selector(when, n, config=None, put_floor=None, call_floor=None):
         """The demo's stand-in for live selection. A real day selects from the
-        DXLink chain; the shape — and the row's contracts — is identical."""
+        DXLink chain; the shape — and the row's contracts — is identical.
+        `put_floor`/`call_floor` (ENT-09b v1.57): accepted for interface
+        parity with the real selector (ManualEntry.fire always passes them),
+        but the demo's synthetic condor has no real chain to filter."""
         return runtime._condor(n, config.contracts if config else 1), None
 
     async def gates():
@@ -129,7 +132,9 @@ def paper_app():
                          risk=risk, day=lambda: "2026-07-07")
 
     # no api_token on the localhost demo bind; Close/Flatten act on the live book
-    app = create_app(comp.state, comp.events, commands=PanelCommands(comp, manual_entry=manual),
+    app = create_app(comp.state, comp.events,
+                     commands=PanelCommands(comp, manual_entry=manual,
+                                            default_drill_outage_seconds=_drill_outage_seconds(_read_env())),
                      reporting_config=_reporting_config(_read_env()))
 
     @app.on_event("startup")
@@ -157,6 +162,31 @@ def _chain_completeness_pct(env: dict[str, str]) -> Decimal:
     except (ArithmeticError, ValueError):
         return Decimal("90")
     return raw if Decimal("50") <= raw <= Decimal("100") else Decimal("90")
+
+
+def _drill_outage_seconds(env: dict[str, str]) -> float:
+    """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) -- the
+    stop-independence drill's default disconnect duration when a request
+    doesn't specify its own. Out-of-range falls back to the spec default (the
+    same reject-the-dial convention as `_chain_completeness_pct` above)."""
+    try:
+        raw = float(env.get("MEIC_DRILL_OUTAGE_SECONDS", "60"))
+    except ValueError:
+        return 60.0
+    return raw if 10 <= raw <= 300 else 60.0
+
+
+def _min_validated_strikes(env: dict[str, str]) -> int:
+    """STK-10 v1.55 `min_validated_strikes` (doc 06: range 3-40, default 10) --
+    the per-side viability floor on the baseline-captured validated universe
+    (domain/chain.py: `validated_universe`). Out-of-range falls back to the
+    spec default (the same reject-the-dial convention as
+    `_chain_completeness_pct` above)."""
+    try:
+        raw = int(env.get("MEIC_MIN_VALIDATED_STRIKES", "10"))
+    except ValueError:
+        return 10
+    return raw if 3 <= raw <= 40 else 10
 
 
 def _entry_window_seconds(env: dict[str, str]) -> int:
@@ -710,6 +740,7 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """
     from meic.composition.live_gates import LiveMarketGates
     from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
+    from meic.composition.live_selection import floor_candidates as floor_candidates_fn
     from meic.composition.live_wiring import (
         BrokerClockProbe,
         build_live_runtime,
@@ -764,14 +795,21 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         snapshot_provider=snaps.take,
         # STK-10: the chain-scoped completeness dial (doc 06, 50-100, default 90),
         # previously hardcoded at 90 inside SelectionConfig.
-        config=SelectionConfig(completeness_pct=_chain_completeness_pct(env)),
+        config=SelectionConfig(completeness_pct=_chain_completeness_pct(env),
+                               min_validated_strikes=_min_validated_strikes(env)),
         # STK-10 v1.51 retry: comp.clock drives the retry gaps (never time.sleep —
         # this is the SAME clock LiveRuntime schedules entries against), bounded
         # by the entry window from `when` (doc 06 entry_window_seconds/
         # chain_retry_seconds, both env-wired like every other live tunable).
         clock=comp.clock,
         entry_window_seconds=_entry_window_seconds(env),
-        chain_retry_seconds=_chain_retry_seconds(env))
+        chain_retry_seconds=_chain_retry_seconds(env),
+        # STK-10 v1.55: baseline pre-validation is ALWAYS ON for real trading
+        # (both the scheduled runtime and manual ENT-09 fire cross the SAME
+        # selector instance below, so "at warm-up" / "at press" both land on
+        # whichever call reaches this selector first for that entry).
+        baseline_pre_validation=True,
+        alert=comp.alerts.alert)
     gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
                             session_valid=_session_valid, buying_power_ok=_buying_power_ok)
 
@@ -785,7 +823,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     manual = build_manual_entry(
         comp, selector=selector, market_gates=gates,
         max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
-        day=lambda: datetime.now(timezone.utc).astimezone().date().isoformat())
+        day=lambda: datetime.now(timezone.utc).astimezone().date().isoformat(),
+        # ENT-09b v1.57 refuse-and-re-pick: the live spot off the SAME cached
+        # snapshot FEATURE 3 already holds -- no new subscription.
+        spot_provider=lambda: getattr(snaps.last, "spot", None))
 
     # TPF/TPT (v1.58): ONE ExitMonitor for the whole live day, held here (not
     # per-tick) so its per-entry confirmation counters survive across health
@@ -836,9 +877,19 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
 
         await detect_and_recover_stop_fills(comp, comp.alerts, _long_quote)
 
+    def _floor_candidates(row) -> dict:
+        """ENT-09b v1.57: the ▶ dialog's floor dropdowns. Thin -- the actual
+        computation is the pure, independently-tested
+        `composition.live_selection.floor_candidates`; this closure only
+        supplies the live snapshot and the row's own SelectionConfig."""
+        cfg = SelectionConfig.for_entry(row) if row is not None else selector.config
+        return floor_candidates_fn(snaps.last, cfg)
+
     return {
         "runtime": runtime,
         "manual": manual,
+        # ENT-09b v1.57: the ▶ dialog's floor-dropdown data provider.
+        "floor_candidates": _floor_candidates,
         # UC-02: real checks. `data_fresh` is read synchronously off the cached
         # snapshot — the pre-flight route runs on a threadpool and must not await
         # the broker (that would bind its session to a fresh event loop).
@@ -920,11 +971,36 @@ def live_app():
     # composition/live_wiring.py — and tests/composition/test_live_wiring.py, which
     # asserts on those functions precisely because this is where rails go missing.
     live = _wire_live_day(comp, env)
+
+    def _drill_guidance_provider() -> list[str]:
+        """UC-12 v1.56: advisory-only warnings for the drill confirmation
+        dialog. `entry_soon` is real (the composed schedule's own next-fire
+        time); a near-trigger-mark check is NOT computed here (STP-02c's
+        "trigger distance" has no single canonical percentage without picking
+        a reference basis, and this warning is guidance only, never a
+        block) -- flagged as a follow-up, not a blocking gap."""
+        from datetime import timedelta as _td
+
+        from meic.application.drills import drill_guidance
+        from meic.composition.live_gates import ET as _ET
+        from meic.composition.live_wiring import schedule_rows
+
+        now = comp.clock.now()
+        rows = schedule_rows(comp.state, today=now.date(), tz=_ET)
+        remaining = _remaining_rows(rows, now, comp.events, now.date().isoformat())
+        entry_soon = bool(remaining) and (min(r.when for r in remaining) - now) <= _td(seconds=600)
+        return drill_guidance(near_trigger=False, entry_soon=entry_soon)
+
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],
                              # TPF-02/TPT-03: server-side gap validation off the
                              # SAME evaluator/snapshot the health-tick monitor uses.
-                             profit_pct_provider=_profit_pct_provider(comp, live["snapshots"]))
+                             profit_pct_provider=_profit_pct_provider(comp, live["snapshots"]),
+                             # ENT-09b v1.57: the ▶ dialog's floor dropdowns.
+                             floor_candidates_provider=live["floor_candidates"],
+                             # UC-12 v1.56: the outage-drill dialog's advisory warnings.
+                             drill_guidance_provider=_drill_guidance_provider,
+                             default_drill_outage_seconds=_drill_outage_seconds(env))
     # FEATURE 3 + UI-13/14/15: live P/L, then the shared TPF/TPT profit%, both
     # off the already-held chain snapshot — no new subscription. paper_app
     # passes no enricher at all (SIM-01 marks are synthetic, nothing honest to

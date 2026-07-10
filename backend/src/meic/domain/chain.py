@@ -73,6 +73,26 @@ def completeness_ok(
     return (Decimal(marked) / Decimal(len(reachable))) * 100 >= completeness_pct
 
 
+def validated_universe(
+    side: ChainSide,
+    reachable: frozenset[Decimal] | tuple[Decimal, ...],
+) -> frozenset[Decimal]:
+    """STK-10 v1.55 baseline pre-validation: the entry's VALIDATED universe.
+
+    Captured ONCE, at ENT-08 warm-up (T-60s) or at manual-entry press — never
+    recomputed at fire time. It is the subset of the entry's TRADE-RELATIVE
+    `reachable_strikes` that carries a fresh two-sided quote AT THAT MOMENT.
+
+    A far-OTM strike that is listed but never actually quoted (a dead-at-
+    baseline strike, e.g. a wing/shift-budget addition with no real market)
+    is never part of this set — and so can NEVER count against completeness
+    later (TC-STK-09): the gate measures REGRESSION from this known-good
+    picture, not distance from an idealized full reachable set that includes
+    strikes that were never really tradeable to begin with.
+    """
+    return frozenset(s for s in reachable if side.is_marked(s))
+
+
 def reachable_strikes(
     side: ChainSide,
     *,

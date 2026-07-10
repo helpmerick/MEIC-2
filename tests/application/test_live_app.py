@@ -461,3 +461,79 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
 
     cards = TestClient(app2).get("/entries").json()
     assert any(c["entry_id"] == "2026-07-09#1" and c["net_credit"] == "4.00" for c in cards)
+
+
+# --- UC-12 v1.56: outage-drill LIVE wiring capstone ----------------------------
+# The drill endpoint/command already existed (2628c9d), but with NO live-mode
+# semantics: no typed DRILL confirmation gate, a hardcoded 2.0s default instead
+# of doc 06's `drill_outage_seconds`, and a honesty note hardcoded to the PAPER
+# claim even when run against the real broker. v1.56 requires the confirmation
+# gate + a mode-aware honesty note; this pins BOTH on the object live_app()
+# actually builds (app.state.commands), not a hand-constructed PanelCommands.
+
+def test_live_app_outage_drill_refuses_without_a_typed_drill_confirmation(monkeypatch, tmp_path):
+    """UC-12 v1.56: in LIVE mode (which is what live_app() always is), the
+    drill is REFUSED — never run — without confirmation == "DRILL". This must
+    short-circuit before ever touching the broker (the unconnected adapter
+    would raise), so it is safe to drive through the real HTTP endpoint."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    assert app.state.composition.state.trading_mode == "live"
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+
+    no_confirmation = client.post("/drill/outage", json={})
+    assert no_confirmation.status_code == 400
+    assert no_confirmation.json()["detail"] == "confirmation_required"
+
+    wrong_confirmation = client.post("/drill/outage", json={"confirmation": "drill"})  # case-sensitive
+    assert wrong_confirmation.status_code == 400
+
+
+def test_live_app_outage_drill_runs_when_confirmed_with_a_mode_aware_honesty_note(monkeypatch, tmp_path):
+    """UC-12 v1.56: a correctly-typed DRILL confirmation runs the drill for
+    real, and its evidence carries the LIVE honesty claim (never paper's) —
+    swap in a FakeBroker (the real, unconnected TastytradeAdapter cannot
+    answer working_orders() offline) to drive it end to end."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from tests.harness.fake_broker import FakeBroker
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    app.state.composition.broker = FakeBroker()   # swap for an offline-safe fake
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+
+    r = client.post("/drill/outage", json={"confirmation": "DRILL", "outage_seconds": 0})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["result"] == "ok"
+    assert "LIVE" in body["honesty_note"]
+    assert "PAPER" not in body["honesty_note"]
+
+
+def test_drill_outage_seconds_is_read_from_config_not_hardcoded(monkeypatch, tmp_path):
+    """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) must
+    come from config — the endpoint used to hardcode 2.0 regardless of the
+    dial. Wired onto app.state.commands' default, read at drill time whenever
+    a request doesn't specify its own `outage_seconds`."""
+    from meic.adapters.api.server import _drill_outage_seconds, live_app
+
+    assert _drill_outage_seconds({}) == 60.0                       # spec default
+    assert _drill_outage_seconds({"MEIC_DRILL_OUTAGE_SECONDS": "90"}) == 90.0
+    assert _drill_outage_seconds({"MEIC_DRILL_OUTAGE_SECONDS": "9001"}) == 60.0  # out of range
+    assert _drill_outage_seconds({"MEIC_DRILL_OUTAGE_SECONDS": "not-a-number"}) == 60.0
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_DRILL_OUTAGE_SECONDS", "90")
+    app = live_app()
+    assert app.state.commands._default_drill_outage_seconds == 90.0

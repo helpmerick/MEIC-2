@@ -172,12 +172,19 @@ class ExecuteEntryAttempt:
         bypass_window: bool = False,
         stop: StopParams | None = None,
         initiator: str = "schedule",
+        put_floor: Decimal | None = None,
+        call_floor: Decimal | None = None,
     ) -> EntryOutcome:
         """THE entry path. Scheduled entries and manual ENT-09 fires both come
         through here, and `bypass_window` is the ONLY thing a manual fire changes
         (ENT-09: the window guards stale scheduled intent; a manual press is fresh
         intent by definition). Every other rail below applies unreduced — which is
         why RSK-04 lives here and not in a caller.
+
+        `put_floor`/`call_floor` (ENT-09b v1.57): audit-only — carried through
+        to the eventual `CondorFilled` so a manual fire's floors are recorded
+        in the entry's events (never used to re-derive the selection here;
+        the selector already applied them before `condor` was built).
         """
         n = condor.entry_number
 
@@ -213,10 +220,13 @@ class ExecuteEntryAttempt:
             entry_id=entry_id, put_short=condor.put_short, call_short=condor.call_short))
 
         # 4. ORD-01/02/03 — one 4-leg limit, repriced down to the floor
-        return await self._work_order(day, n, entry_id, condor, initiator)
+        return await self._work_order(day, n, entry_id, condor, initiator,
+                                      put_floor=put_floor, call_floor=call_floor)
 
     async def _work_order(self, day, n, entry_id, condor: Condor,
-                          initiator: str = "schedule") -> EntryOutcome:
+                          initiator: str = "schedule",
+                          put_floor: Decimal | None = None,
+                          call_floor: Decimal | None = None) -> EntryOutcome:
         ladder = RepriceLadder(
             start=condor.mid_credit, ticks=self._ticks,
             attempts=self._reprice_attempts, floor=condor.min_total_credit)
@@ -262,14 +272,16 @@ class ExecuteEntryAttempt:
             # filled order.
             if await self._await_fill(working_id, self._reprice_seconds):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
-                                               working_price, initiator)
+                                               working_price, initiator,
+                                               put_floor=put_floor, call_floor=call_floor)
 
         # ORD-03 / EC-ENT-05: floor reached unfilled ⇒ cancel and skip. Last guard:
         # it may have filled right at the final deadline.
         if working_id is not None:
             if await self._filled(working_id):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
-                                               working_price, initiator)
+                                               working_price, initiator,
+                                               put_floor=put_floor, call_floor=call_floor)
             await self._broker.cancel(working_id)
         return self._skip(day, n, "unfilled_at_floor")
 
@@ -288,7 +300,9 @@ class ExecuteEntryAttempt:
             await self._clock.wait_until(nxt)
 
     async def _record_fill(self, entry_id, working_id, condor: Condor, expiration: date,
-                           fill_credit, initiator: str) -> EntryOutcome:
+                           fill_credit, initiator: str, *,
+                           put_floor: Decimal | None = None,
+                           call_floor: Decimal | None = None) -> EntryOutcome:
         legs = await self._fill_legs(working_id, condor, expiration)
         # BUG FIX (2026-07-09 incident): `fill_credit` here is only the working
         # ladder RUNG price (an estimate) — the day the rung read 3.50, the
@@ -306,7 +320,8 @@ class ExecuteEntryAttempt:
         self._events.append(CondorFilled(
             entry_id=entry_id, net_credit=actual, legs=legs,
             initiator=initiator,             # ENT-09 / UC-08 tagging
-            at=self._clock.now().isoformat()))  # UI card: fill time
+            at=self._clock.now().isoformat(),  # UI card: fill time
+            put_floor=put_floor, call_floor=call_floor))  # ENT-09b v1.57 audit
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:

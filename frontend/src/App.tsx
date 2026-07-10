@@ -95,19 +95,31 @@ export function App() {
 
   // UC-12: the stop-independence drill — simulate a bot outage and show the
   // evidence that resting stops stayed working throughout.
+  //
+  // v1.56: LIVE mode requires the operator to type DRILL (mirroring the
+  // typed FLATTEN confirmation above) — a deliberate, supervised action
+  // against the real broker, never a stray one-click. PAPER needs none: it
+  // proves less (SIM-06) and touches no real session.
   const runOutageDrill = useCallback(async () => {
+    let confirmation = "";
+    if (state?.trading_mode === "live") {
+      const typed = window.prompt("LIVE drill — type DRILL to sever the bot's own broker/data sessions:");
+      if (typed === null) return;
+      confirmation = typed;
+    }
     setDrilling(true);
     try {
-      const r = await api.outageDrill();
+      const r = await api.outageDrill(confirmation);
       setDrill(r);
       flash(r.survived ? "Outage drill passed — stops stayed working"
         : "Outage drill: no resting stops to test", r.survived ? "ok" : "err");
     } catch (e) {
-      flash(`Drill failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err");
+      flash(e instanceof ApiError && e.status === 400 ? "Drill needs the typed DRILL confirmation"
+        : `Drill failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err");
     } finally {
       setDrilling(false);
     }
-  }, [flash]);
+  }, [flash, state?.trading_mode]);
 
   return (
     <div className="app">
@@ -167,6 +179,11 @@ export function App() {
             {drill.survived ? "all still working" : "no stops to test"}
             {drill.survived && `, timestamps ${drill.timestamps_unbroken ? "unbroken" : "CHANGED"}`}.</span>
           <div className="drill-note">{drill.honesty_note}</div>
+          {drill.guidance?.length > 0 && (
+            <ul className="drill-guidance" data-testid="drill-guidance">
+              {drill.guidance.map((g) => <li key={g}>⚠ {g}</li>)}
+            </ul>
+          )}
         </div>
       )}
 

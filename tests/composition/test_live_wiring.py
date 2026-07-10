@@ -444,7 +444,7 @@ def test_manual_fire_awaits_an_async_risk_provider():
     async def async_risk():                        # exactly like build_manual_entry
         return RiskSnapshot(new_worst_case=D("0"), buying_power=D("3448"))
 
-    async def sel(when, n, config=None):
+    async def sel(when, n, config=None, put_floor=None, call_floor=None):
         return SimpleNamespace(entry_number=1), None
 
     async def gates():

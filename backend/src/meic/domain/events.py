@@ -107,6 +107,12 @@ class EntrySkipped(Event):
     date: str
     entry_number: int
     reason: str
+    # ENT-09b v1.57 (optional/additive, None for every pre-v1.57 skip): the
+    # manual-fire minimum short-strike floors in force for THIS attempt, so a
+    # `floor_inside_spot` refusal (or any other skip while floors were set) is
+    # auditable from the event log alone.
+    put_floor: Decimal | None = None
+    call_floor: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -192,6 +198,12 @@ class CondorFilled(Event):
     # so a log entry recorded before this field existed still replays (from_dict's
     # generic "field absent -> fall back to default" path handles it, same as `fee`).
     at: str | None = None
+    # ENT-09b v1.57 (optional/additive): the manual-fire minimum short-strike
+    # floors in force for this entry, if any -- "recorded in the entry's
+    # events and day report" (e.g. "manual fire, put floor 7450 / call floor
+    # 7500"). None/None for every non-floor and pre-v1.57 fill.
+    put_floor: Decimal | None = None
+    call_floor: Decimal | None = None
 
 
 @dataclass(frozen=True)

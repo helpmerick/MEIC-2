@@ -32,6 +32,7 @@ from typing import Any
 
 from meic.domain.events import EntrySkipped
 from meic.domain.projection import day_report
+from meic.domain.walk import floor_inside_spot
 
 from .schedule_service import worst_case_estimate
 
@@ -95,7 +96,7 @@ class FirePreview:
 
 class ManualEntry:
     def __init__(self, comp, selector, market_gates, *, max_entries_per_day=None,
-                 risk=None, day=None, blocks=None) -> None:
+                 risk=None, day=None, blocks=None, spot_provider=None) -> None:
         self._comp = comp
         self._selector = selector          # async (when, n, config) -> (Condor|None, skip|None)
         self._gates = market_gates         # async () -> GateSnapshot
@@ -105,6 +106,11 @@ class ManualEntry:
         # ENT-09: "reconcile-block and clock-drift checks" apply to a manual fire.
         # They sit OUTSIDE the ENT-03 gate chain, so attempt() cannot run them.
         self._blocks = blocks              # () -> skip reason | None
+        # ENT-09b v1.57: () -> Decimal|None current spot, for the refuse-and-
+        # re-pick check. `None` (no provider wired) means spot is unknowable --
+        # the check is skipped rather than refusing on a guess (the same
+        # honesty stance as `_risk`/`_blocks` being optional above).
+        self._spot = spot_provider
         self._consumed: set[str] = set()   # press ids already acted on (idempotency)
 
     # --- UI-22 -------------------------------------------------------------------
@@ -161,8 +167,15 @@ class ManualEntry:
 
     # --- ENT-09 ------------------------------------------------------------------
     async def fire(self, *, press_id: str, entry_number: int, row,
-                   confirmed: bool) -> dict[str, Any]:
-        """Fire one entry now. `press_id` makes a double-click idempotent."""
+                   confirmed: bool, put_floor: Decimal | None = None,
+                   call_floor: Decimal | None = None) -> dict[str, Any]:
+        """Fire one entry now. `press_id` makes a double-click idempotent.
+
+        `put_floor`/`call_floor` (ENT-09b v1.57, manual-entry-only, per-press —
+        never persisted schedule state): minimum short-strike floors from the
+        ▶ dialog's optional toggle. `None`/`None` is every non-floor press and
+        every pre-v1.57 caller.
+        """
         # 1. UI-22: no OK, no order — and nothing recorded. A dismissed or
         # timed-out dialog must leave the log exactly as it found it.
         if not confirmed:
@@ -180,7 +193,8 @@ class ManualEntry:
         # and no EntryWindowOpened — the card shows the skip reason.
         if not self.can_fire():
             self._comp.events.append(
-                EntrySkipped(date=day, entry_number=entry_number, reason="blocked"))
+                EntrySkipped(date=day, entry_number=entry_number, reason="blocked",
+                             put_floor=put_floor, call_floor=call_floor))
             return {"result": "blocked", "reason": "blocked",
                     "state": self._comp.state.blocking_state()}
 
@@ -189,22 +203,38 @@ class ManualEntry:
         blocked = self._blocks() if self._blocks else None
         if blocked is not None:
             self._comp.events.append(
-                EntrySkipped(date=day, entry_number=entry_number, reason=blocked))
+                EntrySkipped(date=day, entry_number=entry_number, reason=blocked,
+                             put_floor=put_floor, call_floor=call_floor))
             return {"result": "skipped", "reason": blocked}
 
         # 5. ENT-05: a manual entry COUNTS toward max_entries_per_day.
         if self._max_entries is not None and self._filled_today() >= self._max_entries:
             self._comp.events.append(
-                EntrySkipped(date=day, entry_number=entry_number, reason="max_entries"))
+                EntrySkipped(date=day, entry_number=entry_number, reason="max_entries",
+                             put_floor=put_floor, call_floor=call_floor))
             return {"result": "skipped", "reason": "max_entries"}
+
+        # 5b. ENT-09b v1.57 refuse-and-re-pick: if spot has crossed a selected
+        # floor since the dialog opened, the fire is REFUSED outright — never
+        # silently reinterpreted against a floor that no longer makes sense.
+        if put_floor is not None or call_floor is not None:
+            spot = self._spot() if self._spot else None
+            if spot is not None and floor_inside_spot(spot, put_floor=put_floor,
+                                                       call_floor=call_floor):
+                self._comp.events.append(
+                    EntrySkipped(date=day, entry_number=entry_number, reason="floor_inside_spot",
+                                 put_floor=put_floor, call_floor=call_floor))
+                return {"result": "skipped", "reason": "floor_inside_spot"}
 
         # 6. Selection at fire time, from fresh chain data — as a scheduled entry.
         when = self._comp.clock.now()
-        condor, skip = await self._selector(when, entry_number, _selection(row))
+        condor, skip = await self._selector(when, entry_number, _selection(row),
+                                            put_floor=put_floor, call_floor=call_floor)
         if condor is None:
             self._comp.events.append(
                 EntrySkipped(date=day, entry_number=entry_number,
-                             reason=skip or "selection_unavailable"))
+                             reason=skip or "selection_unavailable",
+                             put_floor=put_floor, call_floor=call_floor))
             return {"result": "skipped", "reason": skip or "selection_unavailable"}
 
         # 6. THE identical pipeline. `bypass_window` is the only difference; the
@@ -220,7 +250,8 @@ class ManualEntry:
             outcome = await self._comp.execute.attempt(
                 day=day, scheduled=when, condor=condor, gates=await self._gates(),
                 risk=await _maybe_await(self._risk),   # sync (paper) OR async (live)
-                bypass_window=True, stop=_stop(row), initiator=MANUAL)
+                bypass_window=True, stop=_stop(row), initiator=MANUAL,
+                put_floor=put_floor, call_floor=call_floor)   # ENT-09b v1.57 audit
 
             if outcome.status != "FILLED":
                 return {"result": "skipped", "reason": outcome.reason}

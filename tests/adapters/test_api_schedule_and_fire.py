@@ -19,6 +19,7 @@ class _Commands:
         self._can_fire = can_fire
         self.preflight_checks = preflight_checks
         self.fired: list = []
+        self.fired_floors: list = []   # ENT-09b v1.57: (put_floor, call_floor) per fire() call
         self.simulated: list = []
         self._day = day
 
@@ -33,11 +34,16 @@ class _Commands:
                            wing_width=row.wing_width, stop_loss_pct=row.stop_loss_pct,
                            worst_case_estimate=worst_case_estimate(row))
 
-    async def fire(self, *, press_id, entry_number, row, confirmed):
+    async def fire(self, *, press_id, entry_number, row, confirmed, put_floor=None, call_floor=None):
         self.fired.append((press_id, entry_number, confirmed))
+        self.fired_floors.append((put_floor, call_floor))   # ENT-09b v1.57
         if not confirmed:
             return {"result": "not_confirmed"}
         return {"result": "filled", "entry_id": f"d#{entry_number}", "initiator": "manual_entry"}
+
+    # --- ENT-09b v1.57 -----------------------------------------------------------
+    def floor_candidates(self, row):
+        return {"available": False}
 
     # --- ENT-11/UI-25 ad-hoc manual trade ---------------------------------------
     async def simulate(self, row):

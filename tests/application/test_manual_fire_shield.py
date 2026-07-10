@@ -65,7 +65,7 @@ def test_cancelling_fire_during_the_handoff_still_places_the_stop():
 
         comp._on_filled = slow_on_filled
 
-        async def selector(when, n, config=None):
+        async def selector(when, n, config=None, put_floor=None, call_floor=None):
             return Condor(entry_number=n, put_short=D("5990"), call_short=D("6060"),
                           put_long=D("5940"), call_long=D("6110"),
                           put_short_mid=D("3.00"), call_short_mid=D("2.00"),

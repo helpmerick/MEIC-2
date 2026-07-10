@@ -37,7 +37,8 @@ def _open_sides(e: EntryProjection) -> list[str]:
 
 class PanelCommands:
     def __init__(self, comp, manual_entry=None, preflight_checks=None,
-                 profit_pct_provider=None) -> None:
+                 profit_pct_provider=None, floor_candidates_provider=None,
+                 drill_guidance_provider=None, default_drill_outage_seconds: float = 60.0) -> None:
         self._comp = comp
         self._manual = manual_entry               # ENT-09; None => the ▶ button is inert
         self.preflight_checks = preflight_checks  # UC-02 checklist providers
@@ -47,6 +48,18 @@ class PanelCommands:
         # means "unknown" -- floor/target set/raise/lower are rejected, never
         # guessed at.
         self._profit_pct_provider = profit_pct_provider
+        # ENT-09b v1.57: (row) -> dict of per-side candidate strikes from the
+        # entry's VALIDATED UNIVERSE (v1.55), for the ▶ dialog's floor
+        # dropdowns. `None` (e.g. paper without a wired chain) means the
+        # dialog cannot populate live strikes.
+        self._floor_candidates_provider = floor_candidates_provider
+        # UC-12 v1.56: () -> list[str], the drill dialog's advisory warnings
+        # (near-trigger marks / an entry due soon). `None` -> no guidance
+        # computed (e.g. paper, or a panel with no chain/schedule wired).
+        self._drill_guidance_provider = drill_guidance_provider
+        # UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) --
+        # used whenever a drill request doesn't specify its own duration.
+        self._default_drill_outage_seconds = default_drill_outage_seconds
 
     # --- ENT-09 manual fire (UI-22) ---------------------------------------------
     def can_fire(self) -> bool:
@@ -67,11 +80,21 @@ class PanelCommands:
         press_id = f"fire:{entry_number}:{next(self._presses)}"
         return self._manual.preview(press_id, entry_number, row)
 
-    async def fire(self, *, press_id: str, entry_number: int, row, confirmed: bool) -> dict:
+    async def fire(self, *, press_id: str, entry_number: int, row, confirmed: bool,
+                   put_floor=None, call_floor=None) -> dict:
         if self._manual is None:
             return {"result": "unavailable", "reason": "manual entry not wired (ENT-09)"}
         return await self._manual.fire(press_id=press_id, entry_number=entry_number,
-                                       row=row, confirmed=confirmed)
+                                       row=row, confirmed=confirmed,
+                                       put_floor=put_floor, call_floor=call_floor)
+
+    def floor_candidates(self, row) -> dict:
+        """ENT-09b v1.57: the ▶ dialog's floor dropdowns -- per-side candidate
+        strikes from the entry's VALIDATED UNIVERSE (v1.55), each with its
+        distance from spot and live mid, plus spot + the quote timestamp."""
+        if self._floor_candidates_provider is None:
+            return {"available": False}
+        return {"available": True, **self._floor_candidates_provider(row)}
 
     # --- ENT-11/UI-25 ad-hoc manual trade ---------------------------------------
     async def simulate(self, row) -> dict:
@@ -146,12 +169,28 @@ class PanelCommands:
         return {"staged": result.staged, "target": result.target,
                 "effective": result.effective, "reason": result.reason}
 
-    async def run_outage_drill(self, outage_seconds: float = 2.0) -> dict:
+    async def run_outage_drill(self, outage_seconds: float | None = None,
+                               confirmation: str = "") -> dict:
         """UC-12: run the stop-independence drill against the live broker and
-        return the evidence for the panel to display."""
-        from meic.application.drills import run_stop_independence_drill
-        ev = await run_stop_independence_drill(self._comp.broker, outage_seconds=outage_seconds)
-        return ev.as_dict()
+        return the evidence for the panel to display.
+
+        v1.56: in LIVE mode this requires a typed DRILL confirmation (operator
+        present) — REFUSED (never run) without it, mirroring the LIVE
+        mode-switch and FLATTEN typed-confirmation gates. Paper needs none.
+        Guidance (near-trigger marks / an entry due within 10 minutes) is
+        advisory only and never blocks the drill itself. `outage_seconds`
+        `None` uses the wired `drill_outage_seconds` config default.
+        """
+        from meic.application.drills import drill_confirmation_ok, run_stop_independence_drill
+
+        mode = self._comp.state.trading_mode
+        if not drill_confirmation_ok(mode=mode, confirmation=confirmation):
+            return {"result": "confirmation_required"}
+        seconds = self._default_drill_outage_seconds if outage_seconds is None else outage_seconds
+        guidance = self._drill_guidance_provider() if self._drill_guidance_provider else []
+        ev = await run_stop_independence_drill(
+            self._comp.broker, outage_seconds=seconds, mode=mode, guidance=guidance)
+        return {"result": "ok", **ev.as_dict()}
 
     async def flatten(self, confirmation: str) -> dict:
         """RSK-01a: close every open entry — but only on a typed FLATTEN."""

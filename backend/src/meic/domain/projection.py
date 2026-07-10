@@ -70,6 +70,11 @@ class EntryProjection:
     # Every symbol with a captured SettlementRecorded -- drives
     # `settlement_pending` below.
     settled_symbols: frozenset[str] = frozenset()
+    # ENT-09b v1.57: the manual-fire minimum short-strike floors this entry was
+    # fired under, if any (from CondorFilled -- see events.py). None/None for
+    # every scheduled or pre-v1.57 entry.
+    put_floor: Decimal | None = None
+    call_floor: Decimal | None = None
 
     @property
     def pnl(self) -> Decimal:
@@ -144,7 +149,8 @@ def apply(state: DayState, event: Event) -> DayState:
         return replace(state, entries=_put(state, replace(
             e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee,
             short_premium=e.short_premium + event.short_premium,
-            placed_at=event.at, legs=event.legs)))
+            placed_at=event.at, legs=event.legs,
+            put_floor=event.put_floor, call_floor=event.call_floor)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
