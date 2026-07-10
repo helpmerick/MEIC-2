@@ -1,7 +1,7 @@
 """RPT-03 outcome taxonomy & contract audit.
 
-Every CLOSED/settled entry classifies EXACTLY ONCE into one of the ten
-outcomes below. The contract audit is the standing inequality check born of
+Every CLOSED/settled entry classifies EXACTLY ONCE into one of the outcomes
+below (ten pre-v1.58, plus TPT_CLOSE for the v1.58 take-profit target). The contract audit is the standing inequality check born of
 the v1.38 Ash-ratified `total_credit` outcome contract (doc 01 STP-02): a
 ONE_SIDE_STOPPED entry must realize at least (1 − pct) × credit minus
 recorded slippage; a BOTH_SIDES_STOPPED entry at least −(2·pct − 1) × credit
@@ -21,6 +21,7 @@ FULL_EXPIRY = "FULL_EXPIRY"
 ONE_SIDE_STOPPED = "ONE_SIDE_STOPPED"
 BOTH_SIDES_STOPPED = "BOTH_SIDES_STOPPED"
 TPF_CLOSE = "TPF_CLOSE"
+TPT_CLOSE = "TPT_CLOSE"  # v1.58: take-profit TARGET close, distinct from the TPF floor
 DECAY_CLOSE = "DECAY_CLOSE"
 MANUAL_CLOSE = "MANUAL_CLOSE"
 MANUAL_FLATTEN = "MANUAL_FLATTEN"
@@ -39,6 +40,7 @@ _INITIATOR_OUTCOME = {
     "manual": MANUAL_CLOSE,
     "manual_flatten": MANUAL_FLATTEN,
     "take_profit": TPF_CLOSE,
+    "take_profit_target": TPT_CLOSE,
     "eod": EOD_CLOSE,
     "infeasible_stop": INFEASIBLE_STOP,
 }

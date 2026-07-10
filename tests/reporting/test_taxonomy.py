@@ -15,6 +15,7 @@ from meic.reporting.taxonomy import (
     MANUAL_FLATTEN,
     ONE_SIDE_STOPPED,
     TPF_CLOSE,
+    TPT_CLOSE,
     classify,
     contract_audit,
 )
@@ -44,6 +45,7 @@ def test_close_initiators_map_one_to_one():
         "manual": MANUAL_CLOSE,
         "manual_flatten": MANUAL_FLATTEN,
         "take_profit": TPF_CLOSE,
+        "take_profit_target": TPT_CLOSE,
         "eod": EOD_CLOSE,
         "infeasible_stop": INFEASIBLE_STOP,
     }

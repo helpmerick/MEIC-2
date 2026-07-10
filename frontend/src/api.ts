@@ -87,6 +87,19 @@ export const api = {
     post<{ accepted: Record<string, unknown> }>("/config", patch),
   closeEntry: (entryId: string) =>
     post<{ result: string }>(`/close/${encodeURIComponent(entryId)}`),
+  // --- v1.58 TPF/TPT: set/raise/lower/clear per entry (UI-13/14/15) ---------
+  // Server-side gap validation is authoritative (UI-03): a violating level
+  // throws ApiError(422) with a precise reason, never silently clamped.
+  setTpf: (entryId: string, level: number) =>
+    post<{ result: string; entry_id?: string; level?: number; reason?: string }>(
+      `/entries/${encodeURIComponent(entryId)}/tpf`, { level }),
+  clearTpf: (entryId: string) =>
+    post<{ result: string; entry_id: string }>(`/entries/${encodeURIComponent(entryId)}/tpf/clear`),
+  setTpt: (entryId: string, level: number) =>
+    post<{ result: string; entry_id?: string; level?: number; reason?: string }>(
+      `/entries/${encodeURIComponent(entryId)}/tpt`, { level }),
+  clearTpt: (entryId: string) =>
+    post<{ result: string; entry_id: string }>(`/entries/${encodeURIComponent(entryId)}/tpt/clear`),
   flatten: (confirmation: string) =>
     post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
   outageDrill: () =>

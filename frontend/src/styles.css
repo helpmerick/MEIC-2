@@ -284,6 +284,19 @@ body {
 .ec-legs { font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .ec-leg { line-height: 1.5; }
 .ec-livepnl { font-size: 12px; font-weight: 700; margin-top: 6px; color: var(--faint); }
+.ec-profitpct { font-size: 11px; color: var(--faint); margin-top: 2px; }
+
+/* --- v1.58 TPF/TPT exit controls ------------------------------------------ */
+.ec-exits { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.ec-exit-control { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
+.ec-exit-label { min-width: 50px; }
+.ec-exit-inputs { display: flex; align-items: center; gap: 4px; }
+.ec-exit-inputs input { width: 52px; padding: 2px 4px; font-size: 11px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.ec-exit-inputs button { padding: 2px 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); cursor: pointer; }
+.ec-exit-inputs button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ec-exit-inputs button:disabled { opacity: .55; cursor: progress; }
+.ec-tpt-feedback { font-size: 11px; color: var(--faint); }
+.tag.disarmed { background: var(--bad-dim); color: var(--bad); }
 
 /* --- activity feed ------------------------------------------------------- */
 .feed { list-style: none; margin: 14px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }

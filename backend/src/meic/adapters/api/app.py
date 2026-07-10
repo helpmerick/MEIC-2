@@ -20,6 +20,7 @@ from meic.application.preflight import run_preflight
 from meic.application.schedule_service import ScheduleService, spec_from_row
 from meic.config.validation import ConfigRejected, validate_config
 from meic.config.stop_basis import StopBasisRejected
+from meic.domain import tpt as tpt_domain
 from meic.domain.events import CondorFilled, EntrySkipped
 from meic.domain.projection import day_report, fold
 from meic.domain.schedule import ScheduleDefaults, resolve, validate_entry
@@ -294,7 +295,9 @@ def create_app(
         day = fold(events)
         cards = []
         for e in day.entries.values():
-            cards.append({
+            floor_level = state.tpf_floors.get(e.entry_id)
+            target_level = state.tp_targets.get(e.entry_id)
+            card = {
                 "entry_id": e.entry_id,
                 "status": e.status,
                 "net_credit": str(e.net_credit),
@@ -310,7 +313,22 @@ def create_app(
                 # cash has not yet been captured from the broker -- this
                 # entry's P&L is provisional until then.
                 "settlement_pending": e.settlement_pending,
-            })
+                # TPF-06/TPT-02: the armed floor/target level, if any (UI-13/14/15).
+                "tpf_floor": floor_level,
+                "tpt_target": target_level,
+                # TPT-05: permanently disarmed the moment ANY stop fills on
+                # this entry — derived structurally from the event log
+                # (ShortStopped already evented), never a second flag to drift.
+                "tpt_disarmed": bool(e.sides_stopped),
+            }
+            if target_level is not None:
+                # TPT-06: dollar feedback, from the ACTUAL net fill credit once
+                # filled (v1.52 rule) — contracts read off the recorded short
+                # leg qty, same source `_live_pnl_enricher` uses.
+                contracts = next((leg.qty for leg in e.legs if leg.role == "short"), 1)
+                fb = tpt_domain.armed_feedback(int(target_level), e.net_credit, contracts=contracts)
+                card["tpt_feedback"] = {"debit": str(fb["debit"]), "keep": str(fb["keep"])}
+            cards.append(card)
         cards.sort(key=lambda c: c["entry_id"])
         if entries_enricher is not None:  # FEATURE 3: live P/L, or any future hook
             cards = entries_enricher(cards)
@@ -505,6 +523,49 @@ def create_app(
             """CLS-02: close one entry instantly via CLS (initiator manual).
             Idempotent — a double-click yields exactly one close."""
             return await commands.close(entry_id)
+
+        # --- TPF-06 / TPT-02: set/raise/lower/clear per entry (UI-13/14/15) ----
+        @app.post("/entries/{entry_id}/tpf")
+        def set_tpf(entry_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            """TPF-02/06: arm, raise or lower the floor. Server-side gap
+            re-validation (>= tp_gap_pct below current live profit%) is
+            authoritative (UI-15) — a violating request is REJECTED (422),
+            never clamped."""
+            level = body.get("level")
+            if not isinstance(level, int):
+                raise HTTPException(status_code=422, detail={"reason": "level (int) is required"})
+            result = commands.set_tpf(entry_id, level)
+            if result["result"] == "unknown_entry":
+                raise HTTPException(status_code=404, detail="unknown_entry")
+            if result["result"] == "rejected":
+                raise HTTPException(status_code=422, detail={"reason": result["reason"]})
+            return result
+
+        @app.post("/entries/{entry_id}/tpf/clear")
+        def clear_tpf(entry_id: str) -> dict[str, Any]:
+            """TPF-06: the floor may be cleared at any time."""
+            return commands.clear_tpf(entry_id)
+
+        @app.post("/entries/{entry_id}/tpt")
+        def set_tpt(entry_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            """TPT-02/03: set, raise or lower the target. Server-side gap
+            re-validation (>= tp_gap_pct above current live profit%) is
+            authoritative — a violating request is REJECTED (422), never
+            clamped, never treated as close-now (operator ruling 1A)."""
+            level = body.get("level")
+            if not isinstance(level, int):
+                raise HTTPException(status_code=422, detail={"reason": "level (int) is required"})
+            result = commands.set_tpt(entry_id, level)
+            if result["result"] == "unknown_entry":
+                raise HTTPException(status_code=404, detail="unknown_entry")
+            if result["result"] == "rejected":
+                raise HTTPException(status_code=422, detail={"reason": result["reason"]})
+            return result
+
+        @app.post("/entries/{entry_id}/tpt/clear")
+        def clear_tpt(entry_id: str) -> dict[str, Any]:
+            """TPT-02: the target may be cleared at any time."""
+            return commands.clear_tpt(entry_id)
 
         @app.post("/flatten")
         async def flatten(body: dict[str, Any]) -> dict[str, Any]:

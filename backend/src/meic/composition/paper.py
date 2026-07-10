@@ -93,7 +93,7 @@ class PaperComposition:
         second implementation of the close procedure).
 
         Initiator note: CLS-02's operator-ratified initiator list is
-        `{manual, manual_flatten, take_profit, eod, decay, infeasible_stop}`
+        `{manual, manual_flatten, take_profit, take_profit_target, eod, decay, infeasible_stop}`
         — `unprotected` is not in it, though `CloseEntry.VALID_INITIATORS`
         already carries it. STP-04 demands the flatten and `unprotected` is
         the honest, distinct label for why it happened, so it is kept as-is;

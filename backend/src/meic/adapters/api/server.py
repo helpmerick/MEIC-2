@@ -497,6 +497,160 @@ def _live_pnl_enricher(snaps):
     return enrich
 
 
+def _profit_pct_enricher(comp, snaps):
+    """UI-13/14/15: the entry card's current profit% (TPF-01/TPT-01's shared
+    evaluator), off the SAME held snapshot `_live_pnl_enricher` reads — live
+    only; paper cards get `profit_pct: None` (no live chain marks, honest
+    absence rather than a guess, matching FEATURE 3's own convention)."""
+    from meic.domain.projection import fold
+
+    def enrich(cards: list[dict]) -> list[dict]:
+        snap = getattr(snaps, "last", None)
+        day = fold(comp.events)
+        for card in cards:
+            e = day.entries.get(card["entry_id"])
+            pct = None if e is None else _entry_profit_pct_now(e, snap)
+            card["profit_pct"] = None if pct is None else str(pct)
+        return cards
+
+    return enrich
+
+
+def _open_side_costs(e, snapshot) -> dict[str, Decimal] | None:
+    """The current cost-to-close (short mid − long mid) for each still-OPEN
+    side of entry `e` — the per-share input `domain.tpf.entry_profit_pct`
+    needs for its "unrealized P&L of open sides at mid" term. Shares the same
+    per-leg mid derivation as `_live_pnl_enricher`/`_sample_marks_once` above,
+    restricted to sides not yet stopped/closed/expired (TPF-05: a resolved
+    side contributes its REALIZED effect only, already inside
+    stop_fills/recoveries — never re-marked here).
+
+    Returns None (an honest gap, DAT-02) when any open side cannot be FULLY
+    marked (missing legs, or a leg outside the ATM band with no quote) — the
+    caller treats that exactly like a stale snapshot: pause, never guess.
+    """
+    gone = set(e.sides_stopped) | set(e.sides_closed) | set(e.sides_expired)
+    by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
+    for leg in e.legs:
+        by_side.setdefault(leg.side, {})[leg.role] = leg
+    out: dict[str, Decimal] = {}
+    for side in ("PUT", "CALL"):
+        if side in gone:
+            continue
+        short_leg, long_leg = by_side[side].get("short"), by_side[side].get("long")
+        if short_leg is None or long_leg is None:
+            return None
+        side_chain = snapshot.put_side if side == "PUT" else snapshot.call_side
+        short_mid = _leg_mid(side_chain, Decimal(_strike_from_symbol(short_leg.symbol)))
+        long_mid = _leg_mid(side_chain, Decimal(_strike_from_symbol(long_leg.symbol)))
+        if short_mid is None or long_mid is None:
+            return None
+        out[side] = short_mid - long_mid
+    return out
+
+
+def _entry_profit_pct_now(e, snapshot):
+    """The shared TPF-01/TPT-01 evaluator, fed live marks — None (stale/
+    unmarked/no-credit-yet) means "unknown", never a guess."""
+    from meic.domain.tpf import entry_profit_pct
+
+    if snapshot is None or snapshot.stale:
+        return None
+    open_costs = _open_side_costs(e, snapshot)
+    if open_costs is None:
+        return None
+    return entry_profit_pct(net_credit=e.net_credit, fees=e.fees, stop_fills=e.stop_fills,
+                            recoveries=e.recoveries, open_side_costs=open_costs)
+
+
+def _profit_pct_provider(comp, snapshots):
+    """PanelCommands' TPF-02/TPT-03 gap-validation hook: current profit% for
+    one entry, off the SAME evaluator and the SAME held snapshot the health
+    tick reads — never a second, drifting computation."""
+    from meic.domain.projection import fold
+
+    def provider(entry_id: str):
+        e = fold(comp.events).entries.get(entry_id)
+        if e is None:
+            return None
+        return _entry_profit_pct_now(e, snapshots.last)
+
+    return provider
+
+
+async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands) -> None:
+    """TPF/TPT health-tick evaluation (TPF-03/TPT-04): bot-side only, NEVER
+    broker-resting. Stale marks (or an unmarked open side) pause evaluation
+    (DAT-02) — the confirmation counters reset rather than fire on a gap.
+    TPT-05: any stop fill on the entry disarms its target PERMANENTLY, so the
+    target is never evaluated once `e.sides_stopped` is non-empty."""
+    from meic.domain.projection import fold
+
+    floors, targets = comp.state.tpf_floors, comp.state.tp_targets
+    if not floors and not targets:
+        return
+    day = fold(comp.events)
+    stale = snapshot is None or snapshot.stale
+    for entry_id, e in day.entries.items():
+        level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
+        if level_floor is None and level_target is None:
+            continue
+        if e.status in _TERMINAL_STATUSES:
+            exit_monitor.forget(entry_id)
+            continue
+        profit_pct = None if stale else _entry_profit_pct_now(e, snapshot)
+        entry_stale = stale or profit_pct is None
+
+        if level_floor is not None:
+            if exit_monitor.evaluate_floor(entry_id, profit_pct=profit_pct,
+                                           level=int(level_floor), stale=entry_stale):
+                await commands.close_as(entry_id, "take_profit")
+                continue  # the entry is now closed — skip its target this tick
+
+        if level_target is not None:
+            if e.sides_stopped:  # TPT-05: permanent disarm
+                exit_monitor.disarm_target(entry_id)
+            elif exit_monitor.evaluate_target(entry_id, profit_pct=profit_pct,
+                                              level=int(level_target), stale=entry_stale):
+                await commands.close_as(entry_id, "take_profit_target")
+
+
+async def _recover_exits_once(comp, snapshot, commands) -> None:
+    """TPF-08/TPT-07: on recovery (boot/reconnect), an already-breached floor
+    or an already-reached target fires IMMEDIATELY — no confirmation streak,
+    because the bot was down while it happened; the realized level may be
+    worse (floor) or better (target) than armed, inherent to bot-side
+    monitoring and shown in the day report. Must only be called AFTER
+    `_boot_reconcile()` has appended any synthesized stop events, so TPT-05's
+    disarm applies BEFORE this check (TPT-07's recovery-order rule) — a
+    disarmed target here already reads `e.sides_stopped` non-empty."""
+    from meic.domain.projection import fold
+    from meic.domain.tpf import breached
+    from meic.domain.tpt import reached
+
+    if snapshot is None or snapshot.stale:
+        return
+    floors, targets = comp.state.tpf_floors, comp.state.tp_targets
+    if not floors and not targets:
+        return
+    day = fold(comp.events)
+    for entry_id, e in day.entries.items():
+        if e.status in _TERMINAL_STATUSES:
+            continue
+        level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
+        if level_floor is None and level_target is None:
+            continue
+        profit_pct = _entry_profit_pct_now(e, snapshot)
+        if profit_pct is None:
+            continue
+        if level_floor is not None and breached(Decimal(level_floor), profit_pct):
+            await commands.close_as(entry_id, "take_profit")
+            continue
+        if (level_target is not None and not e.sides_stopped
+                and reached(Decimal(level_target), profit_pct)):
+            await commands.close_as(entry_id, "take_profit_target")
+
+
 def _sample_marks_once(comp, snapshot) -> None:
     """RPT-12/D8 (doc 10): one EntryMarkSample per OPEN entry, journaled at
     the health-tick cadence, from the SAME chain snapshot `_live_pnl_enricher`
@@ -633,6 +787,13 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
         day=lambda: datetime.now(timezone.utc).astimezone().date().isoformat())
 
+    # TPF/TPT (v1.58): ONE ExitMonitor for the whole live day, held here (not
+    # per-tick) so its per-entry confirmation counters survive across health
+    # ticks — the same reason `snaps` itself is held rather than rebuilt.
+    from meic.application.exit_monitor import ExitMonitor
+
+    exit_monitor = ExitMonitor()
+
     return {
         "runtime": runtime,
         "manual": manual,
@@ -652,6 +813,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # FEATURE 3: the holder itself, so live_app can build the live-P/L
         # entries_enricher off `.last`/`.stale` — no new subscription.
         "snapshots": snaps,
+        # TPF-03/TPT-04: the bot-side profit monitor, evaluated each health
+        # tick (see `_probe_once`) and once more, immediately, on recovery
+        # (`_recover_exits_once`, TPF-08/TPT-07).
+        "exit_monitor": exit_monitor,
     }
 
 
@@ -708,21 +873,33 @@ def live_app():
     # asserts on those functions precisely because this is where rails go missing.
     live = _wire_live_day(comp, env)
     commands = PanelCommands(comp, manual_entry=live["manual"],
-                             preflight_checks=live["preflight_checks"])
-    # FEATURE 3: live P/L off the already-held chain snapshot; paper_app passes
-    # no enricher (SIM-01 marks are synthetic, nothing honest to show).
+                             preflight_checks=live["preflight_checks"],
+                             # TPF-02/TPT-03: server-side gap validation off the
+                             # SAME evaluator/snapshot the health-tick monitor uses.
+                             profit_pct_provider=_profit_pct_provider(comp, live["snapshots"]))
+    # FEATURE 3 + UI-13/14/15: live P/L, then the shared TPF/TPT profit%, both
+    # off the already-held chain snapshot — no new subscription. paper_app
+    # passes no enricher at all (SIM-01 marks are synthetic, nothing honest to
+    # show for either).
+    live_pnl_enricher = _live_pnl_enricher(live["snapshots"])
+    profit_pct_enricher = _profit_pct_enricher(comp, live["snapshots"])
+
+    def entries_enricher(cards: list[dict]) -> list[dict]:
+        return profit_pct_enricher(live_pnl_enricher(cards))
+
     reporting_config = _reporting_config(
         env, stop_loss_pct=lambda: _current_stop_loss_pct(comp.state))
     # RPT-16: the SAME read-only facade RPT-15's reconciler uses (day_fills +
     # day_settlements only) -- never comp.broker directly -- so the one-time
     # backfill endpoint is structurally incapable of any order action either.
     app = create_app(comp.state, comp.events, api_token=token, commands=commands,
-                     entries_enricher=_live_pnl_enricher(live["snapshots"]),
+                     entries_enricher=entries_enricher,
                      reporting_config=reporting_config,
                      backfill_broker_reads=_BrokerReadFacade(comp.broker))
     app.state.composition = comp
     app.state.commands = commands
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
+    app.state.exit_monitor = live["exit_monitor"]     # TPF-03/TPT-04 bot-side monitor
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None
@@ -775,6 +952,13 @@ def live_app():
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
         try:
+            # TPF-03/TPT-04: the bot-side profit monitor, same cadence as the
+            # marks sample above (same snapshot, no new subscription).
+            await _evaluate_exits_once(comp, live["snapshots"].last,
+                                       live["exit_monitor"], commands)
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+        try:
             # RPT-15: once per tick, past EOD settlement, on a day with
             # activity, not yet reconciled -- see _maybe_eod_reconcile_once's
             # own idempotency rule. A broker-unreachable outcome here is
@@ -796,6 +980,11 @@ def live_app():
             # DAY-03: take one clock reading immediately so the operator can arm
             # without waiting a whole health-loop interval for the first probe.
             await _probe_once()
+            # TPF-08/TPT-07: an already-breached floor/reached target fires
+            # IMMEDIATELY on recovery — after boot reconcile (so a synthesized
+            # stop event has already disarmed any TPT-05 target) and after the
+            # probe above (so a fresh snapshot exists to mark against).
+            await _recover_exits_once(comp, live["snapshots"].last, commands)
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
 
@@ -831,6 +1020,7 @@ def live_app():
             app.state.broker_error = None
             await _boot_reconcile()
             await _probe_once()   # DAY-03: verify the clock on reconnect too
+            await _recover_exits_once(comp, live["snapshots"].last, commands)  # TPF-08/TPT-07
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False
             app.state.broker_error = repr(exc)

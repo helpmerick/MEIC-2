@@ -42,6 +42,42 @@ export function App() {
     }
   }, [flash, refresh]);
 
+  // v1.58 TPF/TPT: set/raise/lower/clear per entry (UI-13/14/15). Server-side
+  // gap validation is authoritative (UI-03) -- a 422 lands as a toast, never
+  // a blocking dialog, exactly like Close's own failure path above.
+  // A rejected level (the gap rule, TPF-02/TPT-03) comes back as ApiError(422)
+  // with a precise `detail.reason` -- the backend is authoritative (UI-03),
+  // this only relays its verdict as a toast, never a blocking dialog.
+  const setFloor = useCallback(async (id: string, level: number) => {
+    try { await api.setTpf(id, level); flash(`Floor ${level}% armed on ${id}`, "ok"); refresh(); }
+    catch (e) {
+      const detail = e instanceof ApiError ? e.detail : String(e);
+      const reason = typeof detail === "object" && detail && "reason" in detail
+        ? String((detail as { reason: unknown }).reason) : String(detail);
+      flash(`Floor rejected: ${reason}`, "err");
+    }
+  }, [flash, refresh]);
+
+  const clearFloor = useCallback(async (id: string) => {
+    try { await api.clearTpf(id); flash(`Floor cleared on ${id}`, "ok"); refresh(); }
+    catch (e) { flash(`Clear failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err"); }
+  }, [flash, refresh]);
+
+  const setTarget = useCallback(async (id: string, level: number) => {
+    try { await api.setTpt(id, level); flash(`Target ${level}% armed on ${id}`, "ok"); refresh(); }
+    catch (e) {
+      const detail = e instanceof ApiError ? e.detail : String(e);
+      const reason = typeof detail === "object" && detail && "reason" in detail
+        ? String((detail as { reason: unknown }).reason) : String(detail);
+      flash(`Target rejected: ${reason}`, "err");
+    }
+  }, [flash, refresh]);
+
+  const clearTarget = useCallback(async (id: string) => {
+    try { await api.clearTpt(id); flash(`Target cleared on ${id}`, "ok"); refresh(); }
+    catch (e) { flash(`Clear failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err"); }
+  }, [flash, refresh]);
+
   // Flatten all is the one action gated on a typed FLATTEN confirmation (TC-FLT-01).
   const flattenAll = useCallback(async () => {
     const typed = window.prompt('Type FLATTEN to close every open entry:');
@@ -147,7 +183,11 @@ export function App() {
               plus a read-only Simulate. Follows the same entries-enabled gate. */}
           <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
           <div className="report"><DayReportView report={report} /></div>
-          <div className="entries-col"><EntryCards entries={entries} onClose={closeEntry} /></div>
+          <div className="entries-col">
+            <EntryCards entries={entries} onClose={closeEntry}
+                        onSetFloor={setFloor} onClearFloor={clearFloor}
+                        onSetTarget={setTarget} onClearTarget={clearTarget} />
+          </div>
           <div className="feed-col"><ActivityFeed activity={activity} /></div>
         </main>
       ) : route.page === "results-day" ? (

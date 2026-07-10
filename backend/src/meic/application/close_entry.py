@@ -63,12 +63,13 @@ from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from .order_intent import OrderIntent, OrderLeg, marketable_close, right_of
 
 VALID_INITIATORS = frozenset({
-    "manual", "manual_flatten", "take_profit", "eod", "decay", "infeasible_stop",
+    "manual", "manual_flatten", "take_profit", "take_profit_target", "eod", "decay",
+    "infeasible_stop",
     # "unprotected" (STP-04 AUTO-FLATTEN, see protect_position.py `_go_unprotected`)
     # is NOT in CLS-02's operator-ratified initiator list (manual, manual_flatten,
-    # take_profit, eod, decay, infeasible_stop) — flagged for operator
-    # ratification, kept because STP-04 demands the flatten and this is the
-    # honest, distinct label for why it happened.
+    # take_profit, take_profit_target, eod, decay, infeasible_stop) — flagged for
+    # operator ratification, kept because STP-04 demands the flatten and this is
+    # the honest, distinct label for why it happened.
     "unprotected",
 })
 

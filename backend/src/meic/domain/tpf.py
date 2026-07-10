@@ -34,3 +34,29 @@ def floor_amount(level: int, net_credit: Decimal) -> Decimal:
 def breached(floor: Decimal, current_profit: Decimal) -> bool:
     """Bot-side monitor predicate (explicitly NOT broker-resting — TPF spec)."""
     return current_profit <= floor
+
+
+def entry_profit_pct(
+    *, net_credit: Decimal, fees: Decimal, stop_fills: Decimal,
+    recoveries: Decimal, open_side_costs: dict,
+) -> Decimal | None:
+    """TPF-01 profit% definition — THE one evaluator TPT-01 reuses verbatim
+    ("Entry profit% uses the TPF-01 definition verbatim ... one evaluator").
+
+    profit% = (realized P&L of closed sides + unrealized P&L of open sides at
+    mid) / total net credit. `open_side_costs` maps each still-OPEN side to
+    its current cost-to-close (short mid − long mid); an already-stopped/
+    closed side contributes nothing here — its realized effect already lives
+    in `stop_fills`/`recoveries` (TPF-05). All money here is PER-SHARE
+    (the same scale `net_credit`/`EntryProjection.pnl` already use) — contracts
+    cancel out of a percentage, so this needs no contract count.
+
+    Returns None when `net_credit` is zero — nothing to express a % of (an
+    unfilled/never-credited entry has no floor/target math to speak of).
+    """
+    if net_credit == 0:
+        return None
+    realized = net_credit - fees - stop_fills + recoveries
+    open_cost = sum(open_side_costs.values(), Decimal("0"))
+    profit = realized - open_cost
+    return profit / net_credit * 100

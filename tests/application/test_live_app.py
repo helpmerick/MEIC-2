@@ -121,6 +121,49 @@ def test_live_app_arms_every_safety_rail(monkeypatch, tmp_path):
     assert runtime.max_day_risk == Decimal("20000")   # read from the panel, not a default
 
 
+# --- TPF/TPT (v1.58) monitor-wiring capstone ----------------------------------
+# The domain math (domain/tpf.py, domain/tpt.py) and the confirmation-counter
+# services (application/tpf_monitor.py, application/tpt_monitor.py) existed for
+# a release wired to NOTHING: no monitor object in the live day, no health-tick
+# evaluation, no endpoint. An operator-armed floor/target silently did nothing.
+# This mirrors the STP-04 close-hook regression
+# (test_live_protect_carries_a_real_close_entry_hook_not_none in
+# tests/application/test_compositions.py): assert on the object live_app()
+# ACTUALLY builds, not on a hand-constructed ExitMonitor a test could keep
+# passing even if the real wiring regressed.
+
+def test_live_app_wires_a_real_exit_monitor_not_none(monkeypatch, tmp_path):
+    from meic.adapters.api.server import live_app
+    from meic.application.exit_monitor import ExitMonitor
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+
+    assert app.state.exit_monitor is not None
+    assert isinstance(app.state.exit_monitor, ExitMonitor)
+
+
+def test_live_app_commands_carry_a_real_tpf_tpt_gap_provider(monkeypatch, tmp_path):
+    """TPF-02/TPT-03 server-side gap validation needs a real profit% source —
+    a `None` provider means every set/raise/lower request is silently
+    rejected as 'unavailable' forever, which is indistinguishable from a
+    wiring bug. The provider live_app() builds must be callable and read off
+    the SAME live composition, not a stub."""
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    commands = app.state.commands
+    assert commands._profit_pct_provider is not None
+    # no chain snapshot yet (never connected in this offline test) -> honest
+    # "unknown", never a crash and never a fabricated number.
+    assert commands._profit_pct_provider("2026-07-08#1") is None
+
+
 def test_an_unconfigured_ceiling_stays_none_and_uc02_refuses_the_live_arm(monkeypatch, tmp_path):
     """doc 06 §169. `None` is 'no ceiling configured' — never 'unlimited'. The rail
     is wired; it simply has nothing to enforce until the operator sets one, and the

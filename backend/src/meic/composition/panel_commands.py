@@ -7,13 +7,24 @@ then closes via the one canonical CloseEntry (initiator `manual`, UC-14) and
 clears the entry's armed TPF floor. Flatten-all is gated on a typed FLATTEN
 confirmation (TC-FLT-01); Close is instant (UI-16). The CLS-02 command contract
 this mirrors is unit-tested in test_tc_cls_02.
+
+Also carries the operator's TPF/TPT set/raise/lower/clear commands (TPF-06,
+TPT-02): server-side gap validation (UI-03 "reject, never clamp" — TPF-02/
+TPT-03) against the SAME profit% evaluator the bot-side monitor uses
+(`domain.tpf.entry_profit_pct`), fed by an optional `profit_pct_provider`
+callback the wiring supplies (server.py, off the live chain snapshot). With no
+provider (e.g. paper, which has no live chain marks) the current profit% is
+unknowable, and a set/raise/lower request is rejected rather than guessed.
 """
 from __future__ import annotations
 
 import itertools
+from decimal import Decimal
 
 from meic.application.manual_close import FLATTEN_CONFIRMATION
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
+from meic.domain import tpf as tpf_domain
+from meic.domain import tpt as tpt_domain
 from meic.domain.projection import EntryProjection, fold
 
 _SIDES = ("PUT", "CALL")
@@ -25,11 +36,17 @@ def _open_sides(e: EntryProjection) -> list[str]:
 
 
 class PanelCommands:
-    def __init__(self, comp, manual_entry=None, preflight_checks=None) -> None:
+    def __init__(self, comp, manual_entry=None, preflight_checks=None,
+                 profit_pct_provider=None) -> None:
         self._comp = comp
         self._manual = manual_entry               # ENT-09; None => the ▶ button is inert
         self.preflight_checks = preflight_checks  # UC-02 checklist providers
         self._presses = itertools.count(1)        # ENT-09: one id per PRESS
+        # TPF-02/TPT-03: (entry_id) -> current profit% | None, off the SAME
+        # evaluator the bot-side monitor uses. None (the default, e.g. paper)
+        # means "unknown" -- floor/target set/raise/lower are rejected, never
+        # guessed at.
+        self._profit_pct_provider = profit_pct_provider
 
     # --- ENT-09 manual fire (UI-22) ---------------------------------------------
     def can_fire(self) -> bool:
@@ -76,6 +93,14 @@ class PanelCommands:
     async def close(self, entry_id: str) -> dict:
         """Close one entry via CLS (manual). No-op if it is already closed —
         projection-based idempotency (a double-click yields exactly one close)."""
+        return await self.close_as(entry_id, "manual")
+
+    async def close_as(self, entry_id: str, initiator: str) -> dict:
+        """The ONE close path every PanelCommands caller uses (CLS-02):
+        `manual` (the operator's Close button, UC-14), `take_profit` (the TPF
+        floor monitor) and `take_profit_target` (the TPT target monitor, both
+        TPF-04/TPT — "no close logic of its own") all route through here.
+        No-op if the entry is already closed — projection-based idempotency."""
         day = fold(self._comp.events)
         e = day.entries.get(entry_id)
         if e is None:
@@ -96,10 +121,11 @@ class PanelCommands:
             return {"result": "legs_unrecorded", "entry_id": entry_id}
         legs, stop_ids = inputs
         await self._comp.close.close(
-            entry_id, "manual", resting_stop_ids=stop_ids,
+            entry_id, initiator, resting_stop_ids=stop_ids,
             live_legs=legs, close_price=DEFAULT_CLOSE_PRICE)
         self._clear_tpf(entry_id)
-        return {"result": "closed", "initiator": "manual"}
+        self._clear_tpt(entry_id)
+        return {"result": "closed", "initiator": initiator}
 
     async def switch_mode(self, target: str, confirmation: str = "") -> dict:
         """UC-10/DAY-05: stage a paper/live switch. Requires a flat book (derived
@@ -143,3 +169,59 @@ class PanelCommands:
         floors = dict(self._comp.state.tpf_floors)
         if floors.pop(entry_id, None) is not None:
             self._comp.state.tpf_floors = floors
+
+    def _clear_tpt(self, entry_id: str) -> None:
+        targets = dict(self._comp.state.tp_targets)
+        if targets.pop(entry_id, None) is not None:
+            self._comp.state.tp_targets = targets
+
+    def _current_profit_pct(self, entry_id: str) -> Decimal | None:
+        if self._profit_pct_provider is None:
+            return None
+        return self._profit_pct_provider(entry_id)
+
+    def _known_entry(self, entry_id: str) -> bool:
+        return entry_id in fold(self._comp.events).entries
+
+    # --- TPF-06 / TPT-02 operator commands: set/raise/lower/clear -------------
+    def set_tpf(self, entry_id: str, level: int) -> dict:
+        """TPF-02/06: arm, raise or lower the floor. Server-side gap re-
+        validation is authoritative (UI-15) — reject, never clamp."""
+        if not self._known_entry(entry_id):
+            return {"result": "unknown_entry"}
+        profit = self._current_profit_pct(entry_id)
+        if profit is None:
+            return {"result": "rejected", "reason": "current profit% unavailable (stale/no data)"}
+        if not tpf_domain.is_armable(level, profit):
+            return {"result": "rejected",
+                    "reason": f"too close - would trigger immediately (current profit {profit}%)"}
+        floors = dict(self._comp.state.tpf_floors)
+        floors[entry_id] = level
+        self._comp.state.tpf_floors = floors
+        return {"result": "armed", "entry_id": entry_id, "level": level}
+
+    def clear_tpf(self, entry_id: str) -> dict:
+        self._clear_tpf(entry_id)
+        return {"result": "cleared", "entry_id": entry_id}
+
+    def set_tpt(self, entry_id: str, level: int) -> dict:
+        """TPT-02/03: set, raise or lower the target. TPT-03 (operator ruling
+        1A): a target at or below current profit is REJECTED with "target
+        already passed - current profit X%", never clamped, never treated as
+        close-now."""
+        if not self._known_entry(entry_id):
+            return {"result": "unknown_entry"}
+        profit = self._current_profit_pct(entry_id)
+        if profit is None:
+            return {"result": "rejected", "reason": "current profit% unavailable (stale/no data)"}
+        if not tpt_domain.is_armable(level, profit):
+            return {"result": "rejected",
+                    "reason": f"target already passed - current profit {profit}%"}
+        targets = dict(self._comp.state.tp_targets)
+        targets[entry_id] = level
+        self._comp.state.tp_targets = targets
+        return {"result": "armed", "entry_id": entry_id, "level": level}
+
+    def clear_tpt(self, entry_id: str) -> dict:
+        self._clear_tpt(entry_id)
+        return {"result": "cleared", "entry_id": entry_id}

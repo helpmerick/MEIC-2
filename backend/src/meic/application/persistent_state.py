@@ -37,6 +37,11 @@ _DEFAULTS: dict[str, Any] = {
     # never "unlimited".
     "max_day_risk": None,
     "tpf_floors": {},         # (7) armed TPF floors (TPF-08), per entry_id
+    # v1.58 TPT-07 ("Targets persist and restore per REC-07") is the spec's OWN
+    # ratification for this key — the same exit-monitor armed-state slot as
+    # item (7) above, extended by TPT-07's explicit text rather than an
+    # unratified addition. Per entry_id, mirrors tpf_floors exactly.
+    "tp_targets": {},
     "own_ledger": {},         # (9) OWN ledger + SUSPENDED/quarantine states
     "paper_cash_ledger": None,  # (10) paper cash ledger + sim positions
 }
@@ -124,6 +129,14 @@ class PersistentState:
     @tpf_floors.setter
     def tpf_floors(self, v: dict[str, Any]) -> None:
         self._set("tpf_floors", v)
+
+    @property
+    def tp_targets(self) -> dict[str, Any]:
+        return self._get("tp_targets")
+
+    @tp_targets.setter
+    def tp_targets(self, v: dict[str, Any]) -> None:
+        self._set("tp_targets", v)
 
     @property
     def own_ledger(self) -> dict[str, Any]:

@@ -99,6 +99,71 @@ describe("EntryCards — placed time / legs / live P&L", () => {
   });
 });
 
+// v1.58 TPF/TPT: profit%, floor/target set/clear, disarmed badge, TPT-06
+// dollar feedback (UI-13/14/15).
+describe("EntryCards — TPF/TPT exit controls", () => {
+  it("shows profit% when available, a dash when not", () => {
+    const { rerender } = render(
+      <EntryCards entries={[card({ profit_pct: "12.5" })]} onClose={vi.fn()} />,
+    );
+    expect(screen.getByText("Profit: +12.5%")).toBeInTheDocument();
+
+    rerender(<EntryCards entries={[card({ profit_pct: null })]} onClose={vi.fn()} />);
+    expect(screen.getByText("Profit: —")).toBeInTheDocument();
+  });
+
+  it("sets a floor level and calls onSetFloor with the entry id and typed level", async () => {
+    const onSetFloor = vi.fn().mockResolvedValue(undefined);
+    render(
+      <EntryCards entries={[card()]} onClose={vi.fn()} onSetFloor={onSetFloor}
+                  onClearFloor={vi.fn()} onSetTarget={vi.fn()} onClearTarget={vi.fn()} />,
+    );
+    await userEvent.type(screen.getByLabelText("Floor level"), "20");
+    await userEvent.click(screen.getAllByRole("button", { name: /^set$/i })[0]);
+
+    expect(onSetFloor).toHaveBeenCalledWith("e1", 20);
+  });
+
+  it("shows the armed floor level and a Clear button that fires onClearFloor", async () => {
+    const onClearFloor = vi.fn().mockResolvedValue(undefined);
+    render(
+      <EntryCards entries={[card({ tpf_floor: 20 })]} onClose={vi.fn()} onSetFloor={vi.fn()}
+                  onClearFloor={onClearFloor} onSetTarget={vi.fn()} onClearTarget={vi.fn()} />,
+    );
+    expect(screen.getByText("Floor: 20%")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+    expect(onClearFloor).toHaveBeenCalledWith("e1");
+  });
+
+  it("shows the TPT-06 dollar feedback line while a target is armed", () => {
+    render(
+      <EntryCards
+        entries={[card({ tpt_target: 60, tpt_feedback: { debit: "1.60", keep: "240" } })]}
+        onClose={vi.fn()} onSetFloor={vi.fn()} onClearFloor={vi.fn()}
+        onSetTarget={vi.fn()} onClearTarget={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Exit armed: closes at debit ≤ $1.60 (keep ≥ $240)")).toBeInTheDocument();
+  });
+
+  it("shows a disarmed badge and hides the target's input once tpt_disarmed is true", () => {
+    render(
+      <EntryCards
+        entries={[card({ tpt_target: 5, tpt_disarmed: true, sides_stopped: ["PUT"] })]}
+        onClose={vi.fn()} onSetFloor={vi.fn()} onClearFloor={vi.fn()}
+        onSetTarget={vi.fn()} onClearTarget={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("target disarmed")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Target level")).toBeNull();
+  });
+
+  it("omits exit controls entirely when no handlers are wired", () => {
+    render(<EntryCards entries={[card({ tpf_floor: 20 })]} onClose={vi.fn()} />);
+    expect(screen.queryByText("Floor: 20%")).toBeNull();
+  });
+});
+
 // EOD-01 v1.59: the provisional tag while a held-to-expiry short's broker
 // settlement has not yet been captured.
 describe("EntryCards — settlement_pending (EOD-01 v1.59)", () => {

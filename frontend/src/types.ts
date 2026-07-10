@@ -63,6 +63,19 @@ export interface EntryCard {
   // EOD-01 v1.59: True while a held-to-expiry short's broker settlement
   // cash has not yet been captured -- this entry's P&L is provisional.
   settlement_pending?: boolean;
+  // v1.58 TPF/TPT: current whole-entry profit% (TPF-01's shared evaluator),
+  // live only -- null means unavailable (paper, stale/no snapshot), never a
+  // guess (same convention as live_pnl above).
+  profit_pct?: string | null;
+  // TPF-06: the armed floor level (percent), or null/absent if not armed.
+  tpf_floor?: number | null;
+  // TPT-02: the armed target level (percent), or null/absent if not armed.
+  tpt_target?: number | null;
+  // TPT-05: permanently disarmed the moment ANY stop fills on this entry.
+  tpt_disarmed?: boolean;
+  // TPT-06: "closes at debit <= $D (keep >= $P)" dollar feedback, present
+  // only while a target is armed.
+  tpt_feedback?: { debit: string; keep: string };
 }
 
 export interface ActivityLine {
