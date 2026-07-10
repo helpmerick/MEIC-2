@@ -3,17 +3,24 @@ import { api, ApiError, getApiToken, setApiToken, type OutageDrill } from "./api
 import { ActivityFeed } from "./components/ActivityFeed";
 import { CommandPanel } from "./components/CommandPanel";
 import { Dashboard } from "./components/Dashboard";
+import { DayDrilldown } from "./components/results/DayDrilldown";
+import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
 import { EntryCards } from "./components/EntryCards";
 import { ManualTradeCard } from "./components/ManualTradeCard";
 import { NextEntryCountdown } from "./components/NextEntryCountdown";
 import { SchedulePanel } from "./components/SchedulePanel";
+import { useHashRoute } from "./router";
 import { useLiveBot } from "./useLiveBot";
 import { useTheme } from "./useTheme";
 
 export function App() {
   const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
   const [theme, toggleTheme] = useTheme();
+  // UI-27: a separate client-side route for the Results dashboard, sharing
+  // this one shell (header, auth, theme, mode tag) — never a new app.
+  const route = useHashRoute();
+  const onTrading = route.page === "trading";
   const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
   const [drill, setDrill] = useState<OutageDrill | null>(null);
   const [drilling, setDrilling] = useState(false);
@@ -73,14 +80,24 @@ export function App() {
           <h1>MEIC<span className="dot">.</span></h1>
           <span className="muted">control panel</span>
         </div>
+        {/* UI-27: instant client-side switching between the Trading page and
+            the Results dashboard — a hash change, never a server round trip. */}
+        <nav className="app-nav" aria-label="pages">
+          <a className={`nav-link ${onTrading ? "active" : ""}`} href="#/">Trading</a>
+          <a className={`nav-link ${!onTrading ? "active" : ""}`} href="#/results">Results</a>
+        </nav>
         <div className="spacer" />
-        <button className="btn drill-btn" onClick={runOutageDrill} disabled={drilling}
-                title="UC-12: simulate a bot outage and verify stops stay working">
-          {drilling ? <span className="spin" /> : null}{drilling ? "Drilling…" : "Outage drill"}
-        </button>
-        <button className="btn danger flatten-btn" onClick={flattenAll} title="Close every open entry (typed confirmation)">
-          Flatten all
-        </button>
+        {onTrading && (
+          <>
+            <button className="btn drill-btn" onClick={runOutageDrill} disabled={drilling}
+                    title="UC-12: simulate a bot outage and verify stops stay working">
+              {drilling ? <span className="spin" /> : null}{drilling ? "Drilling…" : "Outage drill"}
+            </button>
+            <button className="btn danger flatten-btn" onClick={flattenAll} title="Close every open entry (typed confirmation)">
+              Flatten all
+            </button>
+          </>
+        )}
         <button
           className="theme-toggle"
           onClick={toggleTheme}
@@ -106,7 +123,7 @@ export function App() {
 
       {error && <div className="banner-error">Backend unreachable — {error}</div>}
 
-      {drill && (
+      {onTrading && drill && (
         <div className={`drill-result ${drill.survived ? "ok" : "warn"}`}>
           <button className="drill-x" onClick={() => setDrill(null)} aria-label="Dismiss">×</button>
           <strong>{drill.survived ? "✓ Stop independence drill passed" : "⚠ Drill inconclusive"}</strong>
@@ -117,21 +134,27 @@ export function App() {
         </div>
       )}
 
-      <main className="grid">
-        <Dashboard state={state} connected={connected} />
-        {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
-        <NextEntryCountdown />
-        <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
-        {/* UC-02 composition + ENT-09 fire. The fire button follows the three
-            trade-enabling states, exactly as UI-22 requires. */}
-        <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
-        {/* ENT-11/UI-25: the ad-hoc lane — fire NOW with explicit parameters,
-            plus a read-only Simulate. Follows the same entries-enabled gate. */}
-        <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
-        <div className="report"><DayReportView report={report} /></div>
-        <div className="entries-col"><EntryCards entries={entries} onClose={closeEntry} /></div>
-        <div className="feed-col"><ActivityFeed activity={activity} /></div>
-      </main>
+      {onTrading ? (
+        <main className="grid">
+          <Dashboard state={state} connected={connected} />
+          {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
+          <NextEntryCountdown />
+          <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
+          {/* UC-02 composition + ENT-09 fire. The fire button follows the three
+              trade-enabling states, exactly as UI-22 requires. */}
+          <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
+          {/* ENT-11/UI-25: the ad-hoc lane — fire NOW with explicit parameters,
+              plus a read-only Simulate. Follows the same entries-enabled gate. */}
+          <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
+          <div className="report"><DayReportView report={report} /></div>
+          <div className="entries-col"><EntryCards entries={entries} onClose={closeEntry} /></div>
+          <div className="feed-col"><ActivityFeed activity={activity} /></div>
+        </main>
+      ) : route.page === "results-day" ? (
+        <DayDrilldown date={route.date} />
+      ) : (
+        <ResultsPage entries={entries} />
+      )}
 
       {toast && <div className={`toast ${toast.kind}`}>{toast.text}</div>}
 

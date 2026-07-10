@@ -3,8 +3,8 @@
 // state and sends commands; the backend validates everything.
 
 import type {
-  ActivityLine, DayReport, DayStatus, EntryCard, FirePreview, FireResult,
-  ManualSimulation, PanelState, Preflight, ScheduleRow, ScheduleView,
+  ActivityLine, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
+  FireResult, ManualSimulation, PanelState, Preflight, ReportSummary, ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -24,6 +24,29 @@ async function get<T>(path: string): Promise<T> {
   const r = await fetch(path, { headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return (await r.json()) as T;
+}
+
+async function getText(path: string): Promise<string> {
+  const r = await fetch(path, { headers: { accept: "text/csv" } });
+  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  return r.text();
+}
+
+// RPT-01 period buckets — exactly one of these narrows the scope; none = all-time.
+export interface ReportPeriod {
+  period?: "today" | "all";
+  day?: string;    // YYYY-MM-DD
+  month?: string;  // YYYY-MM
+  year?: string;   // YYYY
+}
+
+function reportsQueryString(p: ReportPeriod): string {
+  const q = new URLSearchParams();
+  if (p.period) q.set("period", p.period);
+  if (p.day) q.set("day", p.day);
+  if (p.month) q.set("month", p.month);
+  if (p.year) q.set("year", p.year);
+  return q.toString();
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
@@ -99,6 +122,43 @@ export const api = {
     post<ManualSimulation>("/manual/simulate", params),
   manualFire: (params: Record<string, unknown> & { press_id: string; confirmed: boolean }) =>
     post<FireResult>("/manual/fire", params),
+
+  // --- RPT-09/10 results dashboard (doc 10) ---------------------------------
+  // Read-only, origin-open exactly like /state and /report (RPT-10).
+  getReportSummary: (p: ReportPeriod = {}) => {
+    const qs = reportsQueryString(p);
+    return get<ReportSummary>(`/reports/summary${qs ? `?${qs}` : ""}`);
+  },
+  getReportDay: (isoDate: string) =>
+    get<DayReportDetail>(`/reports/day/${encodeURIComponent(isoDate)}`),
+  // A plain <a href> download link, not a fetch — the endpoint returns a
+  // text/csv attachment (RPT-10); the browser handles the download itself.
+  reportsCsvUrl: (table: "daily" | "entries" | "corrections", p: ReportPeriod = {}) => {
+    const qs = reportsQueryString(p);
+    return `/reports/csv?table=${table}${qs ? `&${qs}` : ""}`;
+  },
+  // KNOWN API-SHAPE GAP (reported, not worked around in the backend): RPT-09's
+  // equity curve and calendar heatmap need a per-day net-P&L SERIES, but
+  // /reports/summary only returns period AGGREGATES — there is no JSON array
+  // of {date, net_pnl} in this slice. The only per-day series the backend
+  // exposes at all is the "daily" CSV export (RPT-10), built server-side from
+  // the exact same `daily_net()` fold RPT-04's metrics use — so this parses
+  // that export rather than re-deriving anything. Every value stays the
+  // server's own Decimal string; a future slice should add a JSON
+  // `daily: [...]` array to GET /reports/summary so this indirection isn't
+  // needed.
+  getDailySeries: async (p: ReportPeriod = {}): Promise<DailyRow[]> => {
+    const qs = reportsQueryString(p);
+    const text = await getText(`/reports/csv?table=daily${qs ? `&${qs}` : ""}`);
+    const lines = text.trim().length ? text.trim().split(/\r?\n/) : [];
+    const [, ...rows] = lines; // drop the header row
+    return rows
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [date, mode, net_pnl, trust] = line.split(",");
+        return { date, mode, net_pnl, trust };
+      });
+  },
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

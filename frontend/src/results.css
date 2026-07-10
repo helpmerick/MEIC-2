@@ -1,0 +1,107 @@
+/* Results dashboard (doc 10 RPT-*, UI-25/26/27). Every color keys off the
+   shared theme variables in styles.css so it inverts cleanly in light/dark;
+   semantics are fixed (green realized gain / red realized loss / amber
+   unrealized / grey idle) and never rely on color alone (paired with signs/text). */
+
+/* --- header nav (UI-27) ----------------------------------------------------- */
+.app-nav { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.nav-link {
+  padding: 6px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 700;
+  color: var(--muted); text-decoration: none; transition: background .15s ease, color .15s ease;
+}
+.nav-link:hover { color: var(--text); }
+.nav-link.active { background: var(--card-solid); color: var(--accent); box-shadow: var(--shadow); }
+
+/* --- page shell -------------------------------------------------------------- */
+.results-page { display: flex; flex-direction: column; gap: var(--sp-4); }
+.results-title { font-size: 20px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+.back-link { color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
+.back-link:hover { text-decoration: underline; }
+
+.results-page h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 20px 0 10px; }
+.results-page h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); margin: 14px 0 8px; }
+
+/* --- trust badge (UI-25) ----------------------------------------------------- */
+.trust-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--badge-bg); color: var(--muted); }
+.trust-badge.ok { background: var(--good-dim); color: var(--good); }
+.trust-badge.partial { background: var(--warn-dim); color: var(--warn); }
+
+/* --- CSV export link (RPT-10) ------------------------------------------------ */
+.csv-btn { height: 30px; padding: 0 12px; font-size: 12px; text-decoration: none; }
+
+/* --- honest "not yet captured" state ----------------------------------------- */
+.gap-note { font-size: 12px; color: var(--faint); font-style: italic; background: var(--surface-2); border: 1px dashed var(--line-strong); border-radius: 9px; padding: 10px 12px; margin: 8px 0; }
+.gap-block { margin: 8px 0; }
+
+/* --- today hero band ---------------------------------------------------------- */
+.today-hero .stat-val.unrealized { color: var(--warn); } /* amber = unrealized, never green/red */
+.stat-sub { display: block; font-size: 10px; color: var(--faint); margin-top: 3px; }
+
+/* --- period picker ------------------------------------------------------------ */
+.period-picker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-top: 10px; }
+.period-tabs { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.period-tab { border: none; background: transparent; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 650; color: var(--muted); cursor: pointer; }
+.period-tab:hover { color: var(--text); }
+.period-tab.active { background: var(--card-solid); color: var(--accent); box-shadow: var(--shadow); }
+.period-picker input { height: var(--field-h); padding: 0 var(--sp-3); background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; color: var(--text); font-size: 13px; }
+
+/* --- charts (equity curve, timeline) ------------------------------------------ */
+.chart-wrap { margin: 8px 0 14px; }
+.equity-chart, .timeline-chart { width: 100%; height: auto; display: block; }
+.chart-zero { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart-peak { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.6; }
+.chart-drawdown { fill: var(--bad); opacity: 0.10; stroke: none; }
+.chart-pt { fill: var(--accent); }
+.chart-pt.breach { fill: var(--bad); stroke: var(--bad); }
+.chart-legend-note { font-size: 11px; color: var(--faint); margin: 4px 0; }
+
+.marker-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.marker { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; cursor: default; }
+
+/* --- calendar heatmap ---------------------------------------------------------- */
+.heatmap { display: flex; flex-direction: column; gap: 16px; }
+.heatmap-month-label { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+.heatmap-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; max-width: 280px; }
+.heatmap-cell { display: block; width: 100%; aspect-ratio: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); }
+.heatmap-cell.filler { visibility: hidden; border: none; background: transparent; }
+.heatmap-cell.gain { background: var(--good); border-color: transparent; }
+.heatmap-cell.loss { background: var(--bad); border-color: transparent; }
+.heatmap-cell.flat { background: var(--faint); border-color: transparent; }
+.heatmap-cell.idle { background: var(--surface-2); }
+.heatmap-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.heatmap-legend .heatmap-cell { width: 12px; height: 12px; margin-left: 10px; }
+.heatmap-legend .heatmap-cell:first-child { margin-left: 0; }
+
+/* --- records block -------------------------------------------------------------- */
+.records-block { margin-top: 4px; }
+
+/* --- waterfall (RPT-11) --------------------------------------------------------- */
+.waterfall { display: flex; flex-direction: column; gap: 8px; }
+.wf-row { display: grid; grid-template-columns: 170px 1fr 150px; align-items: center; gap: 10px; }
+.wf-row.wf-net { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; font-weight: 700; }
+.wf-label { font-size: 12px; color: var(--muted); }
+.wf-bar-track { height: 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); overflow: hidden; }
+.wf-bar { height: 100%; border-radius: 999px; }
+.wf-bar.add { background: linear-gradient(90deg, var(--good), #6ee7b7); }
+.wf-bar.sub { background: linear-gradient(90deg, var(--bad), #fca5a5); }
+.wf-value { font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.waterfall-error { background: var(--bad-dim); border: 1px solid rgba(248,113,113,0.35); border-radius: 11px; padding: 14px 16px; color: var(--bad); }
+
+/* --- slippage / targeting panels ------------------------------------------------ */
+.slippage-panels { display: flex; flex-direction: column; gap: 14px; }
+.slip-family { padding-bottom: 6px; }
+
+/* --- skip-reason histogram ------------------------------------------------------ */
+.histogram { display: flex; flex-direction: column; gap: 6px; }
+.hist-row { display: grid; grid-template-columns: 140px 1fr 36px; align-items: center; gap: 8px; }
+.hist-label { font-size: 12px; color: var(--muted); }
+.hist-bar-track { height: 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--info), #93c5fd); }
+.hist-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* --- health / day-links --------------------------------------------------------- */
+.health-panel h4:first-child { margin-top: 4px; }
+.day-links { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 0; }
+.day-links a { font-size: 12px; padding: 4px 10px; border-radius: 7px; background: var(--surface); border: 1px solid var(--line); color: var(--accent); text-decoration: none; }
+.day-links a:hover { border-color: var(--accent); }

@@ -186,3 +186,186 @@ export interface DayStatus {
   // RSK-06: the supervisor's last tick failure (repr), null when healthy.
   supervisor_error?: string | null;
 }
+
+// =============================================================================
+// Slice 3 — Results dashboard (doc 10 RPT-*, UI-25/26/27). Types mirror
+// backend/src/meic/adapters/api/reports.py's dict shapes exactly — every
+// money/ratio field is a Decimal-as-string (UI-03: no client float re-derivation).
+// =============================================================================
+
+// RPT-15/UI-25 — every metric block's trust chip.
+export interface TrustBlock {
+  status: "broker-confirmed" | "bot-computed";
+  confirmed_days: number;
+  total_days: number;
+  label: string;
+}
+
+// RPT-02 core results for the scoped period.
+export interface CoreResults {
+  net_pnl: string;
+  gross_pnl: string;
+  fees: string;
+  filled: number;
+  fired: number;
+  skipped_by_reason: Record<string, number>;
+  total_credit: string;
+  day_win_rate: string | null;
+  entry_win_rate: string | null;
+  premium_capture: string | null;
+}
+
+// RPT-04 return/risk metrics. "unconfigured" when reporting_capital_base is
+// unset (doc 06) — the frontend must never fabricate a denominator.
+export type MetricsResult =
+  | { status: "unconfigured" }
+  | {
+      status: "ok";
+      roc: string | null;
+      sharpe: string | null;
+      sortino: string | null;
+      max_drawdown_dollars: string;
+      max_drawdown_pct: string;
+      profit_factor: string | null;
+      expectancy_per_entry: string | null;
+      avg_win_day: string | null;
+      avg_loss_day: string | null;
+      longest_losing_streak_days: number;
+      day_win_rate: string | null;
+      sample_days: number;
+      min_sample_days: number;
+    };
+
+// RPT-03 contract-audit breach (expected count: zero, forever).
+export interface ContractBreach {
+  entry_id: string;
+  outcome: string;
+  realized: string;
+  floor: string;
+}
+
+export interface TaxonomyResult {
+  distribution: Record<string, number>;
+  contract_breaches: ContractBreach[];
+}
+
+// RPT-08 operational health. The two `null` fields are known slice-2 API
+// gaps (not derivable from the replay log yet) — render as "not yet captured",
+// never as zero.
+export interface HealthResult {
+  skip_reason_histogram: Record<string, number>;
+  watchdog_escalations: number;
+  unprotected_events: number;
+  rsk03_mismatches: number;
+  correction_count: number;
+  ent10_crash_alerts: number | null;
+  ord08_terminal_retries: number | null;
+}
+
+// RPT-11 waterfall — a residual is an explicit error state, never a silently
+// adjusted bar.
+export type WaterfallResult =
+  | { error: "residual"; residual: string; expected_net: string; computed_net: string }
+  | {
+      credits: string;
+      stop_costs: string;
+      recoveries: string;
+      buybacks: string;
+      fees: string;
+      slippage: string;
+      net: string;
+      premium_capture: string | null;
+    };
+
+export interface ReportSummary {
+  mode: "paper" | "live";
+  period_days: string[];
+  trust: TrustBlock;
+  core: CoreResults;
+  metrics: MetricsResult;
+  taxonomy: TaxonomyResult;
+  health: HealthResult;
+  waterfall: WaterfallResult;
+}
+
+// One day-drill-down entry (GET /reports/day/{iso_date}).
+export interface DayEntryDetail {
+  entry_id: string;
+  status: string;
+  net_credit: string;
+  pnl: string;
+  fees: string;
+  sides_stopped: string[];
+  sides_expired: string[];
+  close_initiator: string | null;
+  outcome: string | null;
+  legs: EntryLeg[];
+  premium_received: { PUT: string | null; CALL: string | null };
+}
+
+// RPT-12 timeline: one EntryMarkSample (1-min cadence, D8) — every field is
+// null-safe; D10 forbids interpolation, so gaps in `marks` render as gaps.
+export interface MarkSample {
+  entry_id: string;
+  at: string;
+  spot: string | null;
+  put_short_mid: string | null;
+  put_long_mid: string | null;
+  call_short_mid: string | null;
+  call_long_mid: string | null;
+}
+
+export interface TimelineMarker {
+  type: string;
+  icon: string;
+  entry_id: string | null;
+  at: string | null;
+}
+
+export interface StopOutSlippage {
+  mean: string | null;
+  p50: string | null;
+  p90: string | null;
+  max: string | null;
+  mean_ticks: string | null;
+  n: number;
+}
+
+// RPT-07's four slippage-out families. Three are `null` in this slice — a
+// real API gap (event schema doesn't yet record mark-at-stop/target-price
+// capture for these) — rendered as honest "not yet captured" states, never 0.
+export interface DaySlippageFamilies {
+  stop_outs: StopOutSlippage;
+  long_recovery: null;
+  closes: null;
+  decay_buybacks: null;
+}
+
+export interface CorrectionEntry {
+  field: string;
+  bot_value: string;
+  broker_value: string;
+  diff: string;
+  at: string;
+}
+
+export interface DayReportDetail {
+  date: string;
+  mode: "paper" | "live";
+  trust: TrustBlock;
+  entries: DayEntryDetail[];
+  skips: { entry_number: number; reason: string }[];
+  timeline: { marks: MarkSample[]; markers: TimelineMarker[] };
+  slippage: DaySlippageFamilies;
+  corrections: CorrectionEntry[];
+}
+
+// RPT-10 CSV export's "daily" table — the only per-day net-P&L SERIES the
+// backend exposes in this slice (see api.ts's getDailySeries for why the
+// equity curve/heatmap parse this instead of a dedicated JSON array).
+export interface DailyRow {
+  date: string;
+  mode: string;
+  net_pnl: string;
+  trust: string;
+}

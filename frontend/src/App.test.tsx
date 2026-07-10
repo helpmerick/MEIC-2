@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -122,5 +122,73 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
 
     await waitFor(() => expect(screen.getByLabelText("password wrong")).toHaveTextContent("✗"));
     expect(screen.getByText(/wrong password/i)).toBeInTheDocument();     // the popup
+  });
+});
+
+// UI-27: the Results dashboard is a separate client-side route inside this
+// one SPA, sharing the shell. These pin the hash-router wiring itself; the
+// Results page's own content is covered by results/ResultsPage.test.tsx.
+describe("App — Results routing (UI-27)", () => {
+  beforeEach(() => {
+    window.location.hash = "";
+    vi.spyOn(api, "getReportSummary").mockResolvedValue({
+      mode: "paper",
+      period_days: [],
+      trust: { status: "bot-computed", confirmed_days: 0, total_days: 0, label: "0/0 days broker-confirmed" },
+      core: {
+        net_pnl: "0.00", gross_pnl: "0.00", fees: "0.00", filled: 0, fired: 0,
+        skipped_by_reason: {}, total_credit: "0.00", day_win_rate: null,
+        entry_win_rate: null, premium_capture: null,
+      },
+      metrics: { status: "unconfigured" },
+      taxonomy: { distribution: {}, contract_breaches: [] },
+      health: {
+        skip_reason_histogram: {}, watchdog_escalations: 0, unprotected_events: 0,
+        rsk03_mismatches: 0, correction_count: 0, ent10_crash_alerts: null, ord08_terminal_retries: null,
+      },
+      waterfall: {
+        credits: "0.00", stop_costs: "0.00", recoveries: "0.00", buybacks: "0.00",
+        fees: "0.00", slippage: "0.00", net: "0.00", premium_capture: null,
+      },
+    });
+    vi.spyOn(api, "getDailySeries").mockResolvedValue([]);
+    vi.spyOn(api, "getDayStatus").mockResolvedValue({ started: false, running: false, armed: false });
+    vi.spyOn(api, "getReportDay").mockResolvedValue({
+      date: "2026-07-10", mode: "paper",
+      trust: { status: "bot-computed", confirmed_days: 0, total_days: 1, label: "0/1 days broker-confirmed" },
+      entries: [], skips: [],
+      timeline: { marks: [], markers: [] },
+      slippage: { stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 }, long_recovery: null, closes: null, decay_buybacks: null },
+      corrections: [],
+    });
+  });
+
+  afterEach(() => { window.location.hash = ""; });
+
+  it("default hash renders the Trading page", async () => {
+    render(<App />);
+    expect(await screen.findByText(/status/i)).toBeInTheDocument(); // Dashboard card
+    expect(screen.queryByTestId("results-page")).not.toBeInTheDocument();
+  });
+
+  it("clicking Results switches instantly to the Results dashboard", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("link", { name: "Results" }));
+    expect(await screen.findByTestId("results-page")).toBeInTheDocument();
+  });
+
+  it("a #/results/day/... deep link renders the day drill-down directly", async () => {
+    window.location.hash = "#/results/day/2026-07-10";
+    render(<App />);
+    expect(await screen.findByTestId("day-drilldown")).toBeInTheDocument();
+    expect(screen.getByText(/Day drill-down — 2026-07-10/i)).toBeInTheDocument();
+  });
+
+  it("the Trading page keeps its Outage drill / Flatten all buttons; Results does not", async () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: "Results" }));
+    await screen.findByTestId("results-page");
+    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
   });
 });
