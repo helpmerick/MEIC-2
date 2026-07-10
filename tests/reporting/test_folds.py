@@ -4,6 +4,7 @@ from decimal import Decimal as D
 from meic.domain.events import (
     CondorFilled,
     DayArmed,
+    EntryClosed,
     EntrySkipped,
     FilledLeg,
     ShortStopped,
@@ -12,6 +13,7 @@ from meic.reporting.folds import (
     contracts_of,
     core_results,
     daily_net,
+    day_snapshot,
     entries_by_day,
     entry_credit_dollars,
     entry_day,
@@ -98,3 +100,26 @@ def test_core_results_on_an_empty_log_has_no_rates():
     assert r.day_win_rate is None
     assert r.entry_win_rate is None
     assert r.premium_capture is None
+
+
+def test_day_snapshot_flat_when_every_entry_is_settled():
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"), fee=D("2.20")),
+        EntryClosed(entry_id="2026-07-09#1", initiator="eod"),
+    ]
+    snap = day_snapshot(events, "2026-07-09")
+    assert snap.flat is True
+    assert snap.fees == D("220.00")
+    assert snap.net == D("180.00")  # (4.00 - 2.20) * 100
+    assert snap.fill_count == 1
+
+
+def test_day_snapshot_not_flat_when_an_entry_is_still_open():
+    events = [CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"))]
+    snap = day_snapshot(events, "2026-07-09")
+    assert snap.flat is False
+
+
+def test_day_snapshot_on_a_day_with_no_entries_is_flat_and_zero():
+    snap = day_snapshot([], "2026-07-09")
+    assert snap.flat is True and snap.fees == D("0") and snap.net == D("0") and snap.fill_count == 0

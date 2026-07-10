@@ -134,3 +134,63 @@ def test_probe_response_uses_the_sdk_client_and_validate_endpoint():
     resp = asyncio.run(adapter._probe_response())
     assert calls == [("post", "/sessions/validate")]
     assert resp.headers["date"].endswith("GMT")
+
+
+# --- RPT-15 read-only fetches (day_fills / cash_and_fees) --------------------
+
+def test_day_fills_calls_get_history_scoped_to_the_day():
+    import asyncio
+    from datetime import date
+
+    calls = []
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            calls.append((start_date, end_date, type))
+            return ["fill1", "fill2"]
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    result = asyncio.run(adapter.day_fills("2026-07-09"))
+    assert result == ["fill1", "fill2"]
+    assert calls == [(date(2026, 7, 9), date(2026, 7, 9), "Trade")]
+
+
+def test_cash_and_fees_sums_net_value_and_reads_total_fees():
+    import asyncio
+    from datetime import date
+    from types import SimpleNamespace
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            return [SimpleNamespace(net_value=D("100.00")), SimpleNamespace(net_value=D("-20.50"))]
+
+        async def get_total_fees(self, session, *, day):
+            assert day == date(2026, 7, 9)
+            return SimpleNamespace(total_fees=D("2.40"))
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    cash_delta, fees = asyncio.run(adapter.cash_and_fees("2026-07-09"))
+    assert cash_delta == D("79.50")
+    assert fees == D("2.40")
+
+
+def test_cash_and_fees_on_a_day_with_no_fills_is_zero_delta():
+    import asyncio
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            return []
+
+        async def get_total_fees(self, session, *, day):
+            from types import SimpleNamespace
+            return SimpleNamespace(total_fees=D("0"))
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    cash_delta, fees = asyncio.run(adapter.cash_and_fees("2026-07-09"))
+    assert cash_delta == D("0") and fees == D("0")

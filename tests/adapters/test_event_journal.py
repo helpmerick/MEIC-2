@@ -60,6 +60,12 @@ def _sample_instances() -> dict[type, ev.Event]:
             entry_id="2026-07-09#1", at="2026-07-09T10:01:00+00:00", spot=D("5650.25"),
             put_short_mid=D("3.00"), put_long_mid=None, call_short_mid=D("2.50"),
             call_long_mid=D("0.40")),
+        ev.DayBrokerConfirmed: ev.DayBrokerConfirmed(
+            date="2026-07-09", at="2026-07-09T16:20:00-04:00",
+            checked={"fees": "220.00", "flat": "True"}),
+        ev.CorrectionRecord: ev.CorrectionRecord(
+            date="2026-07-09", field="fees", bot_value="220.00", broker_value="240.00",
+            diff="20.00", at="2026-07-09T16:20:00-04:00"),
     }
 
 

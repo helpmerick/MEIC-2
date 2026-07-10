@@ -307,6 +307,36 @@ class EntryCompleted(Event):
 
 
 @dataclass(frozen=True)
+class DayBrokerConfirmed(Event):
+    """RPT-15 (doc 10): the EOD broker reconciliation found the day's
+    bot-computed numbers (flat check, fill count, cash delta, fees) matched
+    broker truth exactly. Stamps the day broker-confirmed for UI-25's trust
+    badge. `checked` is a snapshot of the field->bot-value pairs that were
+    compared, recorded for the drill-down (str values -- see ReportReconciler,
+    application/report_reconciler.py, which is the ONLY writer of this event)."""
+    date: str
+    at: str  # ISO wall-clock timestamp of the reconciliation
+    checked: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CorrectionRecord(Event):
+    """RPT-15 (doc 10, operator's zero-drift rule): the EOD broker
+    reconciliation found ONE field of a day's bot-computed numbers disagreed
+    with broker truth. Both values and the diff are recorded -- the dashboard
+    corrects to `broker_value` (reporting/corrections.py), but NEVER silently:
+    this event is the sole permission slip for a rendered number to differ
+    from the plain projection fold, and it is always visible in the drill-down.
+    Written only by application/report_reconciler.py."""
+    date: str
+    field: str
+    bot_value: str
+    broker_value: str
+    diff: str
+    at: str
+
+
+@dataclass(frozen=True)
 class EntryMarkSample(Event):
     """RPT-12/D8 (doc 10): one per-open-entry mark sample, journaled at the
     ~1-minute health-tick cadence (server.py `_sample_marks_once`) so the day

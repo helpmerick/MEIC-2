@@ -147,6 +147,36 @@ def core_results(events: list[Event]) -> CoreResults:
         entry_win_rate=entry_win_rate, premium_capture=premium_capture)
 
 
+@dataclass(frozen=True)
+class DaySnapshot:
+    """RPT-15's bot-computed numbers for ONE day, shaped for the broker
+    reconciliation comparison (application/report_reconciler.py). `flat` is
+    True only when every entry attempted that day reached a terminal state
+    (closed/expired/both-sides-stopped) -- the bot's own belief about whether
+    it is left holding anything after EOD-01 settlement."""
+
+    flat: bool
+    fees: Decimal
+    net: Decimal
+    fill_count: int
+
+
+def _settled(entry: EntryProjection) -> bool:
+    return (entry.completed or entry.close_initiator is not None
+            or len(entry.sides_expired) >= 2 or len(entry.sides_stopped) >= 2)
+
+
+def day_snapshot(events: list[Event], day: str) -> DaySnapshot:
+    """RPT-15: the bot's own numbers for `day`, real dollars, ready to compare
+    against a broker read-only fetch."""
+    entries = entries_by_day(events).get(day, ())
+    fees = sum((entry_dollars_fees(e) for e in entries), Decimal("0"))
+    net = sum((entry_dollars(e) for e in entries), Decimal("0"))
+    fill_count = sum(1 for e in entries if e.net_credit != 0)
+    flat = all(_settled(e) for e in entries) if entries else True
+    return DaySnapshot(flat=flat, fees=fees, net=net, fill_count=fill_count)
+
+
 def entry_dollars_fees(entry: EntryProjection) -> Decimal:
     """Real-dollar fees for one entry. `EntryProjection.pnl` (domain/projection.py)
     computes `net_credit - stop_fills + recoveries - fees` with NO differential

@@ -324,6 +324,35 @@ class TastytradeAdapter:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]
 
+    async def day_fills(self, day: str) -> list[Any]:
+        """RPT-15 read-only: the broker's own Trade transactions for `day`
+        (YYYY-MM-DD), straight from the SDK's transaction history --
+        `Account.get_history` (a GET). No order-action capability; this is
+        the ONLY method the RPT-15 `ReportReconciler` facade forwards to for
+        "the day's fills" (see adapters/api/server.py's `_BrokerReadFacade`,
+        which is the ONLY thing the reconciler ever sees -- never this
+        adapter directly)."""
+        from datetime import date as _date
+
+        d = _date.fromisoformat(day)
+        return await self._account.get_history(
+            self._session, start_date=d, end_date=d, type="Trade")
+
+    async def cash_and_fees(self, day: str) -> tuple[Decimal, Decimal]:
+        """RPT-15 read-only: (cash_delta, total_fees) for `day`, from the
+        broker's own transaction/fees endpoints. `cash_delta` is the sum of
+        that day's Trade transactions' `net_value` (the broker's own signed
+        cash effect); `total_fees` comes straight from
+        `Account.get_total_fees`. Both are plain GETs -- no order-action
+        capability."""
+        from datetime import date as _date
+
+        d = _date.fromisoformat(day)
+        fills = await self.day_fills(day)
+        cash_delta = sum((Decimal(str(t.net_value)) for t in fills), Decimal("0"))
+        fees_info = await self._account.get_total_fees(self._session, day=d)
+        return cash_delta, Decimal(str(fees_info.total_fees))
+
     async def fill_legs(self, order_id) -> tuple:
         """ORD-09: report each filled leg's BROKER-REPORTED symbol and
         BROKER-ALLOCATED fill price, byte-identical to the payload.

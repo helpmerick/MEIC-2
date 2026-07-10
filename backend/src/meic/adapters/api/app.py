@@ -203,6 +203,9 @@ def create_app(
     commands: Any = None,
     entries_enricher: Any = None,  # FEATURE 3: optional (list[dict]) -> list[dict] hook,
     # e.g. live's snapshot-derived P/L (server.py); paper passes None (unchanged).
+    reporting_config: Any = None,  # RPT-10: reports.ReportingConfig; None -> /reports/* still
+    # mounted (GETs are origin-open like every other read model) but return_metrics
+    # renders "unconfigured" (doc 06: capital_base required for return metrics).
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -519,5 +522,15 @@ def create_app(
             if not result["staged"]:
                 raise HTTPException(status_code=400, detail=result["reason"])
             return result
+
+    # --- RPT-10: read-only reports API (imported here, not at module scope, to
+    # avoid a circular import -- reports.py itself imports `_card_legs`/
+    # `_premium_received` from this module). GETs only, origin-open like every
+    # other read model above; panel security is unchanged.
+    from meic.adapters.api.reports import ReportingConfig, build_reports_router
+
+    app.include_router(build_reports_router(
+        events, mode=lambda: state.trading_mode,
+        config=reporting_config or ReportingConfig(capital_base=None)))
 
     return app

@@ -129,7 +129,8 @@ def paper_app():
                          risk=risk, day=lambda: "2026-07-07")
 
     # no api_token on the localhost demo bind; Close/Flatten act on the live book
-    app = create_app(comp.state, comp.events, commands=PanelCommands(comp, manual_entry=manual))
+    app = create_app(comp.state, comp.events, commands=PanelCommands(comp, manual_entry=manual),
+                     reporting_config=_reporting_config(_read_env()))
 
     @app.on_event("startup")
     async def _start() -> None:
@@ -180,6 +181,77 @@ def _chain_retry_seconds(env: dict[str, str]) -> int:
     except ValueError:
         return 5
     return raw if 1 <= raw <= 30 else 5
+
+
+def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
+    """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
+    "required for return metrics"). Operator-set only: account net-liq is
+    REJECTED (D1 -- foreign capital would pollute ROC). Absent, unparsable,
+    or <= 0 -> None, which reports.py renders as "unconfigured" rather than
+    inventing a denominator."""
+    raw = env.get("MEIC_REPORTING_CAPITAL_BASE")
+    if not raw:
+        return None
+    try:
+        base = Decimal(raw)
+    except (ArithmeticError, ValueError):
+        return None
+    return base if base > 0 else None
+
+
+def _sharpe_risk_free_pct(env: dict[str, str]) -> Decimal:
+    """RPT-04 `sharpe_risk_free_pct` (doc 06: range 0-10 step 0.25, default 0,
+    D3). Out-of-range or off-step falls back to the spec default (the same
+    reject-the-dial convention as `_chain_completeness_pct` above)."""
+    try:
+        raw = Decimal(env.get("MEIC_SHARPE_RISK_FREE_PCT", "0"))
+    except (ArithmeticError, ValueError):
+        return Decimal("0")
+    if not (Decimal("0") <= raw <= Decimal("10")):
+        return Decimal("0")
+    if (raw * 4) % 1 != 0:  # must land on a 0.25 step
+        return Decimal("0")
+    return raw
+
+
+def _report_min_sample_days(env: dict[str, str]) -> int:
+    """RPT-04 `report_min_sample_days` (doc 06: range 5-100, default 20, D2)."""
+    try:
+        raw = int(env.get("MEIC_REPORT_MIN_SAMPLE_DAYS", "20"))
+    except ValueError:
+        return 20
+    return raw if 5 <= raw <= 100 else 20
+
+
+def _reporting_config(env: dict[str, str], *, stop_loss_pct=None):
+    from meic.adapters.api.reports import ReportingConfig
+
+    return ReportingConfig(
+        capital_base=_reporting_capital_base(env),
+        rf_pct=_sharpe_risk_free_pct(env),
+        min_sample_days=_report_min_sample_days(env),
+        stop_loss_pct=stop_loss_pct)
+
+
+def _current_stop_loss_pct(state):
+    """RPT-03 contract audit's reference pct. KNOWN LIMITATION (slice-2
+    handoff item): the event log does not yet carry each FILLED entry's OWN
+    stop_loss_pct (CondorFilled/StopPlaced record the trigger PRICE, never
+    the pct that produced it), so this is a best-effort proxy -- the
+    CURRENTLY CONFIGURED schedule's first row, re-read live on every request
+    (never baked into a stale config snapshot) -- falling back to the domain
+    schedule default (95%, `domain/schedule.py`) when no row is configured.
+    A future slice should record the pct on CondorFilled/StopPlaced directly
+    and retire this proxy."""
+    from decimal import Decimal as _D
+
+    rows = state.entry_schedule or []
+    if rows and isinstance(rows[0], dict) and rows[0].get("stop_loss_pct") is not None:
+        try:
+            return _D(str(rows[0]["stop_loss_pct"])) / 100
+        except (ArithmeticError, ValueError):
+            pass
+    return _D("0.95")
 
 
 def _remaining_rows(rows, now, events, day):
@@ -290,6 +362,60 @@ async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn
         if err != app_state.day_supervisor_error:
             app_state.day_supervisor_error = err
             alerts.alert("critical", f"ENT-10: day supervisor tick failed: {err}")
+
+
+class _BrokerReadFacade:
+    """RPT-15: the ONLY thing `ReportReconciler` ever sees of the broker --
+    three read-only forwards. Deliberately declared here (adapters/api), not
+    in application/report_reconciler.py, which imports NOTHING from
+    meic.adapters at all (tests/application/test_report_reconciler_structural.py
+    asserts this): this wrapper is what makes that true, by holding the ONLY
+    reference to the real `TastytradeAdapter` (`comp.broker`) and exposing
+    NOTHING beyond these three methods -- no submit/replace/cancel is even
+    reachable through it.
+    """
+
+    def __init__(self, broker) -> None:
+        self._broker = broker
+
+    async def positions(self):
+        return await self._broker.positions()
+
+    async def day_fills(self, day: str):
+        return await self._broker.day_fills(day)
+
+    async def cash_and_fees(self, day: str):
+        return await self._broker.cash_and_fees(day)
+
+
+EOD_RECONCILE_TIME = dtime(16, 15)  # RPT-15: after EOD-01 settlement each trading day
+
+
+async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn) -> None:
+    """RPT-15: after `EOD_RECONCILE_TIME` ET on a trading day (RPT-01: any ET
+    day with >= 1 entry attempt), run the reconciler ONCE for that day.
+    Idempotent by construction: a day already carrying a `DayBrokerConfirmed`
+    OR any `CorrectionRecord` has already been resolved (matched or
+    corrected) and is skipped; a day with neither (never reconciled, or the
+    broker was unreachable last time) is retried -- exactly RPT-15's "stays
+    bot-computed... retries at next boot/reconcile" rule. Factored out of
+    `live_app`'s health loop, mirroring `_supervise_once`, so it is
+    unit-testable without a running FastAPI app."""
+    from meic.domain.events import CorrectionRecord, DayBrokerConfirmed
+    from meic.reporting.folds import trading_days
+
+    now = now_fn()
+    if now.time() < EOD_RECONCILE_TIME:
+        return
+    day = now.date().isoformat()
+    if day not in trading_days(comp.events):
+        return  # RPT-15 only reconciles days with real activity
+    already = any((isinstance(e, DayBrokerConfirmed) and e.date == day)
+                  or (isinstance(e, CorrectionRecord) and e.date == day)
+                  for e in comp.events)
+    if already:
+        return
+    await reconciler.reconcile_day(day)
 
 
 # Terminal card states — no further P/L to estimate once here (matches the
@@ -560,8 +686,11 @@ def live_app():
                              preflight_checks=live["preflight_checks"])
     # FEATURE 3: live P/L off the already-held chain snapshot; paper_app passes
     # no enricher (SIM-01 marks are synthetic, nothing honest to show).
+    reporting_config = _reporting_config(
+        env, stop_loss_pct=lambda: _current_stop_loss_pct(comp.state))
     app = create_app(comp.state, comp.events, api_token=token, commands=commands,
-                     entries_enricher=_live_pnl_enricher(live["snapshots"]))
+                     entries_enricher=_live_pnl_enricher(live["snapshots"]),
+                     reporting_config=reporting_config)
     app.state.composition = comp
     app.state.commands = commands
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
@@ -571,6 +700,15 @@ def live_app():
     alerts = _PanelAlerts()
     app.state.alerts = alerts
     comp.alerts = alerts  # critical alerts must reach the operator, not /dev/null
+
+    # RPT-15: the EOD broker reconcile-and-correct reconciler. `_BrokerReadFacade`
+    # is the ONLY thing it is ever handed -- never `comp.broker` directly --
+    # so it is structurally incapable of any order action.
+    from meic.application.report_reconciler import ReportReconciler
+
+    report_reconciler = ReportReconciler(broker=_BrokerReadFacade(comp.broker),
+                                         events=comp.events, alerts=alerts)
+    app.state.report_reconciler = report_reconciler  # exposed for tests/ops visibility
 
     async def _boot_reconcile() -> None:
         """REC-02/04: adopt broker truth before any trading is possible. Anything
@@ -601,6 +739,15 @@ def live_app():
             # same cadence, independent of either probe's success (the
             # sampler itself degrades to a no-op on a missing/stale snapshot).
             _sample_marks_once(comp, live["snapshots"].last)
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+        try:
+            # RPT-15: once per tick, past EOD settlement, on a day with
+            # activity, not yet reconciled -- see _maybe_eod_reconcile_once's
+            # own idempotency rule. A broker-unreachable outcome here is
+            # NOT an error (RPT-15: retries next tick/boot, never a crash).
+            await _maybe_eod_reconcile_once(app.state, comp, report_reconciler,
+                                            lambda: datetime.now(ET))
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
 
