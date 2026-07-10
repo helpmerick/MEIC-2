@@ -398,3 +398,43 @@ class ExternalFillImported(Event):
     imported_at: str     # ISO wall-clock timestamp of the IMPORT itself (audit trail, RPT-16(5))
     source: str          # e.g. "tastytrade_history"
     value: Decimal | None = None  # settlement rows only -- see docstring above
+
+
+@dataclass(frozen=True)
+class SettlementRecorded(Event):
+    """EOD-01 v1.59 (operator-ratified, 2026-07-09 escalation): settlement
+    cash is BROKER-JOURNALED, never merely computed. This is the LIVE path's
+    ongoing settlement capture -- distinct from `ExternalFillImported`, which
+    is RPT-16's ONE-TIME import of PRE-journal broker history. Written only
+    by `application/settlement_capture.capture_settlements`, which fetches
+    the broker's own Receive-Deliver transaction records (`day_settlements`,
+    day+1 window) and attributes each row to a bot entry by symbol against
+    that day's `CondorFilled` leg book -- never guessed: a row whose symbol
+    is unattributable or falls under the OWN-03 shared-symbol guard is
+    withheld entirely (counted `ambiguous_settlement` in the capture
+    result), not journaled with a fabricated entry_id.
+
+    `value` is the broker's own signed NET cash effect, real dollars,
+    already net of `fee` -- the identical convention as
+    `ExternalFillImported.value` on a settlement row (reporting/folds.py
+    `imported_fill_dollars`). It flows into the entry's realized P&L at the
+    real-dollar layer (reporting/folds.py `entry_dollars`), never inside the
+    per-share `EntryProjection.pnl` -- the same reason `imported_fill_dollars`
+    never re-scales a settlement row by the contract multiplier.
+
+    Pinned real-day vector (the 2026-07-09 escalation this rule exists for):
+    4 legs credit 3.60x100 - fees 4.88 = +355.12; SPX settled ~7543.64
+    through the short C7540 -> settlement -369.00 (incl. $5 fee); true
+    entry net -13.88."""
+    entry_id: str
+    day: str             # YYYY-MM-DD, the ET trading day this settlement belongs to
+    at: str              # ISO -- the settlement's OWN broker-reported timestamp
+    symbol: str
+    sub_type: str        # broker's own transaction_sub_type, e.g. "Cash Settled
+                          # Assignment" | "Expiration" | "Assignment"
+    quantity: int
+    price: Decimal | None   # settle strike reference, or None if the broker reported none
+    value: Decimal          # signed NET cash effect, real dollars, already net of `fee`
+    fee: Decimal | None = None  # this row's own fee, POSITIVE cost -- None only if the
+                                 # broker reported no fee data at all for this row
+    source: str = "tastytrade_receive_deliver"

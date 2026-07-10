@@ -6,6 +6,7 @@ from meic.domain.events import (
     CondorProposed,
     DayArmed,
     DayCompleted,
+    EntryClosed,
     EntryCompleted,
     FilledLeg,
     LongSold,
@@ -136,3 +137,78 @@ def test_incremental_fold_equals_full_fold():
     for e in events:
         incremental = apply(incremental, e)
     assert incremental == fold(events)
+
+
+# --- EOD-01 v1.59: SettlementRecorded folds into the entry ------------------
+
+def _condor_legs():
+    return (
+        FilledLeg(symbol="P1", right="P", role="short", qty=1, price=D("2.20")),
+        FilledLeg(symbol="P2", right="P", role="long", qty=1, price=D("0.40")),
+        FilledLeg(symbol="C1", right="C", role="short", qty=1, price=D("2.15")),
+        FilledLeg(symbol="C2", right="C", role="long", qty=1, price=D("0.35")),
+    )
+
+
+def test_settlement_recorded_accumulates_value_and_fee_by_entry():
+    from meic.domain.events import SettlementRecorded
+
+    events = [
+        CondorFilled(entry_id="e", net_credit=D("3.60"), legs=_condor_legs()),
+        SettlementRecorded(entry_id="e", day="d", at="t1", symbol="C1", sub_type="Cash Settled Assignment",
+                           quantity=1, price=D("7540"), value=D("-369.00"), fee=D("5.00")),
+        SettlementRecorded(entry_id="e", day="d", at="t2", symbol="P1", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+    ]
+    e = fold(events).entries["e"]
+    assert e.settlements == D("-369.00")
+    assert e.settlement_fees == D("5.00")
+    assert e.settled_symbols == frozenset({"C1", "P1"})
+    # SettlementRecorded never touches the per-share `.pnl` -- only entry_dollars does.
+    assert e.pnl == D("3.60")
+
+
+def test_settlement_pending_true_until_every_unstopped_short_is_captured():
+    from meic.domain.events import SettlementRecorded
+
+    events = [CondorFilled(entry_id="e", net_credit=D("3.60"), legs=_condor_legs())]
+    assert fold(events).entries["e"].settlement_pending is True  # nothing captured yet
+
+    events.append(SettlementRecorded(entry_id="e", day="d", at="t1", symbol="C1",
+                                     sub_type="Cash Settled Assignment", quantity=1,
+                                     price=D("7540"), value=D("-369.00"), fee=D("5.00")))
+    assert fold(events).entries["e"].settlement_pending is True  # P1 (the other short) still pending
+
+    events.append(SettlementRecorded(entry_id="e", day="d", at="t2", symbol="P1",
+                                     sub_type="Expiration", quantity=1, price=None,
+                                     value=D("0"), fee=D("0")))
+    assert fold(events).entries["e"].settlement_pending is False  # both shorts captured now
+
+
+def test_settlement_pending_false_for_a_stopped_side_regardless_of_settlement():
+    """A side that already stopped realized its P&L via the fill -- it has
+    nothing left pending, with or without a settlement record."""
+    events = [
+        CondorFilled(entry_id="e", net_credit=D("3.60"), legs=_condor_legs()),
+        ShortStopped(entry_id="e", side="PUT", fill=D("3.80"), slippage=D("0")),
+    ]
+    assert fold(events).entries["e"].settlement_pending is True  # CALL short (C1) still pending
+
+    from meic.domain.events import SettlementRecorded
+    events.append(SettlementRecorded(entry_id="e", day="d", at="t1", symbol="C1",
+                                     sub_type="Cash Settled Assignment", quantity=1,
+                                     price=D("7540"), value=D("-369.00"), fee=D("5.00")))
+    assert fold(events).entries["e"].settlement_pending is False
+
+
+def test_settlement_pending_false_once_the_entry_is_closed_some_other_way():
+    events = [
+        CondorFilled(entry_id="e", net_credit=D("3.60"), legs=_condor_legs()),
+        EntryClosed(entry_id="e", initiator="eod"),
+    ]
+    assert fold(events).entries["e"].settlement_pending is False
+
+
+def test_settlement_pending_false_with_no_recorded_legs():
+    events = [CondorFilled(entry_id="e", net_credit=D("4.00"))]  # no legs (paper/schema gap)
+    assert fold(events).entries["e"].settlement_pending is False

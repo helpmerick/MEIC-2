@@ -182,13 +182,18 @@ def test_day_settlements_calls_get_history_for_receive_deliver_through_next_day(
 
 
 def test_cash_and_fees_sums_net_value_and_reads_total_fees():
+    """EOD-01 v1.59: the fake discriminates by `type` (as the real SDK's
+    server-side filter does) -- Trade rows only here, no settlements posted
+    this day, so cash_delta is exactly the Trade-side sum, unchanged."""
     import asyncio
     from datetime import date
     from types import SimpleNamespace
 
     class _FakeAccount:
         async def get_history(self, session, *, start_date, end_date, type):
-            return [SimpleNamespace(net_value=D("100.00")), SimpleNamespace(net_value=D("-20.50"))]
+            if type == "Trade":
+                return [SimpleNamespace(net_value=D("100.00")), SimpleNamespace(net_value=D("-20.50"))]
+            return []  # "Receive Deliver" -- nothing settled this day
 
         async def get_total_fees(self, session, *, day):
             assert day == date(2026, 7, 9)
@@ -200,6 +205,53 @@ def test_cash_and_fees_sums_net_value_and_reads_total_fees():
     cash_delta, fees = asyncio.run(adapter.cash_and_fees("2026-07-09"))
     assert cash_delta == D("79.50")
     assert fees == D("2.40")
+
+
+def test_cash_and_fees_v1_59_includes_settlement_net_value():
+    """EOD-01 v1.59: a trades-only sum silently misses an ITM-expiring
+    short's real cash effect -- the pinned 2026-07-09 vector: +355.12 in
+    Trade fills alone, vs the true -13.88 once the -369.00 Receive-Deliver
+    settlement is folded in."""
+    import asyncio
+    from types import SimpleNamespace
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            if type == "Trade":
+                return [SimpleNamespace(net_value=D("355.12"))]
+            return [SimpleNamespace(net_value=D("-369.00"))]  # Receive Deliver
+
+        async def get_total_fees(self, session, *, day):
+            return SimpleNamespace(total_fees=D("9.88"))
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    cash_delta, fees = asyncio.run(adapter.cash_and_fees("2026-07-09"))
+    assert cash_delta == D("-13.88")
+    assert fees == D("9.88")
+
+
+def test_cash_and_fees_ignores_a_settlement_row_with_no_net_value():
+    """A settlement row missing net_value contributes nothing, never a
+    fabricated 0 folded in as if it were real."""
+    import asyncio
+    from types import SimpleNamespace
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            if type == "Trade":
+                return [SimpleNamespace(net_value=D("100.00"))]
+            return [SimpleNamespace(net_value=None)]
+
+        async def get_total_fees(self, session, *, day):
+            return SimpleNamespace(total_fees=D("0"))
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    cash_delta, _ = asyncio.run(adapter.cash_and_fees("2026-07-09"))
+    assert cash_delta == D("100.00")
 
 
 def test_cash_and_fees_on_a_day_with_no_fills_is_zero_delta():

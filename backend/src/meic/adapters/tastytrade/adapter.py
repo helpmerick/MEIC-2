@@ -361,14 +361,26 @@ class TastytradeAdapter:
         """RPT-15 read-only: (cash_delta, total_fees) for `day`, from the
         broker's own transaction/fees endpoints. `cash_delta` is the sum of
         that day's Trade transactions' `net_value` (the broker's own signed
-        cash effect); `total_fees` comes straight from
-        `Account.get_total_fees`. Both are plain GETs -- no order-action
-        capability."""
+        cash effect) PLUS its Receive-Deliver settlement rows' `net_value`
+        (EOD-01 v1.59 -- widened so this broker-side figure is never a
+        trades-only view that silently omits an ITM-expiring short's real
+        cash effect: the 2026-07-09 vector is +355.12 in Trade fills alone,
+        vs the true -13.88 once the -369.00 settlement is included -- a
+        trades-only sum would let RPT-15 wrongly confirm a day that is
+        still actually wrong). `total_fees` comes straight from
+        `Account.get_total_fees`, which already covers the account's whole
+        fee ledger for `day` (settlement fees included), so only
+        `cash_delta` needs widening here. Both are plain GETs -- no
+        order-action capability."""
         from datetime import date as _date
 
         d = _date.fromisoformat(day)
         fills = await self.day_fills(day)
         cash_delta = sum((Decimal(str(t.net_value)) for t in fills), Decimal("0"))
+        settlements = await self.day_settlements(day)
+        cash_delta += sum(
+            (Decimal(str(t.net_value)) for t in settlements if getattr(t, "net_value", None) is not None),
+            Decimal("0"))
         fees_info = await self._account.get_total_fees(self._session, day=d)
         return cash_delta, Decimal(str(fees_info.total_fees))
 

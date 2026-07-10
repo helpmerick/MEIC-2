@@ -60,6 +60,9 @@ export interface EntryCard {
   // guess (stale/absent snapshot or a mark outside the ATM band).
   live_pnl?: string | null;
   live_pnl_asof?: string | null;
+  // EOD-01 v1.59: True while a held-to-expiry short's broker settlement
+  // cash has not yet been captured -- this entry's P&L is provisional.
+  settlement_pending?: boolean;
 }
 
 export interface ActivityLine {
@@ -279,6 +282,9 @@ export type WaterfallResult =
       slippage: string;
       net: string;
       premium_capture: string | null;
+      // EOD-01 v1.59: captured broker settlement cash, real dollars, already
+      // net of its own fee -- its own waterfall bar.
+      settlements?: string;
     };
 
 export interface ReportSummary {
@@ -305,6 +311,9 @@ export interface DayEntryDetail {
   outcome: string | null;
   legs: EntryLeg[];
   premium_received: { PUT: string | null; CALL: string | null };
+  // EOD-01 v1.59: True while a held-to-expiry short's broker settlement
+  // cash has not yet been captured -- this entry's P&L is provisional.
+  settlement_pending?: boolean;
 }
 
 // RPT-12 timeline: one EntryMarkSample (1-min cadence, D8) — every field is

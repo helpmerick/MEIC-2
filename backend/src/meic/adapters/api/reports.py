@@ -52,7 +52,7 @@ from meic.reporting.folds import (
     entries_by_day,
     entry_credit_dollars,
     entry_dollars,
-    entry_dollars_fees,
+    entry_trading_fees_dollars,
     imported_day_fees,
     imported_day_net,
     imported_fills_by_day,
@@ -212,7 +212,11 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
     credits = sum((entry_credit_dollars(e) for e in entries), Decimal("0"))
     stop_costs = sum((e.stop_fills * Decimal(100) * contracts_of(e) for e in entries), Decimal("0"))
     recoveries = sum((e.recoveries * Decimal(100) * contracts_of(e) for e in entries), Decimal("0"))
-    fees = sum((entry_dollars_fees(e) for e in entries), Decimal("0"))
+    # EOD-01 v1.59: ENTRY-side fees only here -- a captured settlement's own
+    # fee is already netted INTO `settlements` below (`entry.settlements` is
+    # the broker's `value`, net of fee); folding it into `fees` too would
+    # double-count it (see entry_trading_fees_dollars's docstring).
+    fees = sum((entry_trading_fees_dollars(e) for e in entries), Decimal("0"))
     # `buybacks`/`slippage` are not yet separated from `stop_costs` at the
     # EntryProjection granularity this slice has (that split needs per-fill
     # initiator-tagged pricing beyond CondorFilled/ShortStopped's current
@@ -222,6 +226,10 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
     # follow-up in the slice-2 handoff.
     buybacks = Decimal("0")
     net_slippage = Decimal("0")
+    # EOD-01 v1.59: captured broker settlement cash, ALREADY real dollars and
+    # net of its own fee -- its own bar so the waterfall still reconciles to
+    # the cent on a day with an ITM-expiring settlement.
+    settlements = sum((e.settlements for e in entries), Decimal("0"))
     # RPT-16: computed straight from `entries` (like credits/stop_costs/
     # recoveries/fees above), NOT `core_results(scoped).net_pnl` -- that
     # figure now also includes any broker-imported day's cash (RPT-16 rule 3
@@ -232,7 +240,7 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
     try:
         wf = build_waterfall(credits=credits, stop_costs=stop_costs, recoveries=recoveries,
                              buybacks=buybacks, fees=fees, slippage=net_slippage,
-                             expected_net=expected_net)
+                             settlements=settlements, expected_net=expected_net)
     except WaterfallResidualError as exc:
         return {"error": "residual", "residual": str(exc.residual),
                 "expected_net": str(exc.expected_net), "computed_net": str(exc.computed_net)}
@@ -240,6 +248,7 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
         "credits": str(wf.credits), "stop_costs": str(wf.stop_costs),
         "recoveries": str(wf.recoveries), "buybacks": str(wf.buybacks),
         "fees": str(wf.fees), "slippage": str(wf.slippage), "net": str(wf.net),
+        "settlements": str(wf.settlements),
         "premium_capture": _s(wf.premium_capture),
     }
 
@@ -358,6 +367,9 @@ def build_reports_router(
                 "close_initiator": e.close_initiator, "outcome": classify(e),
                 "legs": _card_legs(e.legs),
                 "premium_received": _premium_received(e.legs) if e.legs else {"PUT": None, "CALL": None},
+                # EOD-01 v1.59: True while a held-to-expiry short's settlement
+                # cash has not yet been captured from the broker.
+                "settlement_pending": e.settlement_pending,
             })
         return {
             "date": iso_date, "mode": mode(),

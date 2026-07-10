@@ -7,6 +7,7 @@ from meic.domain.events import (
     EntryClosed,
     EntrySkipped,
     FilledLeg,
+    SettlementRecorded,
     ShortStopped,
 )
 from meic.reporting.folds import (
@@ -18,6 +19,8 @@ from meic.reporting.folds import (
     entry_credit_dollars,
     entry_day,
     entry_dollars,
+    entry_dollars_fees,
+    entry_trading_fees_dollars,
     trading_days,
 )
 
@@ -193,3 +196,64 @@ def test_daily_net_and_core_results_fold_the_settlement_into_the_day():
     assert r.imported_fees == D("6.22")
     assert r.imported_fills == 2
     assert r.gross_pnl == r.net_pnl + r.fees  # fee add-back identity holds
+
+
+# --- EOD-01 v1.59: LIVE settlement capture folds into P&L ---------------------
+
+def _real_condor_legs():
+    return (
+        FilledLeg(symbol="SPXW  260709P07535000", right="P", role="short", qty=1, price=D("2.20")),
+        FilledLeg(symbol="SPXW  260709P07510000", right="P", role="long", qty=1, price=D("0.40")),
+        FilledLeg(symbol="SPXW  260709C07540000", right="C", role="short", qty=1, price=D("2.15")),
+        FilledLeg(symbol="SPXW  260709C07565000", right="C", role="long", qty=1, price=D("0.35")),
+    )
+
+
+def _real_settlement_events(entry_id):
+    at = "2026-07-10T02:00:00+00:00"
+    return [
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709C07540000", sub_type="Cash Settled Assignment",
+                           quantity=1, price=D("7540.0"), value=D("-369.00"), fee=D("5.00")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709P07535000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709P07510000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709C07565000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+    ]
+
+
+def test_pinned_2026_07_09_vector_nets_minus_13_88_once_settled():
+    """The operator's acceptance criterion for EOD-01 v1.59: 4 legs netting
+    +355.12, a -369.00 broker settlement on the short C7540 -> true net
+    -13.88. Total fees 4.88 (entry) + 5.00 (settlement) = 9.88."""
+    entry_id = "2026-07-09#1"
+    events = [
+        CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.0488"),
+                    legs=_real_condor_legs()),
+        *_real_settlement_events(entry_id),
+    ]
+    entry = entries_by_day(events)["2026-07-09"][0]
+    assert entry_dollars(entry) == D("-13.88")
+    assert entry_dollars_fees(entry) == D("9.88")
+    assert entry_trading_fees_dollars(entry) == D("4.88")  # excludes the settlement's own fee
+    assert entry.settlement_pending is False  # every unstopped short's symbol is captured
+
+
+def test_day_snapshot_stamps_flat_only_once_every_short_is_settled():
+    """The live path emits no SideExpired at all -- EOD-01 v1.59's
+    settlement capture is what makes a held-to-expiry day 'flat' for RPT-15."""
+    entry_id = "2026-07-09#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.0488"),
+                           legs=_real_condor_legs())]
+    assert day_snapshot(events, "2026-07-09").flat is False  # settlement not captured yet
+
+    events.extend(_real_settlement_events(entry_id))
+    snap = day_snapshot(events, "2026-07-09")
+    assert snap.flat is True
+    assert snap.net == D("-13.88")
+    assert snap.fees == D("9.88")

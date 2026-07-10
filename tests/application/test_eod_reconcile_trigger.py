@@ -16,6 +16,8 @@ from meic.domain.events import (
     DayArmed,
     DayBrokerConfirmed,
     EntryClosed,
+    FilledLeg,
+    SettlementRecorded,
 )
 
 DAY = "2026-07-09"
@@ -146,3 +148,76 @@ def test_unreachable_broker_appends_nothing_and_will_retry_next_tick():
 
 def test_eod_reconcile_time_is_after_settlement():
     assert EOD_RECONCILE_TIME == dtime(16, 15)
+
+
+# --- EOD-01 v1.59: settlement capture runs BEFORE the reconcile compare -----
+
+class _SettlementBroker(_StubBroker):
+    """Adds `day_settlements` -- the surface `capture_settlements` reads."""
+
+    def __init__(self, *, settlements=(), **kw):
+        super().__init__(**kw)
+        self._settlements = settlements
+
+    async def day_settlements(self, day):
+        return list(self._settlements)
+
+
+def test_broker_reads_none_skips_capture_entirely_unchanged_behavior():
+    """Every pre-v1.59 caller (and every test above) omits `broker_reads` --
+    must behave EXACTLY as before: no capture attempted, no crash."""
+    events = _events()
+    broker = _StubBroker(positions=(), fills=[object()], cash_delta=D("400.00"), fees=D("0"))
+    reconciler = ReportReconciler(broker=broker, events=events)
+    comp = types.SimpleNamespace(events=events)
+    now_fn = lambda: datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, now_fn))
+    assert not any(isinstance(e, SettlementRecorded) for e in events)
+    assert any(isinstance(e, DayBrokerConfirmed) for e in events)
+
+
+def test_settlement_capture_runs_before_the_reconcile_compare():
+    """A held-to-expiry entry (no EntryClosed) with a matching broker
+    settlement: capture must land a SettlementRecorded BEFORE reconcile_day
+    runs, so the day's true (settled) net is what gets checked."""
+    leg = FilledLeg(symbol="SPXW  260709C07540000", right="C", role="short", qty=1, price=D("2.15"))
+    events = [
+        DayArmed(date=DAY, entry_count=1),
+        CondorFilled(entry_id=f"{DAY}#1", net_credit=D("3.60"), fee=D("0.0488"), legs=(leg,)),
+    ]
+    settlement_row = types.SimpleNamespace(
+        symbol="SPXW  260709C07540000", transaction_sub_type="Cash Settled Assignment",
+        value=D("-364.0"), net_value=D("-369.0"), price=D("7540.0"), quantity=D("1"),
+        executed_at=datetime(2026, 7, 10, 2, 0, tzinfo=timezone.utc))
+    # NOTE: ReportReconciler compares str(Decimal) -- scale-sensitive, not just
+    # value-equal (a PRE-EXISTING characteristic, not introduced here). The
+    # bot's own arithmetic naturally lands on 4 decimal places here (fee
+    # 0.0488 has scale 4), so the "matching" broker figures below are
+    # expressed at that SAME scale to actually exercise a true match.
+    broker = _SettlementBroker(positions=(), fills=[object()], cash_delta=D("-13.8800"),
+                               fees=D("9.8800"), settlements=[settlement_row])
+    reconciler = ReportReconciler(broker=broker, events=events, now=lambda: "2026-07-09T16:20:00-04:00")
+    comp = types.SimpleNamespace(events=events)
+    now_fn = lambda: datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, now_fn, broker_reads=broker))
+
+    assert any(isinstance(e, SettlementRecorded) and e.value == D("-369.0") for e in events)
+    assert any(isinstance(e, DayBrokerConfirmed) for e in events)  # settled net matched broker truth
+
+
+def test_a_capture_failure_never_crashes_the_tick():
+    events = _events()
+
+    class _BrokenSettlements(_StubBroker):
+        async def day_settlements(self, day):
+            raise ConnectionError("down")
+
+    broker = _BrokenSettlements(positions=(), fills=[object()], cash_delta=D("400.00"), fees=D("0"))
+    reconciler = ReportReconciler(broker=broker, events=events)
+    comp = types.SimpleNamespace(events=events)
+    now_fn = lambda: datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, now_fn, broker_reads=broker))
+    # The reconcile itself still ran (capture's failure was swallowed) --
+    # RPT-15's existing behavior for this bot/broker shape is unaffected.
+    assert any(isinstance(e, DayBrokerConfirmed) for e in events)

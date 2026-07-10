@@ -98,3 +98,17 @@ describe("EntryCards — placed time / legs / live P&L", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 });
+
+// EOD-01 v1.59: the provisional tag while a held-to-expiry short's broker
+// settlement has not yet been captured.
+describe("EntryCards — settlement_pending (EOD-01 v1.59)", () => {
+  it("shows a provisional tag when settlement_pending is true", () => {
+    render(<EntryCards entries={[card({ settlement_pending: true })]} onClose={vi.fn()} />);
+    expect(screen.getByText(/provisional — settlement pending/i)).toBeInTheDocument();
+  });
+
+  it("omits the provisional tag when settlement_pending is absent or false", () => {
+    render(<EntryCards entries={[card()]} onClose={vi.fn()} />);
+    expect(screen.queryByText(/provisional — settlement pending/i)).toBeNull();
+  });
+});

@@ -131,7 +131,15 @@ export function DayDrilldown({ date }: { date: string }) {
                     {detail.entries.map((e) => (
                       <tr key={e.entry_id}>
                         <td>{e.entry_id}</td>
-                        <td>{e.status}</td>
+                        <td>
+                          {e.status}
+                          {e.settlement_pending && (
+                            <span className="tag pending" title="Broker settlement not yet captured (EOD-01)">
+                              {" "}
+                              provisional
+                            </span>
+                          )}
+                        </td>
                         <td>{e.outcome ?? "—"}</td>
                         <td>{e.net_credit}</td>
                         <td className={Number(e.pnl) >= 0 ? "pos" : "neg"}>{e.pnl}</td>

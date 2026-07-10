@@ -35,3 +35,23 @@ def test_residual_error_carries_both_values():
     err = exc_info.value
     assert err.expected_net == D("99") and err.computed_net == D("100")
     assert err.residual == D("1")
+
+
+# --- EOD-01 v1.59: settlements bar --------------------------------------------
+
+def test_settlements_bar_defaults_to_zero_and_never_affects_pre_v1_59_callers():
+    wf = build_waterfall(credits=D("8400"), stop_costs=D("2600"), recoveries=D("310"),
+                          buybacks=D("145"), fees=D("220"), slippage=D("95"),
+                          expected_net=D("5650"))
+    assert wf.settlements == D("0")
+
+
+def test_settlements_bar_reconciles_the_pinned_2026_07_09_vector():
+    """credits 360.00 (3.60 credit x100), fees 4.88, settlements -369.00 (the
+    C7540 cash-settled assignment, already net of its own $5 fee) -> net
+    -13.88, exactly the day's true broker-confirmed number."""
+    wf = build_waterfall(credits=D("360.00"), stop_costs=D("0"), recoveries=D("0"),
+                          buybacks=D("0"), fees=D("4.88"), slippage=D("0"),
+                          settlements=D("-369.00"), expected_net=D("-13.88"))
+    assert wf.net == D("-13.88")
+    assert wf.settlements == D("-369.00")

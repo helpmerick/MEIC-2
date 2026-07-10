@@ -396,7 +396,7 @@ class _BrokerReadFacade:
 EOD_RECONCILE_TIME = dtime(16, 15)  # RPT-15: after EOD-01 settlement each trading day
 
 
-async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn) -> None:
+async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_reads=None) -> None:
     """RPT-15: after `EOD_RECONCILE_TIME` ET on a trading day (RPT-01: any ET
     day with >= 1 entry attempt), run the reconciler ONCE for that day.
     Idempotent by construction: a day already carrying a `DayBrokerConfirmed`
@@ -405,7 +405,19 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn) -> None
     broker was unreachable last time) is retried -- exactly RPT-15's "stays
     bot-computed... retries at next boot/reconcile" rule. Factored out of
     `live_app`'s health loop, mirroring `_supervise_once`, so it is
-    unit-testable without a running FastAPI app."""
+    unit-testable without a running FastAPI app.
+
+    EOD-01 v1.59: when `broker_reads` is supplied (the live wiring passes
+    the SAME `_BrokerReadFacade` the reconciler uses), settlement capture
+    runs ONCE, BEFORE the reconcile compare -- so the bot's own numbers
+    already include the broker-journaled settlement cash by the time they
+    are checked against broker truth (see application/settlement_capture.py).
+    `broker_reads=None` (every pre-v1.59 caller, and every test in
+    tests/application/test_eod_reconcile_trigger.py) skips capture
+    entirely -- unchanged behavior. A capture failure is swallowed exactly
+    like the reconciler's own broker-unreachable case: it must never crash
+    this tick, and the day simply stays uncaptured/unreconciled to retry
+    next tick."""
     from meic.domain.events import CorrectionRecord, DayBrokerConfirmed
     from meic.reporting.folds import trading_days
 
@@ -420,6 +432,14 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn) -> None
                   for e in comp.events)
     if already:
         return
+    if broker_reads is not None:
+        from meic.application.settlement_capture import capture_settlements
+
+        try:
+            await capture_settlements(comp.events, broker_reads, day,
+                                      now_iso=lambda: now_fn().isoformat())
+        except Exception:  # noqa: BLE001 -- never let a capture failure crash the tick
+            pass
     await reconciler.reconcile_day(day)
 
 
@@ -718,6 +738,10 @@ def live_app():
     report_reconciler = ReportReconciler(broker=_BrokerReadFacade(comp.broker),
                                          events=comp.events, alerts=alerts)
     app.state.report_reconciler = report_reconciler  # exposed for tests/ops visibility
+    # EOD-01 v1.59: a second `_BrokerReadFacade` instance (same read-only
+    # shape as the reconciler's) for settlement capture, run BEFORE the
+    # reconcile compare in `_probe_once` below.
+    settlement_broker_reads = _BrokerReadFacade(comp.broker)
 
     async def _boot_reconcile() -> None:
         """REC-02/04: adopt broker truth before any trading is possible. Anything
@@ -756,7 +780,8 @@ def live_app():
             # own idempotency rule. A broker-unreachable outcome here is
             # NOT an error (RPT-15: retries next tick/boot, never a crash).
             await _maybe_eod_reconcile_once(app.state, comp, report_reconciler,
-                                            lambda: datetime.now(ET))
+                                            lambda: datetime.now(ET),
+                                            broker_reads=settlement_broker_reads)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
 

@@ -20,6 +20,7 @@ from meic.domain.events import (
     Event,
     ExternalFillImported,
     LongSold,
+    SettlementRecorded,
     ShortStopped,
     SideClosed,
     SideExpired,
@@ -31,6 +32,7 @@ from meic.domain.events import (
 _ENTRY_SCOPED = (
     CondorProposed, CondorFilled, ShortStopped, LongSold,
     SideClosed, SideExpired, EntryClosed, EntryCompleted, EntryMarkSample,
+    SettlementRecorded,  # EOD-01 v1.59: carries its own entry_id like the others above
 )
 # Events keyed directly by a `date` field.
 _DAY_SCOPED = (DayArmed, EntrySkipped, DayCompleted, DayBrokerConfirmed, CorrectionRecord)

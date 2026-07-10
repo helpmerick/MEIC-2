@@ -40,19 +40,32 @@ class Waterfall:
     slippage: Decimal
     net: Decimal
     premium_capture: Decimal | None  # net / credits, exact fraction; None if no credit
+    # EOD-01 v1.59: captured broker settlement cash, ALREADY real dollars and
+    # net of its own fee (see `entry.settlements`, domain/projection.py) --
+    # zero on every pre-v1.59 caller/day, so the pinned TC-RPT-07 vector is
+    # unaffected.
+    settlements: Decimal = Decimal("0")
 
 
 def build_waterfall(*, credits: Decimal, stop_costs: Decimal, recoveries: Decimal,
                      buybacks: Decimal, fees: Decimal, slippage: Decimal,
+                     settlements: Decimal = Decimal("0"),
                      expected_net: Decimal | None = None) -> Waterfall:
     """Build the waterfall and reconcile it. If `expected_net` is supplied
     (typically the period's independently-folded realized P&L) and disagrees
     with the components' own arithmetic net, raise `WaterfallResidualError`
-    rather than returning a bar set that silently doesn't add up."""
-    net = credits - stop_costs + recoveries - buybacks - fees - slippage
+    rather than returning a bar set that silently doesn't add up.
+
+    `settlements` (EOD-01 v1.59) is its OWN bar, added last -- NOT folded
+    into `fees`, because a captured settlement's `value` is already net of
+    its own fee (see reporting/folds.py's `entry_trading_fees_dollars` vs
+    `entry_dollars_fees`); double-counting it into `fees` too would make the
+    waterfall fail to reconcile against `expected_net` (which already
+    includes it, via `entry_dollars`)."""
+    net = credits - stop_costs + recoveries - buybacks - fees - slippage + settlements
     if expected_net is not None and net != expected_net:
         raise WaterfallResidualError(expected_net, net)
     premium_capture = (net / credits) if credits else None
     return Waterfall(credits=credits, stop_costs=stop_costs, recoveries=recoveries,
                       buybacks=buybacks, fees=fees, slippage=slippage, net=net,
-                      premium_capture=premium_capture)
+                      premium_capture=premium_capture, settlements=settlements)

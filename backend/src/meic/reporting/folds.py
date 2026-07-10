@@ -133,8 +133,12 @@ def contracts_of(entry: EntryProjection) -> int:
 
 def entry_dollars(entry: EntryProjection) -> Decimal:
     """Real-dollar realized P&L for one entry (contract-multiplier applied —
-    see module docstring)."""
-    return entry.pnl * CONTRACT_MULTIPLIER * contracts_of(entry)
+    see module docstring). EOD-01 v1.59: `entry.settlements` is ALREADY real
+    dollars (the broker's own signed net cash effect for a captured
+    settlement) — added directly, never re-scaled by the contract
+    multiplier, exactly as `imported_fill_dollars` treats a settlement row's
+    `value`."""
+    return entry.pnl * CONTRACT_MULTIPLIER * contracts_of(entry) + entry.settlements
 
 
 def entry_credit_dollars(entry: EntryProjection) -> Decimal:
@@ -262,7 +266,12 @@ class DaySnapshot:
 
 def _settled(entry: EntryProjection) -> bool:
     return (entry.completed or entry.close_initiator is not None
-            or len(entry.sides_expired) >= 2 or len(entry.sides_stopped) >= 2)
+            or len(entry.sides_expired) >= 2 or len(entry.sides_stopped) >= 2
+            # EOD-01 v1.59: a filled entry with nothing left settlement_pending
+            # (every unstopped short's symbol has a captured SettlementRecorded)
+            # is settled too -- the live path's own held-to-expiry case, which
+            # emits no SideExpired at all.
+            or (bool(entry.legs) and not entry.settlement_pending))
 
 
 def day_snapshot(events: list[Event], day: str) -> DaySnapshot:
@@ -283,5 +292,19 @@ def entry_dollars_fees(entry: EntryProjection) -> Decimal:
     `net_credit`/`stop_fills`/`recoveries` there, and converting it to real
     dollars takes the identical contract multiplier used everywhere else in
     this module (this is what makes `gross_pnl = net_pnl + fees` correctly
-    back out the fee in `core_results`, rather than mixing two scales)."""
+    back out the fee in `core_results`, rather than mixing two scales).
+    EOD-01 v1.59: `entry.settlement_fees` is already real dollars (a captured
+    settlement row's own fee) -- added directly, same convention as
+    `entry_dollars`/`imported_day_fees`."""
+    return entry.fees * CONTRACT_MULTIPLIER * contracts_of(entry) + entry.settlement_fees
+
+
+def entry_trading_fees_dollars(entry: EntryProjection) -> Decimal:
+    """Real-dollar ENTRY-side fees ONLY -- excludes any captured settlement's
+    own fee. EOD-01 v1.59: reporting/waterfall.py needs this exclusive figure
+    for its `fees` bar, because a settlement's `value` (its own `settlements`
+    bar there) is already net of that same fee -- folding it into `fees` too
+    would double-count it and break the waterfall's cent-exact reconciliation
+    against `expected_net` (`entry_dollars`, which also already includes the
+    settlement). Use `entry_dollars_fees` above for any DISPLAY total."""
     return entry.fees * CONTRACT_MULTIPLIER * contracts_of(entry)

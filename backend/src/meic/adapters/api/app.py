@@ -113,6 +113,7 @@ def _describe(ev: Any) -> dict[str, str] | None:
         "LongSold": ("💰", "Long sold (LEX)"),
         "SideClosed": ("➖", "Side closed"),
         "SideExpired": ("⌛", "Side expired worthless"),
+        "SettlementRecorded": ("💵", "Settlement recorded (broker)"),
         "EntryClosed": ("📕", "Entry closed"),
         "EntrySkipped": ("⚠️", "Entry skipped"),
         "WatchdogEscalated": ("🚨", "Watchdog escalated"),
@@ -127,7 +128,7 @@ def _describe(ev: Any) -> dict[str, str] | None:
         v = getattr(ev, attr, None)
         if v:
             bits.append(str(v))
-    for attr, sym in (("net_credit", "cr "), ("fill", "@ "), ("recovery", "rec ")):
+    for attr, sym in (("net_credit", "cr "), ("fill", "@ "), ("recovery", "rec "), ("value", "stl ")):
         v = getattr(ev, attr, None)
         if v is not None and str(v) != "0":
             bits.append(f"{sym}${v}")
@@ -305,6 +306,10 @@ def create_app(
                 "placed_at": e.placed_at,               # FEATURE 1: fill time, null if absent
                 "legs": _card_legs(e.legs),              # FEATURE 2: per-side strikes/prices
                 "premium_received": _premium_received(e.legs) if e.legs else {"PUT": None, "CALL": None},
+                # EOD-01 v1.59: True while a held-to-expiry short's settlement
+                # cash has not yet been captured from the broker -- this
+                # entry's P&L is provisional until then.
+                "settlement_pending": e.settlement_pending,
             })
         cards.sort(key=lambda c: c["entry_id"])
         if entries_enricher is not None:  # FEATURE 3: live P/L, or any future hook

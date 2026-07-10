@@ -83,6 +83,11 @@ function Card({ e, onClose }: { e: EntryCard; onClose: (id: string) => Promise<v
         {e.sides_stopped.length > 0 && <span className="tag stop">{e.sides_stopped.join("+")} stopped</span>}
         {e.recovered && <span className="tag lex">LEX</span>}
         {e.sides_expired.length > 0 && <span className="tag exp">{e.sides_expired.length} exp</span>}
+        {e.settlement_pending && (
+          <span className="tag pending" title="Broker settlement not yet captured (EOD-01)">
+            provisional — settlement pending
+          </span>
+        )}
       </div>
       {placed && <div className="ec-placed">Placed {placed}</div>}
       {(putLine || callLine) && (

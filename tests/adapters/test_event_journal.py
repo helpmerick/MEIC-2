@@ -77,6 +77,13 @@ def _sample_instances() -> dict[type, ev.Event]:
             symbol="SPXW  260709C07540000", action="Cash Settled Assignment", quantity=1,
             price=D("7540.00"), fee=D("5.00"), imported_at="2026-07-10T09:00:00-04:00",
             source="tastytrade_history", value=D("-369.00")),
+        # EOD-01 v1.59 (LIVE settlement capture, distinct from the RPT-16
+        # import above): the pinned 2026-07-09 C7540 cash-settled assignment.
+        ev.SettlementRecorded: ev.SettlementRecorded(
+            entry_id="2026-07-09#1", day="2026-07-09", at="2026-07-09T22:00:00-04:00",
+            symbol="SPXW  260709C07540000", sub_type="Cash Settled Assignment", quantity=1,
+            price=D("7540.00"), value=D("-369.00"), fee=D("5.00"),
+            source="tastytrade_receive_deliver"),
     }
 
 
