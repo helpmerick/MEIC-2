@@ -43,3 +43,38 @@ class EventLog(list):
 
     def insert(self, index: int, item) -> None:
         super().insert(index, self._stamp(item))
+
+
+class DurableEventLog(EventLog):
+    """An `EventLog` that write-throughs every append/extend to a durable
+    journal AFTER the config-version stamp — REC-01 ("persisted... BEFORE
+    being acted on") + REC-07 item 8.
+
+    `journal` is duck-typed (only `.append(event) -> None` is required) so
+    this application-layer class never imports the concrete adapter
+    (`EventJournal`, adapters/persistence/event_store.py) — the composition
+    root wires the real one in.
+    """
+
+    def __init__(self, iterable: Iterable = (), *, config_version: str = "", journal) -> None:
+        super().__init__(iterable, config_version=config_version)
+        self._journal = journal
+
+    def append(self, item) -> None:
+        stamped = self._stamp(item)
+        list.append(self, stamped)
+        self._journal.append(stamped)
+
+    def extend(self, items) -> None:
+        stamped = [self._stamp(i) for i in items]
+        list.extend(self, stamped)
+        for i in stamped:
+            self._journal.append(i)
+
+    def insert(self, index: int, item) -> None:
+        # Not used by any current caller (services only append/extend); refusing
+        # rather than silently accepting an un-journaled insert keeps the
+        # write-through guarantee absolute instead of quietly leaking an
+        # untracked path the day someone reaches for it.
+        raise NotImplementedError(
+            "DurableEventLog.insert: no caller needs positional insert; append/extend only")

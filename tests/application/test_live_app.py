@@ -283,3 +283,36 @@ def test_chain_retry_seconds_is_read_from_config_not_hardcoded():
     assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "0"}) == 5          # < 1 -> default
     assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "31"}) == 5         # > 30 -> default
     assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "junk"}) == 5
+
+
+# --- REC-01 / REC-07(8): the live event log must be DURABLE ---------------------
+
+def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_path):
+    """Today's gap (v1.54 slice 1): live_app's event log used to be the plain
+    in-memory `EventLog`, so a process restart lost the whole log. An event
+    appended in one process must be visible after "restarting" — building a
+    fresh live_app() over the SAME MEIC_DATA_DIR/state.db — and still show up
+    through the ordinary read path (/entries), not just in comp.events."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.event_log import DurableEventLog
+    from meic.domain.events import CondorFilled, DayArmed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app1 = live_app()
+    comp1 = app1.state.composition
+    assert isinstance(comp1.events, DurableEventLog)
+
+    comp1.events.append(DayArmed(date="2026-07-09", entry_count=1))
+    comp1.events.append(CondorFilled(entry_id="2026-07-09#1", net_credit=Decimal("4.00")))
+
+    app2 = live_app()  # a fresh composition over the SAME db file
+    comp2 = app2.state.composition
+    assert [type(e).__name__ for e in comp2.events] == ["DayArmed", "CondorFilled"]
+    assert comp2.events[1].net_credit == Decimal("4.00")
+
+    cards = TestClient(app2).get("/entries").json()
+    assert any(c["entry_id"] == "2026-07-09#1" and c["net_credit"] == "4.00" for c in cards)

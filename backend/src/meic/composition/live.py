@@ -21,7 +21,7 @@ from meic.adapters.tastytrade.adapter import TastytradeAdapter
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
-from meic.application.event_log import EventLog
+from meic.application.event_log import DurableEventLog, EventLog
 from meic.application.leg_book import LegBook
 from meic.application.protect_position import LegsUnrecorded, ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
@@ -52,6 +52,21 @@ class LiveComposition:
     state_store: object = None  # inject a SqliteStateStore for durable state (REC-07)
 
     def __post_init__(self) -> None:
+        # REC-01 / REC-07(8): the live event log must be DURABLE, not the
+        # in-memory `EventLog` default — today's gap this composition root
+        # closes. When a real SqliteStateStore is injected, swap `self.events`
+        # for a DurableEventLog on an EventJournal in the SAME state.db,
+        # PRE-LOADED with whatever the journal already holds — BEFORE any
+        # service below is constructed around it, so boot restore (REC-07)
+        # actually happens: a rebuilt composition sees every prior event.
+        # Paper composition never sets a SqliteStateStore, so it is unaffected.
+        from meic.adapters.persistence.event_store import EventJournal, SqliteStateStore
+
+        if isinstance(self.state_store, SqliteStateStore):
+            journal = EventJournal(self.state_store.path)
+            self.events = DurableEventLog(
+                journal.load(), config_version=self.events.config_version, journal=journal)
+
         # BrokerGateway -> live adapter (SimulatedBroker is NOT constructed here)
         self.broker = TastytradeAdapter(self.provider_secret, self.refresh_token, is_test=self.is_test)
         self.feed = DXLinkAdapter(session=None, clock=self.clock)  # session set on connect()

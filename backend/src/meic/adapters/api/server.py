@@ -21,6 +21,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from meic.adapters.api.app import _strike_from_symbol
 from meic.application.clocks import MutableClock
 from meic.composition.paper import PaperComposition
 from meic.composition.runtime import PaperDemoRuntime
@@ -345,6 +346,53 @@ def _live_pnl_enricher(snaps):
     return enrich
 
 
+def _sample_marks_once(comp, snapshot) -> None:
+    """RPT-12/D8 (doc 10): one EntryMarkSample per OPEN entry, journaled at
+    the health-tick cadence, from the SAME chain snapshot `_live_pnl_enricher`
+    reads (no new subscription). Reuses that function's open-entry test
+    (`_TERMINAL_STATUSES`) and per-side leg derivation so the two never drift.
+
+    A missing or stale snapshot samples NOTHING this tick — same honesty rule
+    `_live_pnl_enricher` already applies (a maybe-wrong mark is worse than a
+    gap; D10 wants gaps, never fabrication). An open entry where every mark
+    AND spot come back absent appends nothing either (no all-None sample);
+    otherwise one EntryMarkSample is appended per open entry, with each mark
+    field independently None where its leg's strike has no quote.
+    """
+    from meic.domain.events import EntryMarkSample
+    from meic.domain.projection import fold
+
+    if snapshot is None or snapshot.stale:
+        return
+    at = getattr(snapshot, "taken_at", None)
+    at_iso = at.isoformat() if at is not None else None
+    day = fold(comp.events)
+    for e in day.entries.values():
+        if e.status in _TERMINAL_STATUSES or not e.legs:
+            continue
+        by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
+        for leg in e.legs:
+            by_side.setdefault(leg.side, {})[leg.role] = leg
+        put_short, put_long = by_side["PUT"].get("short"), by_side["PUT"].get("long")
+        call_short, call_long = by_side["CALL"].get("short"), by_side["CALL"].get("long")
+        put_short_mid = (_leg_mid(snapshot.put_side, Decimal(_strike_from_symbol(put_short.symbol)))
+                         if put_short else None)
+        put_long_mid = (_leg_mid(snapshot.put_side, Decimal(_strike_from_symbol(put_long.symbol)))
+                        if put_long else None)
+        call_short_mid = (_leg_mid(snapshot.call_side, Decimal(_strike_from_symbol(call_short.symbol)))
+                          if call_short else None)
+        call_long_mid = (_leg_mid(snapshot.call_side, Decimal(_strike_from_symbol(call_long.symbol)))
+                        if call_long else None)
+        spot = getattr(snapshot, "spot", None)
+        if spot is None and all(m is None for m in (put_short_mid, put_long_mid,
+                                                     call_short_mid, call_long_mid)):
+            continue  # nothing honest to record this tick — no fabricated all-None sample
+        comp.events.append(EntryMarkSample(
+            entry_id=e.entry_id, at=at_iso, spot=spot,
+            put_short_mid=put_short_mid, put_long_mid=put_long_mid,
+            call_short_mid=call_short_mid, call_long_mid=call_long_mid))
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -546,6 +594,13 @@ def live_app():
             app.state.broker_error = repr(exc)
         try:
             await live["data_probe"]()
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+        try:
+            # RPT-12/D8: sample marks off the snapshot just refreshed above,
+            # same cadence, independent of either probe's success (the
+            # sampler itself degrades to a no-op on a missing/stale snapshot).
+            _sample_marks_once(comp, live["snapshots"].last)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
 

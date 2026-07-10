@@ -304,3 +304,22 @@ class ForeignReduction(Event):
 @dataclass(frozen=True)
 class EntryCompleted(Event):
     entry_id: str
+
+
+@dataclass(frozen=True)
+class EntryMarkSample(Event):
+    """RPT-12/D8 (doc 10): one per-open-entry mark sample, journaled at the
+    ~1-minute health-tick cadence (server.py `_sample_marks_once`) so the day
+    drill-down timeline and MAE/MFE can be computed LATER from recorded
+    samples only — D10: absent is absent, NEVER interpolated or fabricated.
+    Every mark field is optional independently: a leg outside the subscribed
+    band, or a stale/absent chain snapshot, records that field as None rather
+    than guessing (mirrors the live-P/L enricher's honesty rule, server.py
+    `_live_pnl_enricher`)."""
+    entry_id: str
+    at: str  # ISO wall-clock timestamp of the sample
+    spot: Decimal | None = None
+    put_short_mid: Decimal | None = None
+    put_long_mid: Decimal | None = None
+    call_short_mid: Decimal | None = None
+    call_long_mid: Decimal | None = None
