@@ -688,9 +688,13 @@ def live_app():
     # no enricher (SIM-01 marks are synthetic, nothing honest to show).
     reporting_config = _reporting_config(
         env, stop_loss_pct=lambda: _current_stop_loss_pct(comp.state))
+    # RPT-16: the SAME read-only facade RPT-15's reconciler uses (day_fills
+    # only) -- never comp.broker directly -- so the one-time backfill endpoint
+    # is structurally incapable of any order action either.
     app = create_app(comp.state, comp.events, api_token=token, commands=commands,
                      entries_enricher=_live_pnl_enricher(live["snapshots"]),
-                     reporting_config=reporting_config)
+                     reporting_config=reporting_config,
+                     backfill_broker_reads=_BrokerReadFacade(comp.broker))
     app.state.composition = comp
     app.state.commands = commands
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source

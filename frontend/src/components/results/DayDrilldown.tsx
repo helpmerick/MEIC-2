@@ -54,6 +54,48 @@ export function DayDrilldown({ date }: { date: string }) {
             </div>
           </section>
 
+          {detail.imported_fills && detail.imported_fills.length > 0 && (
+            <section className="card">
+              <h2>RPT-16 — Broker-imported fills</h2>
+              <p className="muted">
+                This day predates the event journal and was imported from broker history
+                (cash-level only — no recorded trading intent).
+              </p>
+              {detail.imported_cash && (
+                <p>
+                  Net cash: <strong>${detail.imported_cash.net}</strong> · Fees: $
+                  {detail.imported_cash.fees}
+                </p>
+              )}
+              <table className="entries" data-testid="imported-fills-table">
+                <thead>
+                  <tr>
+                    <th>Order</th>
+                    <th>Symbol</th>
+                    <th>Action</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>Fee</th>
+                    <th>At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.imported_fills.map((f, i) => (
+                    <tr key={i}>
+                      <td>{f.order_id}</td>
+                      <td>{f.symbol}</td>
+                      <td>{f.action}</td>
+                      <td>{f.quantity}</td>
+                      <td>{f.price ?? "—"}</td>
+                      <td>{f.fee ?? "—"}</td>
+                      <td>{f.at}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
           <section className="card">
             <h2>RPT-12 — Intraday timeline</h2>
             <Timeline timeline={detail.timeline} />

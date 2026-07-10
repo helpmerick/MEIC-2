@@ -41,13 +41,16 @@ export function signClass(v: string | null | undefined): string {
 
 export function TrustBadge({ trust }: { trust: TrustBlock }) {
   const ok = trust.status === "broker-confirmed";
+  const imported = trust.status === "broker-imported";
+  const cls = ok ? "ok" : imported ? "imported" : "partial";
+  const text = ok
+    ? "broker-confirmed ✓"
+    : imported
+      ? "broker-imported"
+      : `bot-computed — ${trust.label}`;
   return (
-    <span
-      className={`trust-badge ${ok ? "ok" : "partial"}`}
-      title={trust.label}
-      data-testid="trust-badge"
-    >
-      {ok ? "broker-confirmed ✓" : `bot-computed — ${trust.label}`}
+    <span className={`trust-badge ${cls}`} title={trust.label} data-testid="trust-badge">
+      {text}
     </span>
   );
 }

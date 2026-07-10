@@ -18,6 +18,15 @@ describe("TrustBadge (UI-25)", () => {
     expect(badge).toHaveTextContent("bot-computed");
     expect(badge).toHaveTextContent("22/23 days broker-confirmed");
   });
+
+  it("shows a neutral broker-imported badge, never broker-confirmed (RPT-16)", () => {
+    const trust: TrustBlock = { status: "broker-imported", confirmed_days: 0, total_days: 1, label: "broker-imported", imported_days: 1 };
+    render(<TrustBadge trust={trust} />);
+    const badge = screen.getByTestId("trust-badge");
+    expect(badge).toHaveTextContent("broker-imported");
+    expect(badge).not.toHaveTextContent("broker-confirmed ✓");
+    expect(badge.className).toContain("imported");
+  });
 });
 
 describe("PaperBanner (SIM-05)", () => {

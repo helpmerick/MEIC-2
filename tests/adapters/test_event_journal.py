@@ -66,6 +66,11 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.CorrectionRecord: ev.CorrectionRecord(
             date="2026-07-09", field="fees", bot_value="220.00", broker_value="240.00",
             diff="20.00", at="2026-07-09T16:20:00-04:00"),
+        ev.ExternalFillImported: ev.ExternalFillImported(
+            day="2026-07-09", at="2026-07-09T14:31:02-04:00", order_id="482214732",
+            symbol="SPXW  260709P05600000", action="Sell to Open", quantity=1,
+            price=D("3.00"), fee=D("1.42"), imported_at="2026-07-10T09:00:00-04:00",
+            source="tastytrade_history"),
     }
 
 
@@ -108,6 +113,21 @@ def test_entry_mark_sample_all_none_marks_round_trip(tmp_path):
     loaded = journal.load()
     assert loaded == [sample]
     assert loaded[0].spot is None and loaded[0].put_short_mid is None
+
+
+def test_external_fill_imported_none_price_and_fee_round_trip(tmp_path):
+    """RPT-16: a broker fill with no allocated price/fee data is recorded
+    honestly as None, never fabricated as 0."""
+    journal = EventJournal(tmp_path / "state.db")
+    sample = ev.ExternalFillImported(
+        day="2026-07-09", at="2026-07-09T14:31:02-04:00", order_id="482214732",
+        symbol="SPXW  260709P05600000", action="Sell to Open", quantity=1,
+        price=None, fee=None, imported_at="2026-07-10T09:00:00-04:00",
+        source="tastytrade_history")
+    journal.append(sample)
+    loaded = journal.load()
+    assert loaded == [sample]
+    assert loaded[0].price is None and loaded[0].fee is None
 
 
 def test_config_version_round_trips(tmp_path):

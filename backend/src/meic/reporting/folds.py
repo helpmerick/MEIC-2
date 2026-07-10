@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from meic.domain.events import DayArmed, Event, EntrySkipped
+from meic.domain.events import DayArmed, Event, EntrySkipped, ExternalFillImported
 from meic.domain.projection import EntryProjection, fold
 
 CONTRACT_MULTIPLIER = Decimal(100)
@@ -40,16 +40,55 @@ def entry_day(entry_id: str) -> str:
 
 
 def trading_days(events: list[Event]) -> tuple[str, ...]:
-    """RPT-01: the sorted set of qualifying trading days."""
+    """RPT-01: the sorted set of qualifying trading days. RPT-16: a day
+    imported from broker history (ExternalFillImported) counts as a trading
+    day too, even though it was never armed/attempted by this process."""
     days: set[str] = set()
     for event in events:
         if isinstance(event, DayArmed):
             days.add(event.date)
         elif isinstance(event, EntrySkipped):
             days.add(event.date)
+        elif isinstance(event, ExternalFillImported):
+            days.add(event.day)
     for entry_id in fold(events).entries:
         days.add(entry_day(entry_id))
     return tuple(sorted(days))
+
+
+def imported_fills_by_day(events: list[Event]) -> dict[str, tuple[ExternalFillImported, ...]]:
+    """RPT-16: every imported fill leg, grouped by its own `day` field."""
+    out: dict[str, list[ExternalFillImported]] = {}
+    for e in events:
+        if isinstance(e, ExternalFillImported):
+            out.setdefault(e.day, []).append(e)
+    return {day: tuple(fs) for day, fs in out.items()}
+
+
+def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
+    """RPT-16: real-dollar signed cash effect of one imported fill leg -- a
+    Sell* action is a credit (+), a Buy* action is a debit (-), same
+    CONTRACT_MULTIPLIER (100) used everywhere else in this module. A fill
+    with no broker-allocated price contributes 0 (honest, never fabricated)."""
+    if fill.price is None:
+        return Decimal("0")
+    sign = Decimal(1) if fill.action.lower().startswith("sell") else Decimal(-1)
+    return sign * fill.price * Decimal(fill.quantity) * CONTRACT_MULTIPLIER
+
+
+def imported_day_fees(fills: tuple[ExternalFillImported, ...]) -> Decimal:
+    return sum((f.fee for f in fills if f.fee is not None), Decimal("0"))
+
+
+def imported_day_net(fills: tuple[ExternalFillImported, ...]) -> Decimal:
+    """RPT-16: real-dollar NET cash for one imported day -- fees already
+    deducted, matching this module's existing "net" convention everywhere
+    else (`entry_dollars`/`EntryProjection.pnl` are likewise post-fee; `fees`
+    is always reported ALONGSIDE net, never double-subtracted, so
+    `gross_pnl = net_pnl + fees` in core_results correctly backs the fee out
+    again for imported days too)."""
+    gross = sum((imported_fill_dollars(f) for f in fills), Decimal("0"))
+    return gross - imported_day_fees(fills)
 
 
 def entries_by_day(events: list[Event]) -> dict[str, tuple[EntryProjection, ...]]:
@@ -84,10 +123,20 @@ def entry_credit_dollars(entry: EntryProjection) -> Decimal:
 def daily_net(events: list[Event]) -> dict[str, Decimal]:
     """Real-dollar net P&L per trading day (RPT-02/04 basis). Every qualifying
     trading day appears, even one with zero fills (0.00) — a day is never
-    silently absent from the map just because nothing filled."""
+    silently absent from the map just because nothing filled.
+
+    RPT-16: an imported day's broker-truth cash net is added in too — the
+    headline per-day number must be honest broker cash, not a fabricated
+    0.00 for a day that plainly moved money. Callers that build a metrics
+    INPUT series (Sharpe/MDD/etc, doc 10 rule 3) must exclude imported days
+    themselves (see reports.py's `_summary_metrics`) -- this function's
+    output is deliberately still complete, not pre-filtered, since the CSV
+    daily-table export and RPT-01 day_win_rate both want the honest figure."""
     out = {day: Decimal("0") for day in trading_days(events)}
     for day, entries in entries_by_day(events).items():
         out[day] = sum((entry_dollars(e) for e in entries), Decimal("0"))
+    for day, fills in imported_fills_by_day(events).items():
+        out[day] = out.get(day, Decimal("0")) + imported_day_net(fills)
     return out
 
 
@@ -106,7 +155,16 @@ class CoreResults:
     total_credit: Decimal         # total net credit collected, real dollars
     day_win_rate: Decimal | None  # exact fraction of trading days with net > 0
     entry_win_rate: Decimal | None  # exact fraction of filled entries with pnl > 0
-    premium_capture: Decimal | None  # net_pnl / total_credit, exact fraction
+    premium_capture: Decimal | None  # net_pnl / total_credit, exact fraction (entries only,
+                                      # NEVER diluted by imported cash -- see core_results)
+    # RPT-16: broker-imported days' contribution, ADDITIVE on top of the
+    # entry-based figures above (already folded into net_pnl/gross_pnl/fees).
+    # Never mixed into `filled`/`fired` (entry-attempt counts) or the win-rate/
+    # premium_capture ratios -- an imported leg fill is not an "entry attempt".
+    imported_days: int = 0
+    imported_fills: int = 0
+    imported_net: Decimal = Decimal("0")
+    imported_fees: Decimal = Decimal("0")
 
 
 def _skip_reasons(events: list[Event]) -> dict[str, int]:
@@ -120,31 +178,50 @@ def _skip_reasons(events: list[Event]) -> dict[str, int]:
 def core_results(events: list[Event]) -> CoreResults:
     """RPT-02. All money fields are REAL DOLLARS (see module docstring); win
     rates and premium capture are exact Decimal fractions — round to 2dp
-    ONLY at the presentation edge (RPT-04's rounding rule applies here too)."""
+    ONLY at the presentation edge (RPT-04's rounding rule applies here too).
+
+    RPT-16: broker-imported days contribute their cash-level net and fees to
+    the headline `net_pnl`/`gross_pnl`/`fees` totals (broker truth is broker
+    truth), and their own leg/day counts to `imported_fills`/`imported_days`
+    -- but NEVER to `filled`/`fired` (entry-attempt counts), `total_credit`,
+    `entry_win_rate`, or `premium_capture`: those stay computed purely from
+    real fold entries, exactly as before this rule existed, because an
+    imported fill carries no recorded entry-level intent to count as one
+    (REC-02) and `entries_by_day`/`fold` never produce a pseudo-entry for it."""
     by_day = entries_by_day(events)
     all_entries = [e for es in by_day.values() for e in es]
     filled_entries = [e for e in all_entries if e.net_credit != 0]
 
-    fees = sum((entry_dollars_fees(e) for e in filled_entries), Decimal("0"))
-    net_pnl = sum((entry_dollars(e) for e in filled_entries), Decimal("0"))
-    gross_pnl = net_pnl + fees
+    entry_fees = sum((entry_dollars_fees(e) for e in filled_entries), Decimal("0"))
+    entry_net_pnl = sum((entry_dollars(e) for e in filled_entries), Decimal("0"))
     total_credit = sum((entry_credit_dollars(e) for e in filled_entries), Decimal("0"))
+
+    imported_by_day = imported_fills_by_day(events)
+    imported_net = sum((imported_day_net(fs) for fs in imported_by_day.values()), Decimal("0"))
+    imported_fees_total = sum((imported_day_fees(fs) for fs in imported_by_day.values()), Decimal("0"))
+    imported_fill_count = sum(len(fs) for fs in imported_by_day.values())
+
+    net_pnl = entry_net_pnl + imported_net
+    fees = entry_fees + imported_fees_total
+    gross_pnl = net_pnl + fees
 
     skipped_by_reason = _skip_reasons(events)
     fired = len(filled_entries) + sum(skipped_by_reason.values())
 
     days = trading_days(events)
-    daily = daily_net(events)
+    daily = daily_net(events)  # RPT-16: already includes imported-day cash (folds.daily_net)
     day_win_rate = (Decimal(sum(1 for d in days if daily[d] > 0)) / len(days)) if days else None
     entry_win_rate = (Decimal(sum(1 for e in filled_entries if e.pnl > 0)) / len(filled_entries)
                        ) if filled_entries else None
-    premium_capture = (net_pnl / total_credit) if total_credit else None
+    premium_capture = (entry_net_pnl / total_credit) if total_credit else None
 
     return CoreResults(
         net_pnl=net_pnl, gross_pnl=gross_pnl, fees=fees,
         filled=len(filled_entries), fired=fired, skipped_by_reason=skipped_by_reason,
         total_credit=total_credit, day_win_rate=day_win_rate,
-        entry_win_rate=entry_win_rate, premium_capture=premium_capture)
+        entry_win_rate=entry_win_rate, premium_capture=premium_capture,
+        imported_days=len(imported_by_day), imported_fills=imported_fill_count,
+        imported_net=imported_net, imported_fees=imported_fees_total)
 
 
 @dataclass(frozen=True)

@@ -5,17 +5,28 @@ event log (never a mock/demo source), carries `mode` and the UI-25 trust
 block, and renders Decimals as strings with ET-native date/timestamp fields
 (the bot's own `date`/`at` values are already ET — see DAY-03).
 
-This module holds no broker reference at all: it only READS the events list
-handed to it at construction (doc 10 Principle 1) and the pure `meic.reporting`
-package. RPT-15's broker fetch lives entirely in
+This module holds no broker reference for any of the GET endpoints: they only
+READ the events list handed to it at construction (doc 10 Principle 1) and the
+pure `meic.reporting` package. RPT-15's broker fetch lives entirely in
 `application/report_reconciler.py`, wired separately by server.py; nothing
-here can reach it.
+in that flow reaches through here.
+
+RPT-16 (proposed amendment, AMENDMENT-PROPOSAL-historical-backfill.md) is the
+one deliberate exception: `build_reports_router` optionally accepts a narrow,
+duck-typed `broker_reads` facade (only `day_fills`, mirroring
+`application.backfill.BackfillBrokerFacade`) for the mutating, auth-gated
+POST /reports/backfill/{day} endpoint. Every other route is unaffected and
+`broker_reads` defaults to None (paper/no-broker composition roots simply
+never wire it -- the endpoint then 400s rather than reaching for a broker
+that isn't there).
 """
 from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -26,6 +37,7 @@ from meic.domain.events import (
     CorrectionRecord,
     EntryMarkSample,
     Event,
+    ExternalFillImported,
     ReconciliationMismatch,
     ShortStopped,
     SideUnprotected,
@@ -41,6 +53,9 @@ from meic.reporting.folds import (
     entry_credit_dollars,
     entry_dollars,
     entry_dollars_fees,
+    imported_day_fees,
+    imported_day_net,
+    imported_fills_by_day,
     trading_days,
 )
 from meic.reporting.metrics import (
@@ -114,6 +129,11 @@ def _summary_core(scoped: list[Event]) -> dict[str, Any]:
         "total_credit": str(r.total_credit),
         "day_win_rate": _s(r.day_win_rate), "entry_win_rate": _s(r.entry_win_rate),
         "premium_capture": _s(r.premium_capture),
+        # RPT-16: broker-imported days' contribution -- already folded into
+        # net_pnl/gross_pnl/fees above; broken out here too so the dashboard
+        # can label it (e.g. "1 imported day") without re-deriving it.
+        "imported_days": r.imported_days, "imported_fills": r.imported_fills,
+        "imported_net": str(r.imported_net), "imported_fees": str(r.imported_fees),
     }
 
 
@@ -123,7 +143,12 @@ def _summary_metrics(scoped: list[Event], cfg: ReportingConfig) -> dict[str, Any
     if cfg.capital_base is None:
         return {"status": "unconfigured"}  # RPT-04/doc-06: required, never a fake denominator
     daily = daily_net(scoped)
-    ordered_days = sorted(daily)
+    # RPT-16 rule 3: a broker-imported day carries no recorded entry-level
+    # intent (targets, probes, stop timing) -- not reconstructable honestly --
+    # so it is EXCLUDED from every strategy-quality metric input here
+    # (Sharpe/Sortino/MDD/expectancy/streaks all derive from `values` below).
+    imported_days = {e.day for e in scoped if isinstance(e, ExternalFillImported)}
+    ordered_days = sorted(d for d in daily if d not in imported_days)
     values = [daily[d] for d in ordered_days]
     entry_pnls = [entry_dollars(e) for e in _filled_entries(scoped)]
     base = cfg.capital_base
@@ -197,7 +222,13 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
     # follow-up in the slice-2 handoff.
     buybacks = Decimal("0")
     net_slippage = Decimal("0")
-    expected_net = core_results(scoped).net_pnl
+    # RPT-16: computed straight from `entries` (like credits/stop_costs/
+    # recoveries/fees above), NOT `core_results(scoped).net_pnl` -- that
+    # figure now also includes any broker-imported day's cash (RPT-16 rule 3
+    # excludes imports from this entry-only waterfall), and mixing the two
+    # would produce a spurious WaterfallResidualError whenever an imported
+    # day is in scope even though nothing here is actually unreconciled.
+    expected_net = sum((entry_dollars(e) for e in entries), Decimal("0"))
     try:
         wf = build_waterfall(credits=credits, stop_costs=stop_costs, recoveries=recoveries,
                              buybacks=buybacks, fees=fees, slippage=net_slippage,
@@ -216,7 +247,7 @@ def _summary_waterfall(scoped: list[Event]) -> dict[str, Any]:
 def _trust_payload(events: list[Event], days: tuple[str, ...]) -> dict[str, Any]:
     t = trust_stamp(events, days)
     return {"status": t.status, "confirmed_days": t.confirmed_days,
-            "total_days": t.total_days, "label": t.label}
+            "total_days": t.total_days, "label": t.label, "imported_days": t.imported_days}
 
 
 def _markers(scoped: list[Event]) -> list[dict[str, Any]]:
@@ -258,12 +289,20 @@ def _day_slippage_families(scoped: list[Event]) -> dict[str, Any]:
     }
 
 
+_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def build_reports_router(
     events: list[Event],
     *,
     mode: Callable[[], str],
     config: ReportingConfig,
     now: Callable[[], str] | None = None,
+    broker_reads: Any = None,  # RPT-16: optional BackfillBrokerFacade (day_fills only) --
+    # None (the default, and what paper/no-broker roots pass) makes the
+    # backfill endpoint 400 rather than reaching for a broker that isn't
+    # there. See module docstring for why this is the one deliberate
+    # exception to "this module holds no broker reference".
 ) -> APIRouter:
     """`events` is the LIVE composition's own durable event log (never a
     mock/demo source, per doc 10 Principle 1) -- callers pass
@@ -301,7 +340,13 @@ def build_reports_router(
     def report_day(iso_date: str) -> dict[str, Any]:
         scoped = scope_events(events, (iso_date,))
         day_state = fold(scoped)
-        if day_state.date is None and not day_state.entries and not day_state.skipped:
+        imported_fills = imported_fills_by_day(scoped).get(iso_date, ())
+        # RPT-16: an imported-only day has no fold entries/skips at all (it
+        # was never armed/attempted by this process) -- without this it
+        # would 404 as "no data", even though the broker plainly moved money
+        # that day.
+        if (day_state.date is None and not day_state.entries and not day_state.skipped
+                and not imported_fills):
             raise HTTPException(status_code=404, detail="no_data_for_day")
         entries_payload = []
         for entry_id, e in sorted(day_state.entries.items()):
@@ -324,7 +369,39 @@ def build_reports_router(
                 "field": c.field, "bot_value": c.bot_value, "broker_value": c.broker_value,
                 "diff": c.diff, "at": c.at,
             } for c in corrections_for_day(events, iso_date)],
+            # RPT-16: broker-imported fills for this day (cash-level only --
+            # no recorded entry intent, so these never appear in `entries`
+            # above). Empty list on a normal (non-imported) day.
+            "imported_fills": [{
+                "order_id": f.order_id, "symbol": f.symbol, "action": f.action,
+                "quantity": f.quantity, "price": _s(f.price), "fee": _s(f.fee), "at": f.at,
+            } for f in imported_fills],
+            "imported_cash": None if not imported_fills else {
+                "net": str(imported_day_net(imported_fills)),
+                "fees": str(imported_day_fees(imported_fills)),
+            },
         }
+
+    @router.post("/backfill/{day}")
+    async def backfill(day: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """RPT-16: one-time, operator-triggered import of pre-journal broker
+        history for `day`, restricted to the operator-supplied `order_ids`
+        (OWN-03). Mutating POST -> gated by the SAME auth/origin middleware
+        as every other command (adapters/api/app.py's security middleware)."""
+        if not _DAY_RE.fullmatch(day):
+            raise HTTPException(status_code=400, detail="bad_day_format")
+        if broker_reads is None:
+            raise HTTPException(status_code=400, detail="backfill_unavailable_no_broker")
+        order_ids = set((body or {}).get("order_ids") or [])
+        if not order_ids:
+            raise HTTPException(status_code=400, detail="order_ids_required")
+
+        from meic.application.backfill import backfill_day
+
+        def _now_iso() -> str:
+            return datetime.now().astimezone().isoformat()
+
+        return await backfill_day(events, broker_reads, day, order_ids, now_iso=_now_iso)
 
     _CSV_TABLES = ("daily", "entries", "corrections")
 

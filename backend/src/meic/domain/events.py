@@ -353,3 +353,36 @@ class EntryMarkSample(Event):
     put_long_mid: Decimal | None = None
     call_short_mid: Decimal | None = None
     call_long_mid: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class ExternalFillImported(Event):
+    """RPT-16 (proposed amendment, AMENDMENT-PROPOSAL-historical-backfill.md):
+    one broker fill leg imported, one-time and operator-triggered, from
+    broker history for a day that predates the durable event journal
+    (REC-01, 2026-07-10). Deliberately NEVER `CondorFilled` -- imported
+    history is data, not intent: the bot recorded no decision for these
+    fills, only the broker's own record of what happened (REC-02: the log
+    is authoritative for INTENT, and there is none to record here).
+
+    OWN-03: `order_id` is always one of the operator-supplied bot/agent
+    order ids -- application/backfill.py enforces this at import time; a
+    fill outside that list is never represented by this event at all (it is
+    counted `skipped_foreign` and dropped).
+
+    Written only by application/backfill.py's `backfill_day`, which reads
+    each field straight off the broker's own `Transaction` record (see that
+    module's docstring for the exact SDK field mapping) -- never re-derived.
+    """
+    day: str            # YYYY-MM-DD, the ET trading day this fill belongs to
+    at: str              # ISO -- the fill's OWN broker-reported timestamp (Transaction.executed_at)
+    order_id: str
+    symbol: str
+    action: str          # broker's own action string, e.g. "Sell to Open" | "Buy to Close"
+    quantity: int
+    price: Decimal | None    # broker-allocated fill price; None if the broker reported none
+    fee: Decimal | None      # this leg's total fees (regulatory + clearing + commission +
+                             # proprietary index option), as a POSITIVE cost -- None only if
+                             # the broker reported no fee data at all for this leg
+    imported_at: str     # ISO wall-clock timestamp of the IMPORT itself (audit trail, RPT-16(5))
+    source: str          # e.g. "tastytrade_history"

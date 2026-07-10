@@ -206,6 +206,10 @@ def create_app(
     reporting_config: Any = None,  # RPT-10: reports.ReportingConfig; None -> /reports/* still
     # mounted (GETs are origin-open like every other read model) but return_metrics
     # renders "unconfigured" (doc 06: capital_base required for return metrics).
+    backfill_broker_reads: Any = None,  # RPT-16: optional BackfillBrokerFacade (day_fills
+    # only) for POST /reports/backfill/{day}. None (paper's default) makes that one
+    # endpoint 400 rather than reaching for a broker that isn't there -- every other
+    # route on the panel is unaffected.
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -531,6 +535,7 @@ def create_app(
 
     app.include_router(build_reports_router(
         events, mode=lambda: state.trading_mode,
-        config=reporting_config or ReportingConfig(capital_base=None)))
+        config=reporting_config or ReportingConfig(capital_base=None),
+        broker_reads=backfill_broker_reads))
 
     return app

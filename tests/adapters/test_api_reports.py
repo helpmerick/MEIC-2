@@ -19,17 +19,29 @@ from meic.domain.events import (
     EntryClosed,
     EntryMarkSample,
     EntrySkipped,
+    ExternalFillImported,
     ShortStopped,
 )
 
 PANEL = "http://127.0.0.1"
 
 
-def _client(events=None, *, reporting_config=None):
+def _client(events=None, *, reporting_config=None, backfill_broker_reads=None):
     state = PersistentState(InMemoryStateStore())
     events = events if events is not None else []
-    app = create_app(state, events, panel_origin=PANEL, reporting_config=reporting_config)
+    app = create_app(state, events, panel_origin=PANEL, reporting_config=reporting_config,
+                     backfill_broker_reads=backfill_broker_reads)
     return TestClient(app), state, events
+
+
+def _imported(day="2026-07-09", *, order_id="482214732", action="Sell to Open",
+             price="3.00", fee="1.42") -> ExternalFillImported:
+    return ExternalFillImported(
+        day=day, at=f"{day}T14:31:00-04:00", order_id=order_id,
+        symbol="SPXW  260709P05600000", action=action, quantity=1,
+        price=D(price) if price is not None else None,
+        fee=D(fee) if fee is not None else None,
+        imported_at="2026-07-10T09:00:00-04:00", source="tastytrade_history")
 
 
 def test_reports_endpoints_require_no_origin_get_is_open():
@@ -190,6 +202,151 @@ def test_csv_export_rejects_an_unknown_table():
     client, _, _ = _client()
     r = client.get("/reports/csv?table=nonsense&period=all")
     assert r.status_code == 422
+
+
+def test_summary_counts_an_imported_day_as_a_trading_day_and_labels_it():
+    """RPT-01: an imported day counts as a trading day; RPT-16(4): its trust
+    label counts it out separately rather than folding it into the N/M
+    broker-confirmed count."""
+    events = [DayArmed(date="2026-07-08", entry_count=1),
+              CondorFilled(entry_id="2026-07-08#1", net_credit=D("4.00")),
+              _imported("2026-07-09")]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    assert body["period_days"] == ["2026-07-08", "2026-07-09"]
+    assert body["trust"]["imported_days"] == 1
+    assert "1 imported day" in body["trust"]["label"]
+
+
+def test_imported_day_contributes_cash_to_core_but_not_to_filled_or_credit():
+    """RPT-16 rule 3: cash-level net/fees flow into core totals; entry-based
+    figures (filled count, total_credit, entry_win_rate) stay pure."""
+    events = [_imported("2026-07-09", price="3.00", fee="1.42")]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    core = body["core"]
+    assert core["imported_days"] == 1
+    assert core["imported_fills"] == 1
+    # Sell to Open, price 3.00 x qty 1 x $100 multiplier => +300.00 gross credit;
+    # `fee` is already a REAL-DOLLAR broker charge (never per-share, unlike the
+    # domain event `fee` fields) -- no further multiplier: net = 300.00 - 1.42.
+    assert core["imported_net"] == "298.58"
+    assert core["net_pnl"] == "298.58"
+    assert core["imported_fees"] == "1.42"
+    assert core["fees"] == "1.42"
+    assert core["filled"] == 0            # no fold entry -- never an "entry attempt"
+    assert core["total_credit"] == "0"  # entries-only, untouched by imports
+
+
+def test_imported_day_excluded_from_sharpe_metrics_daily_series():
+    """RPT-16 rule 3: a series with an imported day yields the SAME Sharpe
+    inputs as without it."""
+    real_events = [DayArmed(date=f"2026-07-{d:02d}", entry_count=1) for d in range(1, 6)]
+    cfg = ReportingConfig(capital_base=D("10000"))
+    baseline_client, _, _ = _client(real_events, reporting_config=cfg)
+    baseline = baseline_client.get("/reports/summary?period=all").json()["metrics"]
+
+    with_import_client, _, _ = _client(real_events + [_imported("2026-07-20")], reporting_config=cfg)
+    with_import = with_import_client.get("/reports/summary?period=all").json()["metrics"]
+
+    assert with_import["sharpe"] == baseline["sharpe"]
+    assert with_import["sample_days"] == baseline["sample_days"]
+
+
+def test_day_drilldown_renders_imported_fills_badge_and_cash_no_404():
+    events = [_imported("2026-07-09")]
+    client, _, _ = _client(events)
+    r = client.get("/reports/day/2026-07-09")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trust"]["status"] == "broker-imported"
+    assert body["entries"] == []
+    assert len(body["imported_fills"]) == 1
+    assert body["imported_fills"][0]["order_id"] == "482214732"
+    assert body["imported_fills"][0]["action"] == "Sell to Open"
+    assert body["imported_cash"]["net"] == "298.58"
+    assert body["imported_cash"]["fees"] == "1.42"
+
+
+def test_day_drilldown_imported_fills_scoped_to_the_requested_day_only():
+    """The `.day` field, not `.date`, so periods.scope_events must key on it
+    too -- otherwise an imported fill from another day would leak in."""
+    events = [_imported("2026-07-08", order_id="1"), _imported("2026-07-09", order_id="2")]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-08").json()
+    assert len(body["imported_fills"]) == 1
+    assert body["imported_fills"][0]["order_id"] == "1"
+
+
+class _FakeBroker:
+    def __init__(self, fills):
+        self._fills = fills
+
+    async def day_fills(self, day):
+        return self._fills
+
+
+class _FakeTransaction:
+    def __init__(self, order_id, symbol="X", action="Sell to Open", quantity=D("1"),
+                price=D("3.00")):
+        from datetime import datetime, timezone
+        self.order_id = order_id
+        self.symbol = symbol
+        self.action = action
+        self.quantity = quantity
+        self.price = price
+        self.executed_at = datetime(2026, 7, 9, 14, 30, tzinfo=timezone.utc)
+        self.regulatory_fees = None
+        self.clearing_fees = None
+        self.commission = None
+        self.proprietary_index_option_fees = None
+
+
+def test_backfill_requires_auth_like_any_other_mutating_command():
+    """NFR-06: a foreign Origin is rejected even for this endpoint, exactly
+    like every other mutating command."""
+    client, _, _ = _client(backfill_broker_reads=_FakeBroker([]))
+    r = client.post("/reports/backfill/2026-07-09", json={"order_ids": ["1"]},
+                    headers={"origin": "http://evil.example"})
+    assert r.status_code == 403
+
+
+def test_backfill_happy_path_imports_only_supplied_order_ids():
+    fills = [_FakeTransaction(order_id=1), _FakeTransaction(order_id=2)]
+    client, _, events = _client(backfill_broker_reads=_FakeBroker(fills))
+    r = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"result": "imported", "fills": 1, "skipped_foreign": 1}
+    assert len([e for e in events if isinstance(e, ExternalFillImported)]) == 1
+
+
+def test_backfill_reimport_is_a_no_op():
+    client, _, events = _client(backfill_broker_reads=_FakeBroker([_FakeTransaction(order_id=1)]))
+    r1 = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
+    assert r1.json()["result"] == "imported"
+    r2 = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
+    assert r2.json() == {"result": "already_imported", "count": 1}
+
+
+def test_backfill_bad_day_format_is_400():
+    client, _, _ = _client(backfill_broker_reads=_FakeBroker([]))
+    r = client.post("/reports/backfill/not-a-day", json={"order_ids": ["1"]})
+    assert r.status_code == 400
+
+
+def test_backfill_without_a_broker_facade_is_400():
+    """paper/no-broker composition roots pass no facade -- the endpoint must
+    fail closed, never silently no-op or reach for a broker that isn't there."""
+    client, _, _ = _client()  # no backfill_broker_reads
+    r = client.post("/reports/backfill/2026-07-09", json={"order_ids": ["1"]})
+    assert r.status_code == 400
+
+
+def test_backfill_requires_order_ids():
+    client, _, _ = _client(backfill_broker_reads=_FakeBroker([]))
+    r = client.post("/reports/backfill/2026-07-09", json={"order_ids": []})
+    assert r.status_code == 400
 
 
 def test_paper_and_live_events_are_never_commingled():

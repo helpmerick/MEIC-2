@@ -184,6 +184,29 @@ describe("App — Results routing (UI-27)", () => {
     expect(screen.getByText(/Day drill-down — 2026-07-10/i)).toBeInTheDocument();
   });
 
+  it("a day drill-down with imported fills renders the RPT-16 table and badge", async () => {
+    vi.spyOn(api, "getReportDay").mockResolvedValue({
+      date: "2026-07-09", mode: "live",
+      trust: { status: "broker-imported", confirmed_days: 0, total_days: 1, label: "broker-imported", imported_days: 1 },
+      entries: [], skips: [],
+      timeline: { marks: [], markers: [] },
+      slippage: { stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 }, long_recovery: null, closes: null, decay_buybacks: null },
+      corrections: [],
+      imported_fills: [{
+        order_id: "482214732", symbol: "SPXW  260709P05600000", action: "Sell to Open",
+        quantity: 1, price: "3.00", fee: "1.42", at: "2026-07-09T14:31:00-04:00",
+      }],
+      imported_cash: { net: "298.58", fees: "1.42" },
+    });
+    window.location.hash = "#/results/day/2026-07-09";
+    render(<App />);
+    await screen.findByTestId("day-drilldown");
+    expect(screen.getByTestId("trust-badge")).toHaveTextContent("broker-imported");
+    const table = screen.getByTestId("imported-fills-table");
+    expect(table).toHaveTextContent("482214732");
+    expect(table).toHaveTextContent("Sell to Open");
+  });
+
   it("the Trading page keeps its Outage drill / Flatten all buttons; Results does not", async () => {
     render(<App />);
     expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();

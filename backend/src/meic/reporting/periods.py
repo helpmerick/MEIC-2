@@ -18,6 +18,7 @@ from meic.domain.events import (
     EntryMarkSample,
     EntrySkipped,
     Event,
+    ExternalFillImported,
     LongSold,
     ShortStopped,
     SideClosed,
@@ -31,8 +32,13 @@ _ENTRY_SCOPED = (
     CondorProposed, CondorFilled, ShortStopped, LongSold,
     SideClosed, SideExpired, EntryClosed, EntryCompleted, EntryMarkSample,
 )
-# Events keyed directly by a `date`/`day` field.
+# Events keyed directly by a `date` field.
 _DAY_SCOPED = (DayArmed, EntrySkipped, DayCompleted, DayBrokerConfirmed, CorrectionRecord)
+# RPT-16: keyed by its own `day` field (not `date` -- a distinct name so an
+# imported row is never mistaken for a bot-recorded day-scoped event). Without
+# its own branch here this would fall into the "unscoped -> passthrough" case
+# below and leak into every period regardless of the requested day/month/year.
+_DAY_FIELD_SCOPED = (ExternalFillImported,)
 
 
 def _entry_day(entry_id: str) -> str:
@@ -74,6 +80,9 @@ def scope_events(events: list[Event], days: tuple[str, ...]) -> list[Event]:
     for e in events:
         if isinstance(e, _DAY_SCOPED):
             if getattr(e, "date", None) in day_set:
+                out.append(e)
+        elif isinstance(e, _DAY_FIELD_SCOPED):
+            if getattr(e, "day", None) in day_set:
                 out.append(e)
         elif isinstance(e, _ENTRY_SCOPED):
             if _entry_day(e.entry_id) in day_set:

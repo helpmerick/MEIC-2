@@ -193,12 +193,16 @@ export interface DayStatus {
 // money/ratio field is a Decimal-as-string (UI-03: no client float re-derivation).
 // =============================================================================
 
-// RPT-15/UI-25 — every metric block's trust chip.
+// RPT-15/UI-25 — every metric block's trust chip. RPT-16 (proposed amendment)
+// adds "broker-imported": a day imported from broker history is broker truth
+// by construction, but never "broker-confirmed" (that label means the bot's
+// OWN computation matched the broker's, which never happened for an import).
 export interface TrustBlock {
-  status: "broker-confirmed" | "bot-computed";
+  status: "broker-confirmed" | "bot-computed" | "broker-imported";
   confirmed_days: number;
   total_days: number;
   label: string;
+  imported_days?: number;
 }
 
 // RPT-02 core results for the scoped period.
@@ -349,6 +353,18 @@ export interface CorrectionEntry {
   at: string;
 }
 
+// RPT-16 (proposed amendment) — one broker-imported fill leg, rendered on the
+// day drill-down for a day that predates the event journal.
+export interface ImportedFill {
+  order_id: string;
+  symbol: string;
+  action: string;
+  quantity: number;
+  price: string | null;
+  fee: string | null;
+  at: string;
+}
+
 export interface DayReportDetail {
   date: string;
   mode: "paper" | "live";
@@ -358,6 +374,8 @@ export interface DayReportDetail {
   timeline: { marks: MarkSample[]; markers: TimelineMarker[] };
   slippage: DaySlippageFamilies;
   corrections: CorrectionEntry[];
+  imported_fills?: ImportedFill[];
+  imported_cash?: { net: string; fees: string } | null;
 }
 
 // RPT-10 CSV export's "daily" table — the only per-day net-P&L SERIES the
