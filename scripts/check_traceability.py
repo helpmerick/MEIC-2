@@ -22,6 +22,7 @@ def main() -> int:
     rules = set(re.findall(r"\*\*((?:DAY|ENT|STK|ORD|STP|LEX|EOD|RSK|DAT|REC|PNL|CLS|TPF|DCY|OWN|NLE|SIM)-\d{2}[a-d]?)", read("01-strategy-rules.md")))
     rules |= set(re.findall(r"\*\*(EC-[A-Z]+-\d{2})", read("02-edge-cases.md")))
     rules |= set(re.findall(r"\*\*(NFR-\d{2})", read("05-architecture-ddd.md")))
+    rules |= set(re.findall(r"\*\*(RPT-\d{2})", read("10-results-dashboard.md")))
     # Expand shorthand notations in the tests doc into full IDs:
     #   slash lists:  CLS-01/05, EC-ENT-03/04, TPF-06/07/09
     #   arrow ranges: EC-ENT-01→13, LEX-01→09
