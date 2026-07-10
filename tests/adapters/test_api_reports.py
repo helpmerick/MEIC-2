@@ -279,16 +279,20 @@ def test_day_drilldown_imported_fills_scoped_to_the_requested_day_only():
 
 
 class _FakeBroker:
-    def __init__(self, fills):
+    def __init__(self, fills, settlements=None):
         self._fills = fills
+        self._settlements = settlements if settlements is not None else []
 
     async def day_fills(self, day):
         return self._fills
 
+    async def day_settlements(self, day):
+        return self._settlements
+
 
 class _FakeTransaction:
     def __init__(self, order_id, symbol="X", action="Sell to Open", quantity=D("1"),
-                price=D("3.00")):
+                price=D("3.00"), transaction_sub_type=None, value=None, net_value=None):
         from datetime import datetime, timezone
         self.order_id = order_id
         self.symbol = symbol
@@ -300,6 +304,9 @@ class _FakeTransaction:
         self.clearing_fees = None
         self.commission = None
         self.proprietary_index_option_fees = None
+        self.transaction_sub_type = transaction_sub_type
+        self.value = value
+        self.net_value = net_value
 
 
 def test_backfill_requires_auth_like_any_other_mutating_command():
@@ -317,16 +324,75 @@ def test_backfill_happy_path_imports_only_supplied_order_ids():
     r = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
     assert r.status_code == 200
     body = r.json()
-    assert body == {"result": "imported", "fills": 1, "skipped_foreign": 1}
+    assert body == {"result": "imported", "fills": 1, "skipped_foreign": 1,
+                    "settlements": 0, "ambiguous_settlements": 0}
     assert len([e for e in events if isinstance(e, ExternalFillImported)]) == 1
 
 
-def test_backfill_reimport_is_a_no_op():
+def test_backfill_reimport_appends_nothing_transaction_level_idempotency():
+    """RPT-16(5), REWORKED per operator ruling 2026-07-10: identity is
+    transaction-level, so a re-run re-fetches but appends nothing new --
+    never a duplicate."""
     client, _, events = _client(backfill_broker_reads=_FakeBroker([_FakeTransaction(order_id=1)]))
     r1 = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
-    assert r1.json()["result"] == "imported"
+    assert r1.json()["fills"] == 1
     r2 = client.post("/reports/backfill/2026-07-09", json={"order_ids": [1]})
-    assert r2.json() == {"result": "already_imported", "count": 1}
+    assert r2.json() == {"result": "imported", "fills": 0, "skipped_foreign": 0,
+                         "settlements": 0, "ambiguous_settlements": 0}
+    assert len([e for e in events if isinstance(e, ExternalFillImported)]) == 1
+
+
+def test_backfill_endpoint_round_trip_settlement_makes_the_day_a_loss():
+    """RPT-16 settlement import (operator ruling 2026-07-10), end to end:
+    import the real-shaped 2026-07-09 order + its Receive-Deliver rows, then
+    read the day back -- the drill-down must show net -13.88 (a loss), never
+    the +355.12 entry-credit-only view, and render the settlement rows with
+    their sub_type action and signed value."""
+    def leg(symbol, action, price):
+        t = _FakeTransaction(order_id=482390058, symbol=symbol, action=action, price=price)
+        t.regulatory_fees = D("-0.04")
+        t.clearing_fees = D("-0.10")
+        t.commission = D("-1.00")
+        t.proprietary_index_option_fees = D("-0.08")  # 1.22/leg -> 4.88 total
+        return t
+
+    fills = [leg("SPXW  260709P07535000", "Sell to Open", D("2.20")),
+             leg("SPXW  260709P07510000", "Buy to Open", D("0.40")),
+             leg("SPXW  260709C07540000", "Sell to Open", D("2.15")),
+             leg("SPXW  260709C07565000", "Buy to Open", D("0.35"))]
+    settlements = [
+        _FakeTransaction(order_id=None, symbol="SPXW  260709C07540000", action=None,
+                         price=D("7540.0"), transaction_sub_type="Cash Settled Assignment",
+                         value=D("-364.0"), net_value=D("-369.0")),
+        _FakeTransaction(order_id=None, symbol="SPXW  260709P07535000", action=None,
+                         price=None, transaction_sub_type="Expiration",
+                         value=D("0"), net_value=D("0")),
+        _FakeTransaction(order_id=None, symbol="SPXW  260709P07510000", action=None,
+                         price=None, transaction_sub_type="Expiration",
+                         value=D("0"), net_value=D("0")),
+        _FakeTransaction(order_id=None, symbol="SPXW  260709C07565000", action=None,
+                         price=None, transaction_sub_type="Expiration",
+                         value=D("0"), net_value=D("0")),
+    ]
+    client, _, events = _client(backfill_broker_reads=_FakeBroker(fills, settlements))
+    r = client.post("/reports/backfill/2026-07-09", json={"order_ids": [482390058]})
+    assert r.json() == {"result": "imported", "fills": 4, "skipped_foreign": 0,
+                        "settlements": 4, "ambiguous_settlements": 0}
+
+    body = client.get("/reports/day/2026-07-09").json()
+    assert body["imported_cash"] == {"net": "-13.88", "fees": "9.88"}
+    rows = body["imported_fills"]
+    assert len(rows) == 8
+    cash_row = next(f for f in rows if f["action"] == "Cash Settled Assignment")
+    assert cash_row["value"] == "-369.0"
+    assert cash_row["fee"] == "5.0"
+    assert cash_row["price"] == "7540.0"
+    trade_row = next(f for f in rows if f["action"] == "Sell to Open")
+    assert trade_row["value"] is None  # Trade-style rows carry no settlement value
+
+    core = client.get("/reports/summary?period=all").json()["core"]
+    assert core["imported_net"] == "-13.88"
+    assert core["net_pnl"] == "-13.88"
 
 
 def test_backfill_bad_day_format_is_400():

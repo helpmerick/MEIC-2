@@ -373,12 +373,23 @@ class ExternalFillImported(Event):
     Written only by application/backfill.py's `backfill_day`, which reads
     each field straight off the broker's own `Transaction` record (see that
     module's docstring for the exact SDK field mapping) -- never re-derived.
+
+    `value` (operator ruling 2026-07-10, after the 2026-07-09 C7540 cash
+    assignment showed an entry-credit-only view masking a real loss):
+    the broker's own NET cash effect (`Transaction.net_value`) for a
+    Receive-Deliver settlement row (cash-settled assignment / expiration /
+    the paired zero-value removal) -- None for an ordinary Trade-style fill
+    leg, which keeps computing its dollar effect from `price` x `quantity`
+    (see reporting/folds.py `imported_fill_dollars`). Always signed and
+    already net of that row's own fee; never fabricated for a Trade row.
     """
     day: str            # YYYY-MM-DD, the ET trading day this fill belongs to
     at: str              # ISO -- the fill's OWN broker-reported timestamp (Transaction.executed_at)
     order_id: str
     symbol: str
-    action: str          # broker's own action string, e.g. "Sell to Open" | "Buy to Close"
+    action: str          # broker's own action string, e.g. "Sell to Open" | "Buy to Close",
+                          # or -- for a settlement row -- the transaction_sub_type string,
+                          # e.g. "Cash Settled Assignment" | "Expiration" | "Assignment"
     quantity: int
     price: Decimal | None    # broker-allocated fill price; None if the broker reported none
     fee: Decimal | None      # this leg's total fees (regulatory + clearing + commission +
@@ -386,3 +397,4 @@ class ExternalFillImported(Event):
                              # the broker reported no fee data at all for this leg
     imported_at: str     # ISO wall-clock timestamp of the IMPORT itself (audit trail, RPT-16(5))
     source: str          # e.g. "tastytrade_history"
+    value: Decimal | None = None  # settlement rows only -- see docstring above

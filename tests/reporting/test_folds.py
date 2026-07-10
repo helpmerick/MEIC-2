@@ -123,3 +123,73 @@ def test_day_snapshot_not_flat_when_an_entry_is_still_open():
 def test_day_snapshot_on_a_day_with_no_entries_is_flat_and_zero():
     snap = day_snapshot([], "2026-07-09")
     assert snap.flat is True and snap.fees == D("0") and snap.net == D("0") and snap.fill_count == 0
+
+
+# --- RPT-16 settlement import (operator ruling 2026-07-10) --------------------
+
+def _imported(symbol, action, *, price=None, fee=None, value=None, qty=1,
+              order_id="482390058", day="2026-07-09"):
+    from meic.domain.events import ExternalFillImported
+
+    return ExternalFillImported(
+        day=day, at=f"{day}T15:29:00-04:00", order_id=order_id, symbol=symbol,
+        action=action, quantity=qty, price=price, fee=fee, value=value,
+        imported_at="2026-07-10T09:00:00-04:00", source="tastytrade_history")
+
+
+def test_imported_fill_dollars_uses_signed_value_directly_for_settlement_rows():
+    """A settlement row's `value` is the broker's own NET cash effect in real
+    dollars -- signed, already net of fee, NO x100 contract multiplier."""
+    from meic.reporting.folds import imported_fill_dollars
+
+    cash = _imported("SPXW  260709C07540000", "Cash Settled Assignment",
+                     price=D("7540.0"), fee=D("5.00"), value=D("-369.00"))
+    assert imported_fill_dollars(cash) == D("-369.00")
+
+    zero = _imported("SPXW  260709P07535000", "Expiration", fee=D("0"), value=D("0"))
+    assert imported_fill_dollars(zero) == D("0")
+
+
+def test_imported_fill_dollars_keeps_price_x100_math_for_trade_rows():
+    from meic.reporting.folds import imported_fill_dollars
+
+    sell = _imported("SPXW  260709P07535000", "Sell to Open", price=D("2.20"), fee=D("1.22"))
+    assert imported_fill_dollars(sell) == D("220.00")
+
+
+def test_imported_day_net_is_minus_13_88_for_the_real_2026_07_09_day():
+    """The ruling's acceptance criterion: entry credit 355.12 (3.60 credit
+    x100 - 4.88 fees) plus the -369.00 settlement = -13.88; total fees
+    4.88 + 5.00 = 9.88. The settlement's own fee must NOT be subtracted a
+    second time (its value is already net-of-fee)."""
+    from meic.reporting.folds import imported_day_fees, imported_day_net
+
+    fills = (
+        _imported("SPXW  260709P07535000", "Sell to Open", price=D("2.20"), fee=D("1.22")),
+        _imported("SPXW  260709P07510000", "Buy to Open", price=D("0.40"), fee=D("1.22")),
+        _imported("SPXW  260709C07540000", "Sell to Open", price=D("2.15"), fee=D("1.22")),
+        _imported("SPXW  260709C07565000", "Buy to Open", price=D("0.35"), fee=D("1.22")),
+        _imported("SPXW  260709C07540000", "Cash Settled Assignment",
+                  price=D("7540.0"), fee=D("5.00"), value=D("-369.00")),
+        _imported("SPXW  260709P07535000", "Expiration", fee=D("0"), value=D("0")),
+        _imported("SPXW  260709P07510000", "Expiration", fee=D("0"), value=D("0")),
+        _imported("SPXW  260709C07565000", "Expiration", fee=D("0"), value=D("0")),
+    )
+    assert imported_day_net(fills) == D("-13.88")
+    assert imported_day_fees(fills) == D("9.88")
+
+
+def test_daily_net_and_core_results_fold_the_settlement_into_the_day():
+    events = [
+        _imported("SPXW  260709C07540000", "Sell to Open", price=D("2.15"), fee=D("1.22")),
+        _imported("SPXW  260709C07540000", "Cash Settled Assignment",
+                  price=D("7540.0"), fee=D("5.00"), value=D("-369.00")),
+    ]
+    # 2.15*100 - 1.22 = 213.78; 213.78 - 369.00 = -155.22
+    assert daily_net(events) == {"2026-07-09": D("-155.22")}
+    r = core_results(events)
+    assert r.net_pnl == D("-155.22")
+    assert r.imported_net == D("-155.22")
+    assert r.imported_fees == D("6.22")
+    assert r.imported_fills == 2
+    assert r.gross_pnl == r.net_pnl + r.fees  # fee add-back identity holds

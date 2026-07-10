@@ -366,13 +366,15 @@ async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn
 
 class _BrokerReadFacade:
     """RPT-15: the ONLY thing `ReportReconciler` ever sees of the broker --
-    three read-only forwards. Deliberately declared here (adapters/api), not
+    plain read-only forwards. Deliberately declared here (adapters/api), not
     in application/report_reconciler.py, which imports NOTHING from
     meic.adapters at all (tests/application/test_report_reconciler_structural.py
     asserts this): this wrapper is what makes that true, by holding the ONLY
     reference to the real `TastytradeAdapter` (`comp.broker`) and exposing
-    NOTHING beyond these three methods -- no submit/replace/cancel is even
-    reachable through it.
+    NOTHING beyond these methods -- no submit/replace/cancel is even
+    reachable through it. `day_settlements` (RPT-16, operator ruling
+    2026-07-10) is the same shape -- application/backfill.py never sees
+    `comp.broker` directly either.
     """
 
     def __init__(self, broker) -> None:
@@ -383,6 +385,9 @@ class _BrokerReadFacade:
 
     async def day_fills(self, day: str):
         return await self._broker.day_fills(day)
+
+    async def day_settlements(self, day: str):
+        return await self._broker.day_settlements(day)
 
     async def cash_and_fees(self, day: str):
         return await self._broker.cash_and_fees(day)
@@ -688,9 +693,9 @@ def live_app():
     # no enricher (SIM-01 marks are synthetic, nothing honest to show).
     reporting_config = _reporting_config(
         env, stop_loss_pct=lambda: _current_stop_loss_pct(comp.state))
-    # RPT-16: the SAME read-only facade RPT-15's reconciler uses (day_fills
-    # only) -- never comp.broker directly -- so the one-time backfill endpoint
-    # is structurally incapable of any order action either.
+    # RPT-16: the SAME read-only facade RPT-15's reconciler uses (day_fills +
+    # day_settlements only) -- never comp.broker directly -- so the one-time
+    # backfill endpoint is structurally incapable of any order action either.
     app = create_app(comp.state, comp.events, api_token=token, commands=commands,
                      entries_enricher=_live_pnl_enricher(live["snapshots"]),
                      reporting_config=reporting_config,

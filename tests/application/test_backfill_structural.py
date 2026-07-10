@@ -41,8 +41,9 @@ def test_backfill_source_has_no_order_action_capability():
 
 def test_backfill_facade_protocol_declares_only_read_methods():
     """The narrow `BackfillBrokerFacade` Protocol this module defines carries
-    ONLY the one read fetch RPT-16 needs -- never an order-action method."""
+    ONLY the two read fetches RPT-16 needs (Trade fills + Receive-Deliver
+    settlements, operator ruling 2026-07-10) -- never an order-action method."""
     from meic.application.backfill import BackfillBrokerFacade
 
     methods = {name for name in vars(BackfillBrokerFacade) if not name.startswith("_")}
-    assert methods == {"day_fills"}
+    assert methods == {"day_fills", "day_settlements"}

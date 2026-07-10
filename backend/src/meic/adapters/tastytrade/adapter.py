@@ -338,6 +338,25 @@ class TastytradeAdapter:
         return await self._account.get_history(
             self._session, start_date=d, end_date=d, type="Trade")
 
+    async def day_settlements(self, day: str) -> list[Any]:
+        """RPT-16 (operator ruling 2026-07-10): the broker's own
+        Receive-Deliver transactions for `day` -- cash settlement
+        assignments ("Cash Settled Assignment") and worthless-expiry
+        removals ("Expiration" / "Assignment") -- via the SAME
+        `Account.get_history` GET surface as `day_fills`, mirroring its
+        `type=` filter (server-side, exact match on `transaction_type`).
+
+        `end_date` is `day + 1`: a settlement can post to the broker's
+        ledger the day AFTER the trading day it settles even though it
+        belongs to THAT day's expiry (verified live: 2026-07-09's C7540
+        cash-settled assignment). No order-action capability -- a plain GET,
+        same as `day_fills`."""
+        from datetime import date as _date, timedelta
+
+        d = _date.fromisoformat(day)
+        return await self._account.get_history(
+            self._session, start_date=d, end_date=d + timedelta(days=1), type="Receive Deliver")
+
     async def cash_and_fees(self, day: str) -> tuple[Decimal, Decimal]:
         """RPT-15 read-only: (cash_delta, total_fees) for `day`, from the
         broker's own transaction/fees endpoints. `cash_delta` is the sum of

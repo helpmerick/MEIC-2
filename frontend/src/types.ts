@@ -363,6 +363,10 @@ export interface ImportedFill {
   price: string | null;
   fee: string | null;
   at: string;
+  // RPT-16 settlement import (operator ruling 2026-07-10): present only on a
+  // broker Receive-Deliver settlement row (cash-settled assignment /
+  // expiration) — the broker's own signed NET cash effect in real dollars.
+  value?: string | null;
 }
 
 export interface DayReportDetail {

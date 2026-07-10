@@ -61,12 +61,40 @@ yesterday that went to expiry, ignore the rest"):
   to import) and every cancelled/rejected order.
 - The operator's own trading (OWN-03), e.g. 482147293.
 
-Settlement note: expiry cash settlement is not a Trade fill, so the imported
-record is the ENTRY's four fill legs (credit + their fees), rendered with an
-explicit "settlement value not included" note — never a fabricated settlement
-P&L. If the operator wants the settlement cash value shown, the broker's
-Receive-Deliver/settlement transaction can be imported under the same rule as
-a follow-up ruling.
+Settlement note — SUPERSEDED by operator ruling 2026-07-10: **settlements ARE
+imported, always.** The original build imported only the entry's Trade fill
+legs, which rendered 2026-07-09 as +$355.12 (entry credit) when the trade
+actually LOST $13.88 — SPX settled ≈7543.64 and the short C7540 was
+cash-settled-assigned for a net −$369.00 (value −364.00 + $5.00 fee). The
+operator ruled that a P&L showing a losing trade as a winner is unacceptable,
+so:
+
+- The broker's Receive-Deliver transactions for the day (fetched with
+  `end_date = day + 1`, since settlements can post next-day) are imported as
+  `ExternalFillImported` events too: `action` = the broker's
+  `transaction_sub_type` ("Cash Settled Assignment" / "Expiration" /
+  "Assignment"), `value` = the broker's signed `net_value` (already
+  net-of-fee real dollars — a new, additive event field, None on Trade rows),
+  `fee` = `|net_value − value|`. Zero-value Expiration/Assignment removal
+  rows are imported as well: they document the legs' terminal state and cost
+  nothing.
+- **Idempotency is now transaction-level**, not day-level: identity is
+  `(at, symbol, action)` per already-recorded `ExternalFillImported` for the
+  day. Re-running the import on a day imported fills-only ADDS exactly the
+  missing settlement rows once; a further run is a true no-op. (The old
+  day-level "already_imported" short-circuit could never pick up a settlement
+  that posted after the first import.)
+- **Shared-symbol ambiguity guard (OWN-03):** a settlement row carries no
+  order id, so it is matched by SYMBOL against our imported orders' fill
+  symbols. That attribution is only safe when the symbol was not ALSO traded
+  by a foreign position that day — for 2026-07-09's order 482390058 all four
+  symbols (P7535/P7510/C7540/C7565) are unshared, so the matching is exact.
+  A settlement symbol that also appears in skipped-foreign fills is SKIPPED
+  and counted in the endpoint's `ambiguous_settlements` field, never guessed;
+  the general shared-symbol attribution fix needs a future ruling.
+
+With settlements imported, 2026-07-09 renders 355.12 − 369.00 = **−13.88**
+net with 9.88 total fees — the losing trade shows as a loss.
 
 ## Test cases (TC-RPT-10 suggested)
 - Importing a day creates ExternalFillImported events only for the supplied

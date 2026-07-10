@@ -66,10 +66,22 @@ def imported_fills_by_day(events: list[Event]) -> dict[str, tuple[ExternalFillIm
 
 
 def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
-    """RPT-16: real-dollar signed cash effect of one imported fill leg -- a
-    Sell* action is a credit (+), a Buy* action is a debit (-), same
-    CONTRACT_MULTIPLIER (100) used everywhere else in this module. A fill
-    with no broker-allocated price contributes 0 (honest, never fabricated)."""
+    """RPT-16: real-dollar signed cash effect of one imported row.
+
+    A settlement row (`value` present -- operator ruling 2026-07-10, RPT-16
+    settlement import) carries the broker's OWN net cash effect
+    (`Transaction.net_value`) directly: it is real dollars already, not a
+    per-contract price, so there is no `* CONTRACT_MULTIPLIER` and no sign
+    inference -- the broker already signed it. It is also already net of
+    THAT row's own fee (see `imported_day_net`, which must not subtract it
+    a second time).
+
+    A Trade-style fill leg (`value` is None) keeps the original math: a
+    Sell* action is a credit (+), a Buy* action is a debit (-), scaled by
+    CONTRACT_MULTIPLIER (100). A fill with no broker-allocated price
+    contributes 0 (honest, never fabricated)."""
+    if fill.value is not None:
+        return fill.value
     if fill.price is None:
         return Decimal("0")
     sign = Decimal(1) if fill.action.lower().startswith("sell") else Decimal(-1)
@@ -77,18 +89,28 @@ def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
 
 
 def imported_day_fees(fills: tuple[ExternalFillImported, ...]) -> Decimal:
+    """RPT-16: every imported row's own fee, settlement rows included --
+    this is a TOTAL COST figure for display (drill-down `imported_cash.fees`,
+    CoreResults.imported_fees), independent of whether `imported_day_net`
+    below actually subtracts that particular row's fee again."""
     return sum((f.fee for f in fills if f.fee is not None), Decimal("0"))
 
 
 def imported_day_net(fills: tuple[ExternalFillImported, ...]) -> Decimal:
-    """RPT-16: real-dollar NET cash for one imported day -- fees already
-    deducted, matching this module's existing "net" convention everywhere
-    else (`entry_dollars`/`EntryProjection.pnl` are likewise post-fee; `fees`
-    is always reported ALONGSIDE net, never double-subtracted, so
-    `gross_pnl = net_pnl + fees` in core_results correctly backs the fee out
-    again for imported days too)."""
+    """RPT-16: real-dollar NET cash for one imported day.
+
+    A settlement row's `imported_fill_dollars` is ALREADY net of its own fee
+    (it is the broker's `net_value` straight through) -- subtracting
+    `imported_day_fees` again for that row would double-count it. Only a
+    Trade-style row's (price-based, gross) dollar figure still needs its fee
+    backed out here, exactly as before this rule existed. `imported_day_fees`
+    (used elsewhere for the display total, e.g. `gross_pnl = net_pnl + fees`
+    in core_results) still reports every row's fee, settlement included --
+    only THIS function is selective about which fee it actually subtracts."""
     gross = sum((imported_fill_dollars(f) for f in fills), Decimal("0"))
-    return gross - imported_day_fees(fills)
+    trade_style_fees = sum(
+        (f.fee for f in fills if f.value is None and f.fee is not None), Decimal("0"))
+    return gross - trade_style_fees
 
 
 def entries_by_day(events: list[Event]) -> dict[str, tuple[EntryProjection, ...]]:

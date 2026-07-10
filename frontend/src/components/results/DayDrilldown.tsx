@@ -76,18 +76,24 @@ export function DayDrilldown({ date }: { date: string }) {
                     <th>Qty</th>
                     <th>Price</th>
                     <th>Fee</th>
+                    {/* RPT-16 settlement import (operator ruling 2026-07-10): a
+                        Receive-Deliver row's signed net cash effect, real dollars. */}
+                    <th>Value</th>
                     <th>At</th>
                   </tr>
                 </thead>
                 <tbody>
                   {detail.imported_fills.map((f, i) => (
-                    <tr key={i}>
+                    <tr key={i} className={f.value != null ? "imported-settlement-row" : undefined}>
                       <td>{f.order_id}</td>
                       <td>{f.symbol}</td>
                       <td>{f.action}</td>
                       <td>{f.quantity}</td>
                       <td>{f.price ?? "—"}</td>
                       <td>{f.fee ?? "—"}</td>
+                      <td className={f.value != null ? (Number(f.value) >= 0 ? "pos" : "neg") : undefined}>
+                        {f.value ?? "—"}
+                      </td>
                       <td>{f.at}</td>
                     </tr>
                   ))}

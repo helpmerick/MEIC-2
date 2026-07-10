@@ -195,8 +195,15 @@ describe("App — Results routing (UI-27)", () => {
       imported_fills: [{
         order_id: "482214732", symbol: "SPXW  260709P05600000", action: "Sell to Open",
         quantity: 1, price: "3.00", fee: "1.42", at: "2026-07-09T14:31:00-04:00",
+      }, {
+        // RPT-16 settlement import (operator ruling 2026-07-10): a broker
+        // Receive-Deliver row -- action is the sub_type, `value` the signed
+        // net cash effect in real dollars.
+        order_id: "482390058", symbol: "SPXW  260709C07540000", action: "Cash Settled Assignment",
+        quantity: 1, price: "7540.00", fee: "5.00", at: "2026-07-09T22:00:00-04:00",
+        value: "-369.00",
       }],
-      imported_cash: { net: "298.58", fees: "1.42" },
+      imported_cash: { net: "-13.88", fees: "9.88" },
     });
     window.location.hash = "#/results/day/2026-07-09";
     render(<App />);
@@ -205,6 +212,11 @@ describe("App — Results routing (UI-27)", () => {
     const table = screen.getByTestId("imported-fills-table");
     expect(table).toHaveTextContent("482214732");
     expect(table).toHaveTextContent("Sell to Open");
+    // Settlement row renders its sub_type action and signed value, styled distinctly.
+    expect(table).toHaveTextContent("Cash Settled Assignment");
+    expect(table).toHaveTextContent("-369.00");
+    const settlementCell = screen.getByText("Cash Settled Assignment");
+    expect(settlementCell.closest("tr")).toHaveClass("imported-settlement-row");
   });
 
   it("the Trading page keeps its Outage drill / Flatten all buttons; Results does not", async () => {

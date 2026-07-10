@@ -157,6 +157,30 @@ def test_day_fills_calls_get_history_scoped_to_the_day():
     assert calls == [(date(2026, 7, 9), date(2026, 7, 9), "Trade")]
 
 
+def test_day_settlements_calls_get_history_for_receive_deliver_through_next_day():
+    """RPT-16 settlement import (operator ruling 2026-07-10): same
+    `get_history` GET surface as day_fills, `type="Receive Deliver"` filtered
+    server-side (the SDK's `type` param is an exact transaction_type match),
+    and `end_date = day + 1` because a settlement can post to the broker's
+    ledger the day AFTER the trading day it settles."""
+    import asyncio
+    from datetime import date
+
+    calls = []
+
+    class _FakeAccount:
+        async def get_history(self, session, *, start_date, end_date, type):
+            calls.append((start_date, end_date, type))
+            return ["settle1"]
+
+    adapter = TastytradeAdapter("secret", CERT, is_test=True)
+    adapter._account = _FakeAccount()
+
+    result = asyncio.run(adapter.day_settlements("2026-07-09"))
+    assert result == ["settle1"]
+    assert calls == [(date(2026, 7, 9), date(2026, 7, 10), "Receive Deliver")]
+
+
 def test_cash_and_fees_sums_net_value_and_reads_total_fees():
     import asyncio
     from datetime import date

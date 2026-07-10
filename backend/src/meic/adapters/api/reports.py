@@ -13,9 +13,9 @@ in that flow reaches through here.
 
 RPT-16 (proposed amendment, AMENDMENT-PROPOSAL-historical-backfill.md) is the
 one deliberate exception: `build_reports_router` optionally accepts a narrow,
-duck-typed `broker_reads` facade (only `day_fills`, mirroring
-`application.backfill.BackfillBrokerFacade`) for the mutating, auth-gated
-POST /reports/backfill/{day} endpoint. Every other route is unaffected and
+duck-typed `broker_reads` facade (only `day_fills` + `day_settlements`,
+mirroring `application.backfill.BackfillBrokerFacade`) for the mutating,
+auth-gated POST /reports/backfill/{day} endpoint. Every other route is unaffected and
 `broker_reads` defaults to None (paper/no-broker composition roots simply
 never wire it -- the endpoint then 400s rather than reaching for a broker
 that isn't there).
@@ -298,7 +298,8 @@ def build_reports_router(
     mode: Callable[[], str],
     config: ReportingConfig,
     now: Callable[[], str] | None = None,
-    broker_reads: Any = None,  # RPT-16: optional BackfillBrokerFacade (day_fills only) --
+    broker_reads: Any = None,  # RPT-16: optional BackfillBrokerFacade (day_fills +
+    # day_settlements only) --
     # None (the default, and what paper/no-broker roots pass) makes the
     # backfill endpoint 400 rather than reaching for a broker that isn't
     # there. See module docstring for why this is the one deliberate
@@ -375,6 +376,11 @@ def build_reports_router(
             "imported_fills": [{
                 "order_id": f.order_id, "symbol": f.symbol, "action": f.action,
                 "quantity": f.quantity, "price": _s(f.price), "fee": _s(f.fee), "at": f.at,
+                # RPT-16 (operator ruling 2026-07-10): present only for a
+                # broker Receive-Deliver settlement row (cash-settled
+                # assignment / expiration) -- the broker's own net cash
+                # effect, distinct from a Trade-style fill's price/quantity.
+                "value": _s(f.value),
             } for f in imported_fills],
             "imported_cash": None if not imported_fills else {
                 "net": str(imported_day_net(imported_fills)),

@@ -66,11 +66,17 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.CorrectionRecord: ev.CorrectionRecord(
             date="2026-07-09", field="fees", bot_value="220.00", broker_value="240.00",
             diff="20.00", at="2026-07-09T16:20:00-04:00"),
+        # RPT-16 settlement import (operator ruling 2026-07-10): the
+        # representative values are a Receive-Deliver cash-settled assignment
+        # -- `action` is the broker's transaction_sub_type and `value` its
+        # signed NET cash effect (real dollars, already net of the $5 fee).
+        # A Trade-style fill row leaves `value` at its None default (see the
+        # dedicated None round-trip test below).
         ev.ExternalFillImported: ev.ExternalFillImported(
-            day="2026-07-09", at="2026-07-09T14:31:02-04:00", order_id="482214732",
-            symbol="SPXW  260709P05600000", action="Sell to Open", quantity=1,
-            price=D("3.00"), fee=D("1.42"), imported_at="2026-07-10T09:00:00-04:00",
-            source="tastytrade_history"),
+            day="2026-07-09", at="2026-07-09T22:00:00-04:00", order_id="482390058",
+            symbol="SPXW  260709C07540000", action="Cash Settled Assignment", quantity=1,
+            price=D("7540.00"), fee=D("5.00"), imported_at="2026-07-10T09:00:00-04:00",
+            source="tastytrade_history", value=D("-369.00")),
     }
 
 
@@ -117,7 +123,9 @@ def test_entry_mark_sample_all_none_marks_round_trip(tmp_path):
 
 def test_external_fill_imported_none_price_and_fee_round_trip(tmp_path):
     """RPT-16: a broker fill with no allocated price/fee data is recorded
-    honestly as None, never fabricated as 0."""
+    honestly as None, never fabricated as 0 -- and a Trade-style row's
+    `value` stays at its None default (only Receive-Deliver settlement rows
+    carry one, operator ruling 2026-07-10)."""
     journal = EventJournal(tmp_path / "state.db")
     sample = ev.ExternalFillImported(
         day="2026-07-09", at="2026-07-09T14:31:02-04:00", order_id="482214732",
@@ -128,6 +136,7 @@ def test_external_fill_imported_none_price_and_fee_round_trip(tmp_path):
     loaded = journal.load()
     assert loaded == [sample]
     assert loaded[0].price is None and loaded[0].fee is None
+    assert loaded[0].value is None
 
 
 def test_config_version_round_trips(tmp_path):

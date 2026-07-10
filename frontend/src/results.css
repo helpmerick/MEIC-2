@@ -29,6 +29,11 @@
    deliberately grey/neutral, not the "ok" green or "partial" amber. */
 .trust-badge.imported { background: var(--badge-bg); color: var(--muted); }
 
+/* RPT-16 settlement import (operator ruling 2026-07-10): a Receive-Deliver
+   settlement row (cash-settled assignment / expiration) rendered distinctly
+   from the Trade-style fill legs in the imported-fills table. */
+.imported-settlement-row td { background: var(--surface-2); font-style: italic; }
+
 /* --- CSV export link (RPT-10) ------------------------------------------------ */
 .csv-btn { height: 30px; padding: 0 12px; font-size: 12px; text-decoration: none; }
 
