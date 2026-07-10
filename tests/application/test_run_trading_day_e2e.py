@@ -117,7 +117,7 @@ def test_full_scripted_day_capstone():
     # entry 2 put stops out at 3.80, then LEX recovers the long for 0.40
     events.append(ShortStopped(entry_id="2026-07-06#2", side="PUT", fill=D("3.80"), slippage=D("0.05")))
     broker.script_submit(Scripted("fill", payload={"price": "0.40"}))  # the LEX sell fills
-    asyncio.run(RecoverLong(broker, events, SPX).recover(
+    asyncio.run(RecoverLong(broker, clock, events, SPX).recover(
         entry_id="2026-07-06#2", side="PUT", long_symbol="SPXW_5938P",
         quote=Quote(bid=D("0.38"), ask=D("0.42")), intrinsic=D("0")))  # mid 0.40
     # entry 3 decayed: ask <= 0.05 x2 -> buyback close, initiator decay

@@ -794,6 +794,48 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
 
     exit_monitor = ExitMonitor()
 
+    async def _long_quote(long_symbol: str, side: str):
+        """EC-STP-06 catch-up (v1.60): the live market data RecoverLong's
+        ladder needs to start, off the SAME chain snapshot FEATURE 3 already
+        holds (`snaps.last`) — no new subscription. `None` (no snapshot yet,
+        stale, or the long's strike unmarked/spot absent) means "no usable
+        quote this tick" — the caller retries next tick, never guesses."""
+        from meic.domain.ladder import intrinsic_call, intrinsic_put
+
+        snap = snaps.last
+        if snap is None or snap.stale:
+            return None
+        # Decimal, NOT the raw string `_strike_from_symbol` returns:
+        # `ChainSide.marks` is keyed by Decimal (see the identical wrap at
+        # every other call site in this file). A string key here silently
+        # missed every mark -> permanent quote-guard deferral -> the catch-up
+        # never actually recovered a long, with every wiring test green
+        # (2026-07-10 review finding; pinned by
+        # test_stop_fill_detector_drives_lex_with_a_real_quote... in
+        # tests/application/test_live_app.py).
+        strike = Decimal(_strike_from_symbol(long_symbol))
+        side_chain = snap.put_side if side == "PUT" else snap.call_side
+        mark = side_chain.marks.get(strike)
+        spot = getattr(snap, "spot", None)
+        if mark is None or spot is None:
+            return None
+        intrinsic = intrinsic_put(strike, spot) if side == "PUT" else intrinsic_call(strike, spot)
+        from meic.application.recover_long import Quote
+
+        return Quote(bid=mark.bid, ask=mark.ask), intrinsic
+
+    async def _detect_stop_fills() -> None:
+        """EC-STP-06 (v1.60): catch up any stop fill this process missed
+        while it was UP and running — the exact gap behind the 2026-07-10
+        11:56 incident (the C7565 CALL stop filled at 11:56:15 ET and nothing
+        noticed: no SIDE_STOPPED, no LEX, no UI feedback). Run every health
+        tick (see `_probe_once`); `comp.alerts` is read at CALL time (not
+        closure-construction time) so it resolves to whichever AlertSink
+        `live_app()` ends up assigning."""
+        from meic.application.stop_fill_watch import detect_and_recover_stop_fills
+
+        await detect_and_recover_stop_fills(comp, comp.alerts, _long_quote)
+
     return {
         "runtime": runtime,
         "manual": manual,
@@ -817,6 +859,12 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # tick (see `_probe_once`) and once more, immediately, on recovery
         # (`_recover_exits_once`, TPF-08/TPT-07).
         "exit_monitor": exit_monitor,
+        # EC-STP-06 (v1.60): the live stop-fill catch-up pass, run every
+        # health tick — the fourth "exists but unwired" member (after RSK-04,
+        # the day supervisor, and TPF/TPT): exposed on app.state so the rail
+        # capstone (tests/application/test_live_app.py) can assert it is a
+        # REAL callable, not None.
+        "stop_fill_detector": _detect_stop_fills,
     }
 
 
@@ -900,6 +948,13 @@ def live_app():
     app.state.commands = commands
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
     app.state.exit_monitor = live["exit_monitor"]     # TPF-03/TPT-04 bot-side monitor
+    app.state.stop_fill_detector = live["stop_fill_detector"]  # EC-STP-06 catch-up (v1.60)
+    # The held chain-snapshot holder itself (same object every enricher/monitor
+    # reads) — exposed like exit_monitor above so the EC-STP-06 end-to-end test
+    # can install a snapshot and prove `_long_quote` actually reads marks off
+    # it (the wiring capstone's non-None check alone cannot catch a detector
+    # that is wired but reads nothing — the 2026-07-10 review finding).
+    app.state.chain_snapshots = live["snapshots"]
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None
@@ -956,6 +1011,24 @@ def live_app():
             # marks sample above (same snapshot, no new subscription).
             await _evaluate_exits_once(comp, live["snapshots"].last,
                                        live["exit_monitor"], commands)
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+        try:
+            # EC-STP-06 (v1.60): catch up any stop fill this process missed
+            # while it was UP and running (the 2026-07-10 11:56 incident's
+            # exact gap — a stop CAN fill mid-day with the bot connected and
+            # nothing notices). Same ~60s cadence as everything else on this
+            # tick; an honest poll, not a new streaming subscription. Runs
+            # AFTER the data probe above (a fresh chain snapshot for the LEX
+            # quote it may need) and AFTER the TPF/TPT evaluation above — an
+            # active LEX ladder can legitimately run for tens of seconds
+            # (rungs x lex_reprice_seconds), and it must not delay the
+            # floor/target checks on every OTHER open entry by a whole tick.
+            # Deliberately awaited inline, never a background task: the
+            # double-ladder guard in stop_fill_watch reasons about broker
+            # working-order state, and a concurrently re-entering tick would
+            # race it.
+            await live["stop_fill_detector"]()
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
         try:

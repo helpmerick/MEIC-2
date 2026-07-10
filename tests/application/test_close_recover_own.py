@@ -1,5 +1,6 @@
 """Slice 4 unit tests: OwnershipLedger, CloseEntry, RecoverLong."""
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal as D
 
 from meic.application.close_entry import CloseEntry, LiveLeg
@@ -8,8 +9,10 @@ from meic.domain.events import EntryClosed, LongSold, SideClosed
 from meic.domain.ownership import Ownership, OwnershipLedger
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
+from tests.harness.fake_clock import FastClock
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
+NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
 
 class TestOwnershipLedger:
@@ -65,7 +68,7 @@ class TestCloseEntry:
 class TestRecoverLong:
     def test_lex_ladder_then_fallback(self):
         broker, events = FakeBroker(), []  # never fills
-        r = asyncio.run(RecoverLong(broker, events, SPX, lex_reprice_attempts=4).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX, lex_reprice_attempts=4).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
         assert r.outcome == "FALLBACK_WORKING"
@@ -77,7 +80,7 @@ class TestRecoverLong:
     def test_lex_sells_and_records_recovery_on_fill(self):
         broker, events = FakeBroker(), []
         broker.script_submit(Scripted("fill", payload={"price": "2.15"}))
-        r = asyncio.run(RecoverLong(broker, events, SPX).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
         assert r.outcome == "SOLD"
@@ -85,7 +88,7 @@ class TestRecoverLong:
 
     def test_lex02_unusable_quote_goes_straight_to_fallback(self):
         broker, events = FakeBroker(), []
-        r = asyncio.run(RecoverLong(broker, events, SPX).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.40"), ask=D("2.30")), intrinsic=D("0")))  # crossed
         assert r.outcome == "FALLBACK_WORKING" and r.prices_tried == ()

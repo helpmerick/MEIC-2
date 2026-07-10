@@ -169,7 +169,11 @@ class ProtectPosition:
             if order_id is not None:
                 qty = await self._confirmed_qty(order_id)
                 if qty == contracts:
-                    self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger))
+                    # broker_order_id (additive, v1.60): lets a later live
+                    # catch-up pass match a fill to THIS stop precisely,
+                    # instead of by symbol inference (see stop_fill_watch.py).
+                    self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger,
+                                                   broker_order_id=str(order_id)))
                     self._events.append(StopConfirmed(entry_id=entry_id, side=side))
                     return True
                 if qty is not None:

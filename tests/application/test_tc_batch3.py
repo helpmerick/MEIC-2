@@ -1,5 +1,6 @@
 """Third batch of edge-case prose TCs: LEX (8), OWN (6), RSK (4)."""
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal as D
 
 from meic.application.recover_long import Quote, RecoverLong
@@ -15,12 +16,14 @@ from meic.domain.risk import (
 )
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
+from tests.harness.fake_clock import FastClock
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
+NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
 
 def _lex(broker, events, **kw):
-    return RecoverLong(broker, events, SPX, **kw)
+    return RecoverLong(broker, FastClock(NOW), events, SPX, **kw)
 
 
 # --- LEX ---------------------------------------------------------------------

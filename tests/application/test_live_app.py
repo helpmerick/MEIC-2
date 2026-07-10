@@ -145,6 +145,108 @@ def test_live_app_wires_a_real_exit_monitor_not_none(monkeypatch, tmp_path):
     assert isinstance(app.state.exit_monitor, ExitMonitor)
 
 
+# --- EC-STP-06 stop-fill catch-up wiring capstone (v1.60) ----------------------
+# The FOURTH member of the "exists but unwired" class (after RSK-04's safety
+# rails, the ENT-10 day supervisor, and TPF/TPT): reconcile.py already
+# implements the EC-STP-06 triage ("a short with no resting stop: did the stop
+# fill? -> run LEX") and reconcile_boot.py already drives it -- but only from
+# _boot_reconcile() at startup/reconnect. A stop that fills mid-day while the
+# bot stays connected (the 2026-07-10 11:56 incident) was never re-checked
+# until this: the live health tick now re-runs the SAME frame every ~60s.
+
+def test_live_app_wires_a_real_stop_fill_detector_not_none(monkeypatch, tmp_path):
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+
+    assert app.state.stop_fill_detector is not None
+    assert callable(app.state.stop_fill_detector)
+
+
+def test_stop_fill_detector_drives_lex_with_a_real_quote_from_the_held_snapshot(monkeypatch, tmp_path):
+    """2026-07-10 review finding 1 (BLOCKING class): `_long_quote` read
+    `ChainSide.marks` with the raw STRING `_strike_from_symbol` returns, but
+    marks are keyed by Decimal — so the lookup always missed, the quote guard
+    deferred forever, and the catch-up never actually recovered a long in
+    production, silently, with every wiring test green. The non-None rail
+    capstone above cannot catch that ("looks wired, does nothing"), so this
+    drives the REAL wired detector end-to-end: a fake broker holding a
+    caught-up stop fill, the held snapshot populated with Decimal-keyed
+    marks + spot, and asserts recover() is actually invoked with a REAL
+    Quote priced off those marks."""
+    import asyncio
+    from decimal import Decimal as D
+    from types import SimpleNamespace
+
+    from meic.adapters.api.server import live_app
+    from meic.application.recover_long import Quote
+    from meic.domain.chain import Mark
+    from meic.domain.events import CondorFilled, FilledLeg, ShortStopped, StopPlaced
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+
+    entry_id = "2026-07-10#1"
+    call_short, call_long = "SPXW  260710C07550000", "SPXW  260710C07570000"
+    comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.32"), legs=(
+        FilledLeg(symbol="SPXW  260710P07505000", right="P", role="long", qty=1, price=D("0.10")),
+        FilledLeg(symbol="SPXW  260710P07525000", right="P", role="short", qty=1, price=D("1.50")),
+        FilledLeg(symbol=call_short, right="C", role="short", qty=1, price=D("2.00")),
+        FilledLeg(symbol=call_long, right="C", role="long", qty=1, price=D("0.08")),
+    )))
+    comp.events.append(StopPlaced(entry_id=entry_id, side="CALL", trigger=D("3.80"),
+                                  broker_order_id="STOP-1"))
+
+    # broker truth: the CALL stop FILLED (caught-up), the long still held
+    class _Broker:
+        async def working_orders(self):
+            return []
+
+        async def fills_since(self, cursor):
+            return [{"order_id": "STOP-1", "partial": False}]
+
+        async def fill_legs(self, order_id):
+            return (FilledLeg(symbol=call_short, right="C", role="short", qty=1, price=D("3.85")),)
+
+        async def positions(self):
+            return [{"symbol": call_long, "signed_qty": 1}]
+
+    comp.broker = _Broker()
+
+    # the held snapshot the REAL `_long_quote` reads: Decimal-keyed marks + spot
+    snaps = app.state.chain_snapshots
+    snaps.stale = False
+    snaps.last = SimpleNamespace(
+        stale=False, spot=D("7500"),
+        put_side=SimpleNamespace(marks={}),
+        call_side=SimpleNamespace(marks={D("7570"): Mark(bid=D("0.35"), ask=D("0.45"))}))
+
+    recovered: list[dict] = []
+
+    class _RecoverSpy:
+        async def recover(self, **kw):
+            recovered.append(kw)
+
+    comp.recover = _RecoverSpy()
+
+    asyncio.run(app.state.stop_fill_detector())
+
+    assert any(isinstance(e, ShortStopped) for e in comp.events), "the caught-up fill was journaled"
+    assert len(recovered) == 1, "LEX must actually be DRIVEN off the held snapshot's marks"
+    call = recovered[0]
+    assert call["entry_id"] == entry_id and call["side"] == "CALL"
+    assert call["long_symbol"] == call_long
+    assert isinstance(call["quote"], Quote)
+    assert call["quote"].bid == D("0.35") and call["quote"].ask == D("0.45")
+    assert call["intrinsic"] == D("0")   # spot 7500 vs 7570 call: OTM
+
+
 def test_live_app_commands_carry_a_real_tpf_tpt_gap_provider(monkeypatch, tmp_path):
     """TPF-02/TPT-03 server-side gap validation needs a real profit% source —
     a `None` provider means every set/raise/lower request is silently

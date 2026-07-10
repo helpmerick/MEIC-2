@@ -1,5 +1,6 @@
 """Hand-written step definitions for TC-LEX-01 — LEX ladder mid->bid->fallback."""
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal as D
 
 import pytest
@@ -8,10 +9,12 @@ from pytest_bdd import given, scenarios, then, when
 from meic.application.recover_long import Quote, RecoverLong
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker
+from tests.harness.fake_clock import FastClock
 
 scenarios("../features/TC-LEX-01.feature")
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
+NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -22,7 +25,7 @@ def world():
 @given('the short put stop filled and the long put quotes bid 2.00 / ask 2.30')
 def _(world):
     broker, events = FakeBroker(), []  # never fills -> full ladder then fallback
-    r = asyncio.run(RecoverLong(broker, events, SPX, lex_reprice_attempts=4).recover(
+    r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX, lex_reprice_attempts=4).recover(
         entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
         quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
     world["broker"], world["result"] = broker, r

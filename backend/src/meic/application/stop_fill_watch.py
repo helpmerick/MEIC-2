@@ -1,0 +1,437 @@
+"""Live stop-fill catch-up — EC-STP-06, run every health tick, not just boot.
+
+THE GAP (found investigating the 2026-07-10 11:56 incident — the C7565 stop,
+order 482621556, filled at 11:56:15 ET and the bot never noticed): a resting
+stop CAN fill while the bot is up and running, and nothing notices. `reconcile.py`
+already implements the EC-STP-06/REC-04 triage precisely ("a short with no
+resting stop: did the stop fill? -> run LEX") and `reconcile_boot.py` already
+calls it -- but only from `_boot_reconcile()`, on process start/`/broker/
+connect`. The health tick that runs every ~60s the rest of the day never
+re-ran it. So the ONLY way a live stop fill got noticed was a restart -- the
+exact "pieces exist, nothing drives them" pattern already found in RSK-04
+(the day loop had no risk ceiling wired), the day supervisor (ENT-10, no
+auto-restart wiring), and TPF/TPT (the monitor existed wired to nothing).
+This is the fourth member of that class.
+
+Fix: reuse the SAME `Reconcile`/`TrackedShort` frame `reconcile_boot.py`
+already drives at boot (operator ruling 2026-07-10: "the ratified frame for
+catch-up, not an ad-hoc scan") -- just build its `tracked_shorts` input from
+the CURRENT event log + broker truth on every tick, not only at boot. Calling
+`Reconcile.plan()`/`.execute()` synthesizes the missed `ShortStopped` (with
+slippage, EC-STP-06); this module's own job is to actually DRIVE `RecoverLong`
+for the stopped side afterward (nothing in the codebase, in ANY mode, ever
+called `RecoverLong.recover()` reactively before this; even paper's demo
+runtime calls it from a hardcoded script step, not from an event reaction).
+`plan.run_lex` is stripped before `execute()` here: its only effect is
+appending a `LongSaleStarted` marker, and `RecoverLong.recover()` already
+journals that marker itself when -- and only when -- a ladder genuinely
+starts, so leaving both in would duplicate the activity-feed line
+mid-incident (2026-07-10 review finding 2). Boot's `reconcile.py` semantics
+are untouched.
+
+Scope, deliberately narrow: this tick answers ONLY "did an open short's
+placed stop fill" (EC-STP-06). A short with NO placed stop at all, or one
+cancelled by someone other than the bot (REC-04(2)/(3)), stays boot-only for
+now -- extending live-tick coverage to those is a larger change (full OWN-09
+external-close disambiguation, see `_resolve_by_symbol` below) not asked for
+here.
+
+OWN standdown (operator ruling 2026-07-10): a stop fill caught up LATE may be
+old news by the time this tick notices it -- the operator could have sold the
+orphaned long directly at the broker in the meantime. Before any LEX hand-off
+for a CAUGHT-UP fill, `_long_still_held` confirms the long is still actually
+there; if not, the side is still recorded `ShortStopped` (honest — the stop
+DID fire), but LEX is never invoked and no order is submitted (OWN-09/10:
+an operator action at the broker stands down automation, no compensating
+order) — an info alert notes the disposition.
+
+FLAGGED LATENT HAZARDS (on record for the wiring slice; both components are
+NOT wired into the live composition today, no code change here):
+  * watchdog.py `escalate()` journals `ShortStopped` BEFORE its marketable
+    buy-back confirms — if the watchdog is ever wired live, a tick landing in
+    that window would see the side pending and could start a LEX ladder while
+    the buy-back is still working (the guards check the LONG's orders, never
+    the short's buy-back).
+  * decay_watcher.py's buyback fill could be misread by `_resolve_by_symbol`
+    (it is a buy-to-close on the short's symbol) in the window between the
+    broker fill and `complete()`'s atomic ShortStopped+EntryClosed journaling,
+    if decay is ever wired live — the R3-F2 re-check narrows but does not
+    close that window for a fill the log hasn't seen at all.
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+
+from meic.domain.events import StopPlaced
+from meic.domain.projection import fold
+
+from .execute_entry import _fill_matches
+from .reconcile import Reconcile, TrackedShort
+from .reconcile_boot import _order_id, _symbol_and_signed_qty
+
+# R3-F3: after this many CONSECUTIVE quote-guard deferrals for one side, raise
+# a one-time critical alert (at the 60s health cadence, 5 ticks ~= 5 minutes
+# of an orphaned long we cannot price a sale for). The side keeps deferring —
+# a price is never guessed — the alert IS the fix.
+QUOTE_DEFERRAL_ALERT_TICKS = 5
+
+
+def _stop_specs(events) -> dict[tuple[str, str], StopPlaced]:
+    """The latest recorded `StopPlaced` per (entry_id, side) -- carries the
+    trigger (needed for EC-STP-06 slippage) and, for every stop placed since
+    v1.60, the broker's own order id (precise matching; see
+    `_resolve_by_order_id`)."""
+    specs: dict[tuple[str, str], StopPlaced] = {}
+    for e in events:
+        if isinstance(e, StopPlaced):
+            specs[(e.entry_id, e.side)] = e
+    return specs
+
+
+def _open_short_legs(events):
+    """Every (entry_id, side, leg, spec) this tick's EC-STP-06 triage
+    considers: a still-open short (not stopped/closed/expired, entry not
+    closed) with a `StopPlaced` on record. No StopPlaced at all is REC-04(2)/
+    (3) territory -- boot's job, not this tick's."""
+    day = fold(events)
+    specs = _stop_specs(events)
+    out = []
+    for entry_id, e in day.entries.items():
+        if e.close_initiator is not None:
+            continue
+        shorts = {leg.side: leg for leg in e.legs if leg.role == "short"}
+        for side, leg in shorts.items():
+            if side in e.sides_stopped or side in e.sides_closed or side in e.sides_expired:
+                continue
+            spec = specs.get((entry_id, side))
+            if spec is not None:
+                out.append((entry_id, side, leg, spec))
+    return out
+
+
+def _order_legs(order):
+    if isinstance(order, dict):
+        return order.get("legs") or ()
+    return getattr(order, "legs", None) or ()
+
+
+def _leg_symbol(leg) -> str | None:
+    return leg.get("symbol") if isinstance(leg, dict) else getattr(leg, "symbol", None)
+
+
+def _leg_action(leg) -> str:
+    raw = leg.get("action") if isinstance(leg, dict) else getattr(leg, "action", "")
+    return str(raw).lower().replace(" ", "_").split(".")[-1]
+
+
+async def _still_resting(broker, symbol: str) -> bool:
+    """Is a buy-to-close order for `symbol` still WORKING at the broker? If
+    so there is nothing to do this tick -- the stop is doing its job."""
+    for order in await broker.working_orders():
+        for leg in _order_legs(order):
+            if _leg_symbol(leg) == symbol and _leg_action(leg) == "buy_to_close":
+                return True
+    return False
+
+
+async def _sell_still_working(broker, symbol: str) -> bool:
+    """Double-ladder guard: is a sell-to-close order for `symbol` (a prior
+    LEX rung, or its LEX-05 marketable fallback) still WORKING at the broker?
+    If so, this tick must NOT start a second ladder beside it -- a 60s tick
+    loop re-entering RecoverLong while a fallback rests would submit a
+    duplicate sell every minute, the exact incident-#2 class this whole
+    package exists to kill."""
+    for order in await broker.working_orders():
+        for leg in _order_legs(order):
+            if _leg_symbol(leg) == symbol and _leg_action(leg) == "sell_to_close":
+                return True
+    return False
+
+
+async def _resolve_by_order_id(broker, order_id: str) -> tuple[bool, Decimal | None]:
+    """Precise path: `StopPlaced.broker_order_id` is recorded (every stop
+    placed since v1.60). Filled iff it appears in `fills_since` -- matched by
+    the SAME object-shape-safe normalizer execute_entry's ladder fix uses
+    (`_fill_matches`; a raw `.get(...)` here would crash on a live SDK fill,
+    the identical trap that normalizer was built to close)."""
+    for f in await broker.fills_since(None):
+        if _fill_matches(f, order_id):
+            legs = await broker.fill_legs(order_id)
+            price = next((l.price for l in legs if l.price is not None), None)
+            return True, price
+    return False, None
+
+
+async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None]:
+    """Fallback path for a stop placed BEFORE `broker_order_id` existed --
+    every stop on record up to and including the missed 2026-07-10 C7565
+    fill. Matched by the short's own broker-reported symbol (ORD-09) among
+    buy-to-close fills.
+
+    KNOWN LIMITATION, flagged rather than silently perfected: this cannot
+    distinguish a resting-stop fill from some OTHER buy-to-close fill on the
+    same symbol that this process never itself recorded (e.g. a genuinely
+    external/manual close of the SHORT, OWN-09). `close_entry.py`'s own
+    in-process closes already emit `ShortStopped`/`SideClosed` synchronously,
+    so they never reach this fallback (the side is no longer "open" by the
+    time this tick runs) -- the residual gap is a close performed by some
+    OTHER process entirely while this stop-order-id-less bot was also up. A
+    future slice should route this decision through the existing OWN-09
+    `external_close.py`/`classify_side` machinery (grace period + two-
+    consecutive-reconcile confirmation) instead of a bare symbol match.
+    """
+    for order in await broker.fills_since(None):
+        for leg in _order_legs(order):
+            if _leg_symbol(leg) == symbol and _leg_action(leg) == "buy_to_close":
+                oid = _order_id(order)
+                legs = await broker.fill_legs(oid)
+                price = next((l.price for l in legs if l.symbol == symbol and l.price is not None), None)
+                return True, price
+    return False, None
+
+
+async def build_tracked_shorts(broker, events) -> list[TrackedShort]:
+    """The EC-STP-06 candidates for THIS tick: an open, stop-placed short
+    whose stop is no longer resting and DID fill. Reused directly by
+    `Reconcile.plan()` -- the SAME frame boot reconciliation drives."""
+    tracked: list[TrackedShort] = []
+    for entry_id, side, leg, spec in _open_short_legs(events):
+        if await _still_resting(broker, leg.symbol):
+            continue
+        if spec.broker_order_id:
+            filled, price = await _resolve_by_order_id(broker, spec.broker_order_id)
+        else:
+            filled, price = await _resolve_by_symbol(broker, leg.symbol)
+        if not filled:
+            continue  # neither resting nor fillable -- ambiguous; leave for boot
+        tracked.append(TrackedShort(
+            entry_id=entry_id, side=side, symbol=leg.symbol, stop_order_id=None,
+            stop_filled=True, stop_fill_price=(price if price is not None else spec.trigger),
+            stop_trigger=spec.trigger, contracts=leg.qty))
+    return tracked
+
+
+async def _long_still_held(broker, long_symbol: str) -> bool:
+    """OWN standdown (operator ruling 2026-07-10), for a fill CAUGHT UP late:
+    is the orphaned long the ladder is about to sell still actually held?
+
+    Deliberately checks BROKER POSITION TRUTH (REC-02: broker is authoritative
+    for positions), not `OwnershipLedger`/`state.own_ledger` literally --
+    that persisted ledger is never actually populated by a fill-apply call
+    anywhere in production (`OwnershipLedger.apply_fill` is exercised only by
+    domain unit tests today; `reconcile_on_boot` restores it but never calls
+    it either), so trusting it here would stand down every hand-off, not
+    just a genuine operator disposition. This is the honest substitute and
+    matches the same authority rule OWN-04 relies on; the ledger gap itself
+    is flagged separately, not silently patched here.
+    """
+    for position in await broker.positions():
+        symbol, qty = _symbol_and_signed_qty(position)
+        if symbol == long_symbol and qty != 0:
+            return True
+    return False
+
+
+def _long_leg_for(events, entry_id: str, side: str):
+    day = fold(events)
+    e = day.entries.get(entry_id)
+    if e is None:
+        return None
+    for leg in e.legs:
+        if leg.side == side and leg.role == "long":
+            return leg
+    return None
+
+
+def _pending_lex_sides(events) -> list[tuple[str, str]]:
+    """LEX-01: a stopped side's orphaned long is ALWAYS sold. Pending = the
+    short is stopped (`ShortStopped` on the log -- a fresh detection this
+    tick, a boot EC-STP-06 synthesis, a watchdog escalation, or a stop that
+    raced a CLS replace to FILLED) with no terminal `SideClosed`/`SideExpired`
+    for the side. Keyed off `sides_stopped`, NOT the `LongSaleStarted` marker:
+    the marker is only journaled when a ladder actually STARTS, and the whole
+    point of this set is the side whose ladder could not start yet -- e.g.
+    detection landed on a stale-snapshot tick and the quote guard deferred.
+    Without this, that side would leave `_open_short_legs` forever
+    (ShortStopped is recorded) and the orphaned long would stay unsold until
+    the next process restart (boot REC-03) -- an unhedged long bleeding theta
+    for hours on live money (2026-07-10 lead-review finding).
+
+    A CLOSED entry does NOT exempt its stopped sides (R3-F1): CLS-01(2)'s
+    ORD-08a race path (close_entry.py `_replace_stop` -> "FILLED") journals
+    `ShortStopped` and deliberately never `SideClosed` -- the raced side's
+    long is EXCLUDED from CLS's own sells because "LEX owns that side's long
+    sale" -- and then `EntryClosed` lands. A blanket entry-closed skip
+    orphaned that long forever, on EVERY close initiator, with zero signal.
+
+    The ONE deliberate exemption is DECAY: DCY-03 requires a decay-closed
+    side's long be LEFT TO EXPIRE, never LEX-sold (decay_watcher.py
+    `complete()` journals ShortStopped(initiator="decay") + EntryClosed
+    atomically). Excluded via the SIDE's own ShortStopped initiator ONLY --
+    decay always journals that initiator for its own side, so the side-level
+    check is precise. The entry-level `close_initiator == "decay"` half was
+    removed (final review 2026-07-10): it over-exempted EVERY stopped side on
+    a decay-closed entry, so a CALL stopped earlier by a resting_stop (quote-
+    deferred, ladder not yet started) would be silently stranded the moment
+    the PUT decayed -- the exact R3-F1 orphan class, re-opened."""
+    day = fold(events)
+    out = []
+    for entry_id in sorted(day.entries):
+        e = day.entries[entry_id]
+        # side -> every initiator that stopped it (parallel tuples in the fold)
+        initiators: dict[str, set[str]] = {}
+        for side, init in zip(e.sides_stopped, e.stop_initiators):
+            initiators.setdefault(side, set()).add(init)
+        seen: set[str] = set()
+        for side in e.sides_stopped:
+            if side in seen or side in e.sides_closed or side in e.sides_expired:
+                continue
+            seen.add(side)
+            if "decay" in initiators.get(side, ()):
+                continue  # DCY-03: a decay long is left to expire, never LEX-sold
+            out.append((entry_id, side))
+    return out
+
+
+def _alert_once(comp, alerts, key: tuple, level: str, message: str, **ctx) -> None:
+    """Alert once per (entry_id, side, reason), not once per 60s tick: an
+    unresolvable side re-enters the pending set every tick, and re-alerting
+    each time would bury the operator. Deduped on the composition (survives
+    across ticks, dies with the process -- boot re-evaluates from scratch)."""
+    seen = getattr(comp, "_stop_fill_watch_alerted", None)
+    if seen is None:
+        seen = set()
+        comp._stop_fill_watch_alerted = seen
+    if key in seen:
+        return
+    seen.add(key)
+    alerts.alert(level, message, **ctx)
+
+
+async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str) -> None:
+    """Drive ONE pending side's LEX hand-off through the shared guards --
+    fresh catch-ups and deferred retries take the IDENTICAL path, in order:
+
+      1. ORD-09: no broker-reported long recorded -> cannot name the
+         instrument to sell; critical alert (once), operator must intervene.
+      2. Double-ladder guard: a sell-to-close for this long still WORKING at
+         the broker (last tick's rung, or its LEX-05 fallback) -> SKIP; never
+         start a second ladder beside it.
+      3. OWN standdown (operator ruling 2026-07-10): the long is no longer
+         held at the broker -> the operator disposed of it directly; no LEX
+         order, info alert (once).
+      4. Quote guard: no usable market data this tick -> retried next tick
+         via the `_pending_lex_sides` resume set, never guessed.
+
+    `RecoverLong.recover()` itself appends `LongSaleStarted` when -- and only
+    when -- a ladder genuinely (re)starts past all four guards, so a retry
+    tick that skips at any guard journals nothing (no marker spam)."""
+    broker, events = comp.broker, comp.events
+    long_leg = _long_leg_for(events, entry_id, side)
+    if long_leg is None:
+        # ORD-09: no broker-reported long on record for this side. Silent
+        # skip would strand it invisibly (it re-enters the pending set every
+        # tick forever) -- this is unrecoverable without the operator, so say
+        # so, loudly, once (2026-07-10 review finding 4).
+        _alert_once(comp, alerts, (entry_id, side, "no_long_recorded"), "critical",
+                    "EC-STP-06 catch-up: this side's short stopped but NO broker-reported "
+                    "long leg is recorded for it (ORD-09) -- the bot cannot identify the "
+                    "instrument to sell and will not guess. Operator must dispose of the "
+                    "orphaned long manually.",
+                    entry_id=entry_id, side=side)
+        return
+    if await _sell_still_working(broker, long_leg.symbol):
+        return  # a prior rung/fallback is still resting -- never a second ladder
+    if not await _long_still_held(broker, long_leg.symbol):
+        _alert_once(comp, alerts, (entry_id, side, "standdown"), "info",
+                    "EC-STP-06 catch-up: the short's stop had already filled, but the "
+                    "long was no longer held at the broker -- standing down (operator disposed "
+                    "of it directly, OWN-09/10). No LEX order submitted.",
+                    entry_id=entry_id, side=side, symbol=long_leg.symbol)
+        return
+    got = await quote_provider(long_leg.symbol, side)
+    if got is None:
+        # R3-F3: deferral is correct (never guess a price), but UNBOUNDED
+        # SILENT deferral is not -- a long whose strike never gets marked
+        # would defer every tick to expiry with no operator signal and never
+        # reach any LEX-05 fallback. Count consecutive deferrals per side and
+        # say so, loudly, once, past the threshold. Still defers after the
+        # alert -- the alert IS the fix.
+        deferrals = getattr(comp, "_stop_fill_quote_deferrals", None)
+        if deferrals is None:
+            deferrals = {}
+            comp._stop_fill_quote_deferrals = deferrals
+        key = (entry_id, side)
+        deferrals[key] = deferrals.get(key, 0) + 1
+        if deferrals[key] >= QUOTE_DEFERRAL_ALERT_TICKS:
+            _alert_once(comp, alerts, (entry_id, side, "quote_deferred"), "critical",
+                        f"EC-STP-06 catch-up: cannot start LEX -- no usable quote for "
+                        f"{long_leg.symbol} after {deferrals[key]} consecutive ticks. Still "
+                        "deferring (a price is never guessed); operator attention needed.",
+                        entry_id=entry_id, side=side, symbol=long_leg.symbol)
+        return
+    # a usable quote resets the consecutive-deferral count for this side
+    getattr(comp, "_stop_fill_quote_deferrals", {}).pop((entry_id, side), None)
+    quote, intrinsic = got
+    await comp.recover.recover(entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
+                               quote=quote, intrinsic=intrinsic, qty=long_leg.qty)
+
+
+async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
+    """One health-tick pass (60s cadence -- the honest poll `live_app`'s
+    `MEIC_HEALTH_INTERVAL_S` already runs everything else on; no new
+    streaming infrastructure). Idempotent: a side already resolved
+    (`ShortStopped`/`SideClosed`/`SideExpired` recorded, or the entry closed)
+    is never a DETECTION candidate again (`_open_short_legs` excludes it) --
+    but a stopped side whose ladder never TERMINATED stays in the
+    `_pending_lex_sides` set and is re-driven through the same guards until
+    it does (the double-ladder guard is what keeps that retry loop from ever
+    stacking a second sell beside a resting rung/fallback).
+
+    CATCH-UP: this is the SAME pass on every tick, including the very first
+    one after boot/deploy -- there is no separate "startup" mode. A stop that
+    filled while the bot was up and simply missed (2026-07-10's C7565) is
+    caught the first time this runs after it ships, exactly like a fill that
+    happens between two ticks going forward.
+
+    `quote_provider(long_symbol, side) -> (Quote, intrinsic) | None` supplies
+    the live market data LEX needs to start its ladder; injected so this
+    module stays I/O-light and unit-testable. `None` means "no usable market
+    data this tick" -- retried next tick, never guessed.
+    """
+    broker, events = comp.broker, comp.events
+
+    # Phase 1 -- DETECTION: journal any stop fill the broker knows about that
+    # the log doesn't (EC-STP-06 synthesis, via the ratified Reconcile frame).
+    tracked = await build_tracked_shorts(broker, events)
+    if tracked:
+        # R3-F2: build_tracked_shorts folded the log ONCE at its start, then
+        # awaited the broker repeatedly -- a concurrent close for the same
+        # side can complete in between (its SideClosed now journaled, and its
+        # own buy-to-close fill would read as a "stop fill" to the symbol
+        # fallback), and executing on that stale view would synthesize a
+        # FALSE ShortStopped (corrupt sides_stopped, dashboard taxonomy,
+        # slippage stats). Re-apply _open_short_legs' own predicate against
+        # the CURRENT log, synchronously: no await can interleave between
+        # this check and execute()'s synthesis appends (which sit at its
+        # top, before its first await).
+        open_now = {(entry_id, side) for entry_id, side, _leg, _spec in _open_short_legs(events)}
+        tracked = [t for t in tracked if (t.entry_id, t.side) in open_now]
+    if tracked:
+        rec = Reconcile(broker, events)
+        plan = rec.plan(tracked_shorts=tracked, broker_working_order_ids=set(),
+                        mid_lex_sides=(), stale_entry_order_ids=())
+        # run_lex's only effect in execute() is a LongSaleStarted marker --
+        # RecoverLong.recover() below journals that itself when a ladder
+        # genuinely starts, so leaving both would duplicate the activity-feed
+        # line (review finding 2). Stripped HERE only; boot's semantics are
+        # byte-identical (reconcile.py untouched).
+        plan.run_lex.clear()
+        await rec.execute(plan)   # EC-STP-06: synthesizes the missed ShortStopped
+
+    # Phase 2 -- RECOVERY: drive LEX for EVERY stopped-but-unresolved side,
+    # whether it was detected this tick, deferred by a guard on a previous
+    # tick, synthesized at boot, or stopped by the watchdog. One set, one
+    # guard path -- no fresh/resume split to drift apart.
+    for entry_id, side in _pending_lex_sides(events):
+        await _try_recover(comp, alerts, quote_provider, entry_id, side)

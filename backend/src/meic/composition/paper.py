@@ -60,7 +60,7 @@ class PaperComposition:
         # the closure resolves `self.close` at CALL time, not at construction.
         self.protect = ProtectPosition(self.broker, self.clock, self.alerts, self.events, self.ticks,
                                        close_entry=self._auto_flatten_entry)
-        self.recover = RecoverLong(self.broker, self.events, self.ticks)
+        self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks)
         self.close = CloseEntry(self.broker, self.events)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)

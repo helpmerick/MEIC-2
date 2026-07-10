@@ -52,3 +52,27 @@ class FakeClock:
             elif not fut.done():
                 still_waiting.append((when, fut))
         self._waiters = still_waiting
+
+
+class FastClock:
+    """Wall-clock semantics with time fast-forwarded: `wait_until` jumps
+    straight to the deadline instead of blocking (`FakeClock` blocks until
+    externally advanced, which would deadlock a single `asyncio.run(...)`
+    with nothing else driving the clock). Used where a test needs a real
+    Clock port (e.g. RecoverLong's reprice-gap waits) but drives no
+    concurrent clock-advancing task of its own — the ladder still runs its
+    real poll loop, just without a real-time cost."""
+
+    def __init__(self, start: datetime) -> None:
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=ET)
+        self._now = start
+
+    def now(self) -> datetime:
+        return self._now
+
+    async def wait_until(self, when: datetime) -> None:
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=ET)
+        if when > self._now:
+            self._now = when

@@ -35,6 +35,13 @@ class _Order:  # mimics the SDK PlacedOrder: `.id`, `.status`, `.legs` (NO `.get
         self.legs = legs
 
 
+class _Position:  # mimics the SDK CurrentPosition: attributes only, NO `.get`
+    def __init__(self, symbol: str, quantity: int, quantity_direction: str) -> None:
+        self.symbol = symbol
+        self.quantity = quantity
+        self.quantity_direction = quantity_direction  # "Long" | "Short"
+
+
 class LiveShapedBroker:
     def __init__(self, clock, *, fill_delay: float = 3.0, buying_power: Decimal = Decimal("100000")) -> None:
         self._clock = clock
@@ -42,6 +49,7 @@ class LiveShapedBroker:
         self._bp = buying_power
         self._n = 1000
         self._orders: dict[str, dict] = {}
+        self._positions: list[_Position] = []
         self.submits: list[tuple[str, str]] = []   # (order_id, order_type) in submit order
 
     def _sym(self, intent, leg) -> str:
@@ -51,10 +59,30 @@ class LiveShapedBroker:
         return [_Leg(self._sym(intent, l), l.action, intent.contracts) for l in intent.legs]
 
     def _is_filled(self, rec: dict) -> bool:
-        # only entry LIMIT orders fill (after the latency); stops rest, never "fill"
-        if rec["kind"] != "limit" or rec["cancelled"]:
+        if rec["cancelled"]:
+            return False
+        if rec.get("stop_filled"):   # a stop the test's market traded through (see fill_stop)
+            return True
+        # otherwise only entry LIMIT orders fill (after the latency); stops rest
+        if rec["kind"] != "limit":
             return False
         return (self._clock.now() - rec["t"]).total_seconds() >= self._delay
+
+    def fill_stop(self, order_id) -> None:
+        """Mark a resting stop FILLED (the market traded through its trigger)
+        — the exact condition the live stop-fill catch-up (EC-STP-06) must
+        detect. From then on the order appears in `fills_since` as an SDK
+        `_Order` and disappears from `working_orders`, just like the real
+        broker's view of the 2026-07-10 C7565 fill."""
+        self._orders[str(order_id)]["stop_filled"] = True
+
+    def set_positions(self, positions: list[tuple[str, int, str]]) -> None:
+        """Install broker-truth positions as SDK-shaped objects (attributes
+        only, no `.get`): [(symbol, quantity, "Long"|"Short"), ...]. The live
+        TastytradeAdapter's `positions()` returns exactly this shape — a
+        consumer that assumes dicts crashes only in production, the incident
+        class this harness exists to reproduce."""
+        self._positions = [_Position(s, q, d) for s, q, d in positions]
 
     async def submit(self, intent) -> str:
         oid = str(self._n)
@@ -96,12 +124,13 @@ class LiveShapedBroker:
         )
 
     async def working_orders(self):
-        # resting stops (and any still-working, uncancelled limit) show as WORKING
+        # resting stops (and any still-working, uncancelled limit) show as WORKING;
+        # a stop marked filled via fill_stop() is no longer working
         out = []
         for oid, r in self._orders.items():
-            if r["cancelled"]:
+            if r["cancelled"] or self._is_filled(r):
                 continue
-            if r["kind"] == "stop_market" or (r["kind"] == "limit" and not self._is_filled(r)):
+            if r["kind"] in ("stop_market", "limit"):
                 out.append(_Order(oid, "Live", self._legs(r["intent"])))
         return out
 
@@ -112,4 +141,4 @@ class LiveShapedBroker:
         return datetime.now(timezone.utc)
 
     async def positions(self):
-        return []
+        return list(self._positions)

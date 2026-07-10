@@ -7,18 +7,37 @@ never below max(current bid, intrinsic) (LEX-04). Ladder exhausted or quote
 unusable (LEX-02) ⇒ marketable-limit fallback at the current bid (LEX-05),
 never a raw market order.
 
+MECHANICS FIX (2026-07-10, incident #2's own class, now on the LEX side): this
+ladder used to replace blindly, with no clock and no real wait between rungs,
+and its own hand-rolled `_filled()` did raw `dict.get(...)` on a fill record —
+the exact live-shape crash `execute_entry._fill_matches` exists to prevent. A
+live LEX sell fill registers a beat after it happens at the broker; replacing
+it mid-flight either duplicates the sell (margin_check_failed, mirroring the
+2026-07-09 entry-ladder incident) or crashes the ladder outright. Fixed by
+mirroring `ExecuteEntryAttempt._work_order` exactly: a real clock, a real wait
+per rung (`_await_fill`, polled — the same "first check is immediate" shape,
+so synchronous paper/fake fills return with no wait), and a re-confirm of
+NOT-filled immediately before every replace. Pricing/floor semantics (LEX-03/
+04/05) are UNCHANGED — only the mechanics around them.
+
 The reprice cadence and fill-race reconciliation (LEX-08/09) are driven by the
 process manager; this service owns the price sequence and order submission.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
 from meic.domain.events import LongSaleRepriced, LongSaleStarted, LongSold, SideClosed
 from meic.domain.ladder import RepriceLadder, lex_floor
 from meic.domain.ticks import TickTable
 
+# Reused, not copied (the "4th-normalizer trap" the 2026-07-09 health audit
+# flagged): the paper SimulatedBroker yields dicts, the live TastytradeAdapter
+# yields SDK order OBJECTS, and a hand-rolled `.get(...)` here would crash on
+# the live shape exactly as execute_entry's did before this normalizer existed.
+from .execute_entry import _fill_matches
 from .order_intent import OrderIntent, OrderLeg, right_of
 
 
@@ -42,17 +61,23 @@ class RecoverLong:
     def __init__(
         self,
         broker,
+        clock,
         events: list,
         ticks: TickTable,
         *,
+        lex_reprice_seconds: float = 15,
         lex_reprice_attempts: int = 4,
         lex_max_spread_ticks: int = 10,
+        lex_fill_poll_seconds: float = 2.0,
     ) -> None:
         self._broker = broker
+        self._clock = clock
         self._events = events
         self._ticks = ticks
+        self._reprice_seconds = lex_reprice_seconds
         self._attempts = lex_reprice_attempts
         self._max_spread_ticks = lex_max_spread_ticks
+        self._poll_seconds = lex_fill_poll_seconds
 
     def _quote_usable(self, q: Quote) -> bool:
         """LEX-02: not crossed, spread within bound."""
@@ -80,7 +105,8 @@ class RecoverLong:
 
         ladder = RepriceLadder(start=quote.mid, ticks=self._ticks, attempts=self._attempts, floor=floor)
         tried: list[Decimal] = []
-        order_id = None
+        working_id = None
+        working_price = None
         for rung in ladder.prices():
             tried.append(rung.price)
             intent = OrderIntent(
@@ -88,17 +114,54 @@ class RecoverLong:
                 contracts=qty, price=rung.price, idempotency_key=f"lex:{entry_id}:{side}",
                 legs=(OrderLeg(right=right_of(side), action="sell_to_close",
                                qty=qty, symbol=long_symbol),))
-            order_id = await self._broker.submit(intent) if order_id is None \
-                else await self._broker.replace(order_id, intent)
+            if working_id is None:
+                working_id = await self._broker.submit(intent)
+            else:
+                # ORD-02-style reprice guard, mirrored from execute_entry's fix
+                # (2026-07-09 incident #2 class): a live fill registers a beat
+                # after it happens; blindly replacing it cancels nothing and
+                # submits a SECOND sell (margin_check_failed) — or crashes the
+                # whole ladder when the broker rejects the replace outright.
+                # Re-confirm not-filled immediately before every replace.
+                if await self._filled(working_id):
+                    return self._sold(entry_id, side, working_price, tried)
+                working_id = await self._broker.replace(working_id, intent)
+            working_price = rung.price
             self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt, price=rung.price))
-            if await self._filled(order_id):
-                self._events.append(LongSold(entry_id=entry_id, side=side, recovery=rung.price))
-                self._events.append(SideClosed(entry_id=entry_id, side=side))
-                return LexResult("SOLD", tuple(tried))
 
-        # LEX-05 fallback: marketable limit at the (re-fetched) current bid
+            # Paper/fake fills are synchronous, so this returns on the FIRST poll
+            # without waiting; a live fill needs a beat to register, so we POLL
+            # across the reprice interval and stop the moment it fills — never
+            # waiting the whole interval (that would delay a known fill) and
+            # never repricing a filled order.
+            if await self._await_fill(working_id, self._reprice_seconds):
+                return self._sold(entry_id, side, working_price, tried)
+
+        # LEX-05 fallback: last guard — it may have filled right at the final
+        # deadline, between the last poll and here.
+        if working_id is not None and await self._filled(working_id):
+            return self._sold(entry_id, side, working_price, tried)
+
         await self._fallback(entry_id, side, long_symbol, quote.bid, qty)
         return LexResult("FALLBACK_WORKING", tuple(tried))
+
+    def _sold(self, entry_id: str, side: str, price: Decimal, tried: list[Decimal]) -> LexResult:
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price))
+        self._events.append(SideClosed(entry_id=entry_id, side=side))
+        return LexResult("SOLD", tuple(tried))
+
+    async def _await_fill(self, working_id, seconds: float) -> bool:
+        """Poll for `working_id`'s fill for up to `seconds`, returning True as
+        soon as it fills — the same shape as ExecuteEntryAttempt's own
+        `_await_fill`, so the ladder never reprices a filled order."""
+        deadline = self._clock.now() + timedelta(seconds=seconds)
+        while True:
+            if await self._filled(working_id):
+                return True
+            if self._clock.now() >= deadline:
+                return False
+            nxt = min(deadline, self._clock.now() + timedelta(seconds=self._poll_seconds))
+            await self._clock.wait_until(nxt)
 
     async def _fallback(self, entry_id, side, long_symbol, bid, qty) -> None:
         await self._broker.submit(OrderIntent(
@@ -109,6 +172,6 @@ class RecoverLong:
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):
-            if f.get("order_id") == order_id and not f.get("partial"):
+            if _fill_matches(f, order_id):
                 return True
         return False

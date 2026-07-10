@@ -199,6 +199,12 @@ class StopPlaced(Event):
     entry_id: str
     side: str
     trigger: Decimal  # STP-01/02: broker-resting buy-to-close stop-market
+    # Additive (v1.60): the broker's own order id for this resting stop, so a
+    # later live catch-up pass can match a fill to THIS stop precisely instead
+    # of by symbol inference. Optional/None for every pre-v1.60 recorded event
+    # (from_dict's generic "field absent -> default" path handles replay) and
+    # for any caller that hasn't threaded the broker's id through yet.
+    broker_order_id: str | None = None
 
 
 @dataclass(frozen=True)
