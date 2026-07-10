@@ -480,6 +480,33 @@ Scenario: Trigger uses the actual net fill credit
 
 ## Stops
 
+**TC-STK-09** — STK-10 v1.55 baseline pre-validation
+```gherkin
+Scenario: Dead-at-baseline strikes never count as holes
+  Given warm-up validates 24 of 28 reachable strikes (4 far wings listed but never quoted)
+  And at fire time 23 of the 24 validated strikes are still fresh
+  Then completeness = 95.8 percent and the gate PASSES
+  And under the pre-v1.55 rule the same day would have falsely skipped at 85.7 percent
+
+Scenario: A genuine feed regression still fails
+  Given warm-up validated 24 strikes and only 12 remain fresh at fire time
+  Then the gate fails and the entry retries then skips incomplete_chain
+
+Scenario: A sliver baseline cannot trivially pass
+  Given warm-up finds only 5 validated strikes on the call side with min_validated_strikes = 10
+  Then a warm-up alert fires 60 seconds before the window and the entry retries
+  And an unhealed baseline skips incomplete_chain
+
+Scenario: A dead wing is a candidate skip, not an entry failure
+  Given a candidate short whose wing strike is not in the validated universe
+  Then that candidate is skipped and the probe walk continues
+  And the entry fails only if no valid candidate remains
+
+Scenario: Manual entries baseline at press
+  Given the operator fires manually with no warm-up
+  Then the validated universe is captured at press time under the same rules
+```
+
 **TC-STP-01** — STP-01/STP-02
 ```gherkin
 Scenario: Stops placed immediately on fill (total_credit basis - THE DEFAULT, Ash's outcome contract)
@@ -1266,6 +1293,7 @@ Scenario: Broker unreachable never auto-confirms
 | ENT-08 | TC-ENT-06 | | ENT-01a | TC-ENT-07 |
 | ENT-09 / UI-22 | TC-ENT-08 | | ENT-01b | TC-ENT-07 |
 | ENT-10 / UI-24 | TC-ENT-10, TC-UI-06 | | DAY-06 / UI-23 | TC-DAY-06, TC-UI-05 |
+| STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
 | CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
