@@ -47,12 +47,16 @@ class TestCloseEntry:
         import pytest
         with pytest.raises(ValueError):
             asyncio.run(CloseEntry(FakeBroker(), []).close(
-                "e1", "kill_switch", resting_stop_ids=[], live_legs=[], close_price=D("0.05")))
+                "e1", "kill_switch", resting_stop_ids={}, live_legs=[], close_price=D("0.05")))
 
     def test_records_initiator_and_closes_all_legs(self):
         broker, events = FakeBroker(), []
+        # CLS-01 v1.50: resting_stop_ids is keyed by side; neither "S1" nor "S2"
+        # was ever actually submitted, so each replace() classifies TERMINAL
+        # (ORD-08b — nothing to race) and CloseEntry closes directly instead.
         asyncio.run(CloseEntry(broker, events).close(
-            "e1", "manual", resting_stop_ids=["S1", "S2"], live_legs=self._legs(), close_price=D("0.05")))
+            "e1", "manual", resting_stop_ids={"PUT": "S1", "CALL": "S2"},
+            live_legs=self._legs(), close_price=D("0.05")))
         closed = [e for e in events if isinstance(e, EntryClosed)]
         assert len(closed) == 1 and closed[0].initiator == "manual"
         assert sum(isinstance(e, SideClosed) for e in events) == 4

@@ -206,3 +206,13 @@ def right_of(side: str) -> str:
     if "call" in s:
         return "C"
     raise IntentError(f"cannot derive an option right from side {side!r}")
+
+
+def side_of(right: str) -> str:
+    """The inverse of `right_of`: `"P"` -> `"PUT"`, `"C"` -> `"CALL"`. Used to key
+    a broker-reported stop order (which carries `leg.right`) back to the side
+    key ("PUT"/"CALL") that `CloseEntry`'s `resting_stop_ids` mapping and
+    `LiveLeg.side` use (CLS-01)."""
+    if right not in RIGHTS:
+        raise IntentError(f"right {right!r} not in {sorted(RIGHTS)}")
+    return "PUT" if right == "P" else "CALL"

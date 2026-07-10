@@ -55,10 +55,12 @@ def test_tc_dcy_03_gate_matrix():
     assert w.evaluate(ask=D("0.05")) is True   # 2nd valid -> fire
 
 
-# --- TC-TPF-04: close procedure (stops cancelled before spread close) --------
+# --- TC-TPF-04: close procedure (stop REPLACED before the long closes) ------
 
-def test_tc_tpf_04_close_cancels_stops_before_close_orders():
-    """TC-TPF-04/CLS-01: the TPF close cancels stops first, then closes legs —
+def test_tc_tpf_04_close_replaces_the_stop_before_the_long_closes():
+    """TC-TPF-04/CLS-01 (v1.50 replace-based): the TPF close replaces the
+    short's resting stop with a marketable buy-to-close FIRST (one port call —
+    `replace()`, never a bare `cancel()`), then closes the remaining long —
     identical to any CloseEntry (initiator take_profit)."""
     calls = []
 
@@ -66,21 +68,32 @@ def test_tc_tpf_04_close_cancels_stops_before_close_orders():
         def __init__(self):
             self._f = FakeBroker()
 
-        async def cancel(self, oid):
-            calls.append(("cancel", oid))
-            return await self._f.cancel(oid)
+        async def replace(self, oid, new):
+            calls.append(("replace", oid))
+            return await self._f.replace(oid, new)
 
         async def submit(self, intent):
             calls.append(("submit", intent.legs[0].right))
             return await self._f.submit(intent)
 
-    broker, events = RecordingBroker(), []
-    legs = [LiveLeg("SPXW_5990P", "PUT", "short", -1), LiveLeg("SPXW_5940P", "PUT", "long", 1)]
-    asyncio.run(CloseEntry(broker, events).close(
-        "e1", "take_profit", resting_stop_ids=["S1", "S2"], live_legs=legs, close_price=D("0.05")))
+    async def scenario():
+        broker = RecordingBroker()
+        # a REAL working stop, so the replace goes through the REPLACE path
+        # (not the no-resting-stop / TERMINAL fallback) — the exact CLS-01
+        # shape the TPF close must exercise identically to any other CloseEntry.
+        from tests.harness.intents import PUT_LONG, PUT_SHORT, stop_intent
+        stop_id = await broker._f.submit(stop_intent("PUT", entry_id="e1"))
+        events: list = []
+        legs = [LiveLeg(PUT_SHORT, "PUT", "short", -1), LiveLeg(PUT_LONG, "PUT", "long", 1)]
+        await CloseEntry(broker, events).close(
+            "e1", "take_profit", resting_stop_ids={"PUT": stop_id},
+            live_legs=legs, close_price=D("0.05"))
+        return events
+
+    events = asyncio.run(scenario())
     kinds = [c[0] for c in calls]
-    assert kinds[:2] == ["cancel", "cancel"]      # stops cancelled first (CLS-01.1)
-    assert "submit" in kinds[2:]                  # then the close orders
+    assert kinds[0] == "replace"                  # the stop is REPLACED first (CLS-01.1)
+    assert "submit" in kinds[1:]                   # then the long closes
     assert any(isinstance(e, EntryClosed) and e.initiator == "take_profit" for e in events)
 
 

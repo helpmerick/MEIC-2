@@ -23,11 +23,15 @@ from meic.application.close_entry import CloseEntry, LiveLeg
 
 @dataclass(frozen=True)
 class OpenEntry:
-    """One of the bot's own open entries, at recorded quantities (OWN-07)."""
+    """One of the bot's own open entries, at recorded quantities (OWN-07).
+
+    `resting_stop_ids` is keyed by side ("PUT"/"CALL") -> stop order id
+    (CLS-01 v1.50): CloseEntry replaces EACH short's own stop, so it must know
+    which id belongs to which side, not just a flat bag of ids to cancel."""
     entry_id: str
     live_legs: list[LiveLeg]
     close_price: Decimal
-    resting_stop_ids: list[str] = field(default_factory=list)
+    resting_stop_ids: dict[str, str] = field(default_factory=dict)
 
 
 class FlattenAll:

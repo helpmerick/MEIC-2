@@ -8,7 +8,7 @@ from meic.adapters.sim.simulated_broker import SimulatedBroker
 from meic.application.cancel_routing import route_cancel_outcome
 from meic.application.close_entry import VALID_INITIATORS
 from meic.composition.paper import PaperComposition
-from meic.config.validation import TOMBSTONE_KEYS, ConfigRejected, validate_config
+from meic.config.validation import TOMBSTONE_KEYS, TOMBSTONE_KEYS_V151, ConfigRejected, validate_config
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
 
@@ -40,10 +40,25 @@ def test_tc_rsk_02_tombstone_keys_rejected_and_no_daily_loss_path():
     import asyncio
     try:
         asyncio.run(comp.close.close(entry_id="e1", initiator="daily_loss",
-                                     resting_stop_ids=[], live_legs=[], close_price=D("0")))
+                                     resting_stop_ids={}, live_legs=[], close_price=D("0")))
         raise AssertionError("a daily_loss close must not exist")
     except ValueError as e:
         assert "daily_loss" in str(e)
+
+
+# --- STK-10 v1.51: chain_atm_band_pts is a tombstone too ---------------------
+
+def test_chain_atm_band_pts_is_retired_and_rejected():
+    """TC-STK-07 'chain_atm_band_pts is retired': a fixed ATM band can't track
+    the moving far-OTM dead-strike boundary (STK-10 v1.51) — replaced by the
+    TRADE-RELATIVE reachable-set gate (domain/chain.py: `reachable_strikes`).
+    Same "reject, never silently ignore" pattern as RSK-02 above."""
+    try:
+        validate_config({"chain_atm_band_pts": 150})
+        raise AssertionError("chain_atm_band_pts should be rejected as a retired key")
+    except ConfigRejected as e:
+        assert e.key == "chain_atm_band_pts" and e.reason == "removed_v151"
+    assert TOMBSTONE_KEYS_V151 == {"chain_atm_band_pts"}
 
 
 # --- TC-RSK-06: paper mode never instantiates the live adapter (structural) ---

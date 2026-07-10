@@ -108,7 +108,7 @@ export function EntryCards({ entries, onClose }: {
 }) {
   return (
     <section className="card">
-      <div className="row between">
+      <div className="card-head">
         <h2>Entries</h2>
         <span className="muted">{entries.length} armed</span>
       </div>

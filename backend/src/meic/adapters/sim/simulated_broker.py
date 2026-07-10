@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from meic.adapters.occ import simulated_fill_legs
+from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from meic.application.order_intent import OrderIntent
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
 
@@ -219,6 +220,17 @@ class SimulatedBroker:
         return {"result": "terminal", "status": o.status if o else "unknown"}
 
     async def replace(self, id, new):
+        """CLS-01: classify the OLD order before ever touching the new one — a
+        blind cancel-then-submit here would happily rest a SECOND buy-to-close
+        beside a stop that had already filled (the exact double-fill race
+        CLS-01 exists to prevent). Only a genuinely-WORKING stop is replaced."""
+        o = self._orders.get(id)
+        if o is None:
+            raise ReplaceTerminal(id)                      # ORD-08b: never existed
+        if o.status == "FILLED":
+            raise ReplaceFilled(id, fill_price=o.fill_price)  # ORD-08a: the stop beat us
+        if o.status != "WORKING":
+            raise ReplaceTerminal(id)                      # ORD-08b: cancelled/rejected
         await self.cancel(id)
         return await self.submit(new)
 

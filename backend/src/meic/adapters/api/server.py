@@ -144,26 +144,12 @@ def paper_app():
     return app
 
 
-def _chain_band_pts(env: dict[str, str]) -> Decimal:
-    """STK-10 `chain_atm_band_pts` (doc 06: range 50-500, default 150) — how far from
-    spot the completeness gate inspects. Read from env (like the other live tunables);
-    an out-of-range value falls back to the spec default rather than trading a silly
-    band. Far-OTM 0DTE strikes are listed but usually unquoted, so this is the knob
-    that keeps STK-10 from failing on strikes that will never have a mark."""
-    try:
-        raw = Decimal(env.get("MEIC_CHAIN_ATM_BAND_PTS", "150"))
-    except (ArithmeticError, ValueError):
-        return Decimal("150")
-    return raw if Decimal("50") <= raw <= Decimal("500") else Decimal("150")
-
-
 def _chain_completeness_pct(env: dict[str, str]) -> Decimal:
     """STK-10 `chain_completeness_pct` (doc 06: range 50-100, default 90) — the % of
-    ATM-band strikes that must carry marks before selection. Doc-06-defined but never
-    wired (the selector hardcoded 90). The far-OTM 0DTE quote boundary RECEDES toward
-    the money late in the day, so with the band already at its 50-pt floor this is the
-    remaining spec dial that keeps dead listed strikes from vetoing selection.
-    Out-of-range falls back to the spec default (reject-the-dial, trade the default)."""
+    the entry's TRADE-RELATIVE reachable strike set (v1.51: probe range + wings +
+    STK-09 shift budgets — never a fixed ATM band, retired) that must carry marks
+    before selection. Out-of-range falls back to the spec default (reject-the-dial,
+    trade the default)."""
     try:
         raw = Decimal(env.get("MEIC_CHAIN_COMPLETENESS_PCT", "90"))
     except (ArithmeticError, ValueError):
@@ -171,11 +157,43 @@ def _chain_completeness_pct(env: dict[str, str]) -> Decimal:
     return raw if Decimal("50") <= raw <= Decimal("100") else Decimal("90")
 
 
+def _entry_window_seconds(env: dict[str, str]) -> int:
+    """STK-10 v1.51 / ENT-02 (doc 06: range 10-600, default 120) — how long the
+    selector's own retry loop may keep taking fresh snapshots (every
+    `chain_retry_seconds`) after `when` before giving up with `incomplete_chain`
+    (or the walk's own reason). Out-of-range falls back to the spec default."""
+    try:
+        raw = int(env.get("MEIC_ENTRY_WINDOW_SECONDS", "120"))
+    except ValueError:
+        return 120
+    return raw if 10 <= raw <= 600 else 120
+
+
+def _chain_retry_seconds(env: dict[str, str]) -> int:
+    """STK-10 `chain_retry_seconds` (doc 06: range 1-30, default 5) — the interval
+    between fresh-snapshot retries while the reachable-set gate is unhealed or a
+    wing is missing, bounded by the entry window above. Out-of-range falls back
+    to the spec default."""
+    try:
+        raw = int(env.get("MEIC_CHAIN_RETRY_SECONDS", "5"))
+    except ValueError:
+        return 5
+    return raw if 1 <= raw <= 30 else 5
+
+
 def _remaining_rows(rows, now, events, day):
     """ENT-10: the rows a day task started NOW should attempt — future-timed
     (row.when > now) and not already attempted today (no CondorFilled with
     entry_id == f"{day}#{n}" and no EntrySkipped with date==day and
-    entry_number==n in events). Rows keep their original numbers.
+    entry_number==n in events).
+
+    `row.number` is the row's DURABLE entry id (ENT-10(4), v1.53, operator
+    ruling) — assigned once at Save and carried through by `schedule_rows` —
+    NOT its position in `rows`. Positions are irrelevant here: a mid-day
+    delete/re-save while ARMED can add, drop or reorder rows, and filtering
+    must never renumber a survivor or double-assign an id. The `idx` fallback
+    below only applies to a bare row with no stamped number at all (the
+    offline scheduler, or a pre-v1.53 persisted schedule that predates ids).
     """
     from meic.domain.events import CondorFilled, EntrySkipped
 
@@ -349,8 +367,6 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
     max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "2000"))   # DAY-03 v1.48
 
-    chain_band = _chain_band_pts(env)   # STK-10 chain_atm_band_pts, now actually wired
-
     # DAY-03 (v1.48): drift is measured against the BROKER's Date header on the
     # ~60 s session probe — no env var, no NTP. Starts unverified (infinite drift),
     # so entries are blocked until the first probe lands; a reading older than 300 s
@@ -369,7 +385,9 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
 
         async def take(self):
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
-            snap = await snapshot_chain(comp.broker._session, band_points=chain_band)
+            # v1.51: no band_points — the subscription span is an internal
+            # constant (SUBSCRIBE_SPAN_PTS); the STK-10 gate is trade-relative.
+            snap = await snapshot_chain(comp.broker._session)
             self.stale = snap.stale
             self.last = snap
             return snap
@@ -393,7 +411,14 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         snapshot_provider=snaps.take,
         # STK-10: the chain-scoped completeness dial (doc 06, 50-100, default 90),
         # previously hardcoded at 90 inside SelectionConfig.
-        config=SelectionConfig(completeness_pct=_chain_completeness_pct(env)))
+        config=SelectionConfig(completeness_pct=_chain_completeness_pct(env)),
+        # STK-10 v1.51 retry: comp.clock drives the retry gaps (never time.sleep —
+        # this is the SAME clock LiveRuntime schedules entries against), bounded
+        # by the entry window from `when` (doc 06 entry_window_seconds/
+        # chain_retry_seconds, both env-wired like every other live tunable).
+        clock=comp.clock,
+        entry_window_seconds=_entry_window_seconds(env),
+        chain_retry_seconds=_chain_retry_seconds(env))
     gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
                             session_valid=_session_valid, buying_power_ok=_buying_power_ok)
 

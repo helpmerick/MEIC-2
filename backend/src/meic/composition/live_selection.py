@@ -1,27 +1,42 @@
 """LiveCondorSelector — turn a live chain snapshot into a Condor, or a skip reason.
 
 Composes already-tested pure domain pieces in the spec's order:
-  DAT-02 freshness -> STK-10 completeness -> probe walk (STK-02/11) ->
-  STK-09 collisions -> credit gates re-run on the FINAL strikes (STK-05/06).
+  DAT-02 freshness -> STK-10 reachable-set completeness -> probe walk
+  (STK-02/11) -> STK-09 collisions -> credit gates re-run on the FINAL
+  strikes (STK-05/06).
 
 Every failure returns a NAMED skip reason and no Condor: the runtime then skips
 the entry. Nothing here can produce a partially-valid selection — a missing mark
 on any final leg is a skip, not a guess.
+
+STK-10 v1.51 retry: an "incomplete_chain" gate failure or a missing wing at
+selection (`wing_unmarked`) does not skip immediately — it retries every
+`chain_retry_seconds`, taking a FRESH snapshot each time, until `when +
+entry_window_seconds` (ENT-02). Only then does it become a real skip. Every
+other failure (stale data, no valid strikes, a strike collision, a credit-gate
+miss) is terminal on the first attempt. `clock=None` (the default, and every
+existing unit test) disables retrying entirely — a single attempt, exactly the
+pre-v1.51 behavior — so retrying is opt-in via composition, never implicit.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from meic.application.execute_entry import Condor
-from meic.domain.chain import ChainSide, completeness_ok
+from meic.domain.chain import ChainSide, completeness_ok, reachable_strikes
 from meic.domain.collision import Abort, Resolved, resolve_collisions
 from meic.domain.gates import GatesFailed, check_credit_gates
 from meic.domain.walk import Selected, Skip, WingUnmarked, select_side
 
 Occupancy = Mapping[Decimal, frozenset]
+
+# STK-10 v1.51: these two skip reasons are RETRYABLE within the entry window —
+# everything else (data_unavailable, no_valid_strikes, strike_collision,
+# insufficient_credit/insufficient_premium, ...) is terminal on first attempt.
+_RETRYABLE_REASONS = frozenset({"incomplete_chain", "wing_unmarked"})
 
 
 @dataclass(frozen=True)
@@ -53,6 +68,12 @@ class LiveCondorSelector:
     snapshot_provider: Callable[[], Awaitable]        # () -> ChainSnapshot
     config: SelectionConfig = SelectionConfig()
     occupancy_provider: Callable[[], Occupancy] = dict
+    # STK-10 v1.51 retry (doc 06 chain_retry_seconds/entry window, ENT-02). A
+    # `None` clock (the default) means "no retry" — every pre-v1.51 unit test
+    # that doesn't pass a clock keeps its single-attempt behavior unchanged.
+    clock: Any = None                                  # Clock port: now() + wait_until()
+    entry_window_seconds: int = 120                    # ENT-02 default (doc 06)
+    chain_retry_seconds: int = 5                       # STK-10 default (doc 06)
 
     def _side(self, chain: ChainSide, direction: Decimal, c: SelectionConfig):
         return select_side(chain, target_premium=c.target_premium, wing_width=c.wing_width,
@@ -67,20 +88,49 @@ class LiveCondorSelector:
 
     async def __call__(self, when: datetime, entry_number: int,
                        config: SelectionConfig | None = None) -> tuple[Condor | None, str | None]:
-        """`config` overrides the global one for THIS row (ENT-04 / doc 06 §37)."""
+        """`config` overrides the global one for THIS row (ENT-04 / doc 06 §37).
+
+        STK-10 v1.51: retries every `chain_retry_seconds` (fresh snapshot each
+        time) while the failure is `incomplete_chain` or `wing_unmarked`, until
+        `when + entry_window_seconds` — then returns that same reason. Every
+        other reason returns on the first attempt.
+        """
         c = config or self.config
+        deadline = when + timedelta(seconds=self.entry_window_seconds)
+
+        while True:
+            condor, reason = await self._attempt(c, when=when, entry_number=entry_number)
+            if condor is not None:
+                return condor, None
+            if reason not in _RETRYABLE_REASONS or self.clock is None:
+                return None, reason
+            now = self.clock.now()
+            if now >= deadline:
+                return None, reason               # window expired, still unhealed
+            next_try = min(now + timedelta(seconds=self.chain_retry_seconds), deadline)
+            await self.clock.wait_until(next_try)
+
+    async def _attempt(self, c: SelectionConfig, *, when: datetime,
+                       entry_number: int) -> tuple[Condor | None, str | None]:
+        """One selection pass against a FRESH snapshot — no retrying here."""
         snap = await self.snapshot_provider()
 
         if snap.stale:                                    # DAT-02: never trade stale data
             return None, "data_unavailable"
 
-        # STK-10: a holey ATM band means no selection at all (both types).
-        # completeness_pct is CHAIN-scoped, never per-row (`for_entry` docstring) —
-        # the gate reads THIS selector's config, not the per-entry override, which
-        # `for_entry` builds with a hardcoded default the wiring can't reach. This
-        # is what lets the composition wire doc 06's `chain_completeness_pct` dial.
-        for chain, band in ((snap.put_side, snap.put_band), (snap.call_side, snap.call_band)):
-            if not completeness_ok(chain, band_strikes=band,
+        # STK-10 v1.51: the entry's own TRADE-RELATIVE reachable strike set,
+        # never a fixed ATM band. completeness_pct is CHAIN-scoped, never
+        # per-row (`for_entry` docstring) — the gate reads THIS selector's
+        # config, not the per-entry override, which `for_entry` builds with a
+        # hardcoded default the wiring can't reach. This is what lets the
+        # composition wire doc 06's `chain_completeness_pct` dial. The
+        # reachable set itself IS per-row (target/wing/floor are the row's own
+        # parameters), so it's computed from `c`.
+        for chain, direction in ((snap.put_side, Decimal(-1)), (snap.call_side, Decimal(1))):
+            reachable = reachable_strikes(
+                chain, target_premium=c.target_premium, wing_width=c.wing_width,
+                otm_direction=direction, min_short_premium=c.min_short_premium)
+            if not completeness_ok(chain, reachable=reachable,
                                    completeness_pct=self.config.completeness_pct):
                 return None, "incomplete_chain"
 
@@ -90,7 +140,7 @@ class LiveCondorSelector:
             if isinstance(r, Skip):
                 return None, r.reason
             if isinstance(r, WingUnmarked):
-                return None, "wing_unmarked"             # retry policy is the runtime's
+                return None, "wing_unmarked"             # retryable (STK-10 v1.51)
 
         occ = self.occupancy_provider() or {}
         legs: dict[str, Resolved] = {}

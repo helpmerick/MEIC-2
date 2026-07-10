@@ -31,7 +31,7 @@ export function DayReportView({ report }: { report: DayReport | null }) {
   const pnl = Number(report.day_pnl);
   return (
     <section className="card">
-      <div className="row between">
+      <div className="card-head">
         <h2>Day report</h2>
         <span className="muted">{report.date ?? "—"}</span>
       </div>

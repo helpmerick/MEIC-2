@@ -158,17 +158,21 @@ def _adhoc_row(params: dict[str, Any]):
     return resolved
 
 
-def _next_adhoc_number(events: list, day: str) -> int:
-    """ENT-11(3): ad-hoc entries are numbered 101, 102, ... per day, and must
-    NEVER share a number with a schedule row (1..N) — entry_ids key the exposure
-    book, ORD-04 idempotency and the ENT-10 remaining-schedule filter, so a
-    collision could double-count exposure or silently block a scheduled entry.
+def _used_entry_numbers(events: list, day: str, lane: str) -> set[int]:
+    """The entry numbers already claimed TODAY in one numbering lane.
 
-    Scans both a FILLED ad-hoc entry (CondorFilled, entry_id "{day}#{n}") and a
-    SKIPPED one (EntrySkipped, date == day) so a skipped ad-hoc press still
-    claims its number permanently, exactly like a skipped schedule row does.
+    `lane="schedule"` -> n < 101 (ENT-10(4), v1.53: durable schedule-row ids).
+    `lane="adhoc"` -> n >= 101 (ENT-11(3): the ad-hoc lane), so a schedule save
+    and an ad-hoc fire can never collide — entry_ids key the exposure book,
+    ORD-04 idempotency and the ENT-10 remaining-schedule filter, so a collision
+    could double-count exposure or silently block a scheduled entry.
+
+    Scans both a FILLED entry (CondorFilled, entry_id "{day}#{n}") and a
+    SKIPPED one (EntrySkipped, date == day) so a skipped entry still claims its
+    number permanently, exactly like a filled one does.
     """
     prefix = f"{day}#"
+    in_lane = (lambda n: n >= 101) if lane == "adhoc" else (lambda n: n < 101)
     used: set[int] = set()
     for ev in events:
         if isinstance(ev, CondorFilled) and ev.entry_id.startswith(prefix):
@@ -176,11 +180,18 @@ def _next_adhoc_number(events: list, day: str) -> int:
                 n = int(ev.entry_id[len(prefix):])
             except ValueError:
                 continue
-            if n >= 101:
+            if in_lane(n):
                 used.add(n)
-        elif isinstance(ev, EntrySkipped) and ev.date == day and ev.entry_number >= 101:
+        elif isinstance(ev, EntrySkipped) and ev.date == day and in_lane(ev.entry_number):
             used.add(ev.entry_number)
-    return max(used, default=100) + 1
+    return used
+
+
+def _next_adhoc_number(events: list, day: str) -> int:
+    """ENT-11(3): ad-hoc entries are numbered 101, 102, ... per day, and must
+    NEVER share a number with a schedule row (1..N) — see `_used_entry_numbers`.
+    """
+    return max(_used_entry_numbers(events, day, "adhoc"), default=100) + 1
 
 
 def create_app(
@@ -326,8 +337,25 @@ def create_app(
     @app.post("/schedule")
     def save_schedule(body: dict[str, Any]) -> dict[str, Any]:
         """UC-02: validate -> version -> persist. Every error, not just the first.
-        An invalid schedule is never written: a half-saved one could arm on restart."""
-        out = schedule.save(body.get("rows", []), max_day_risk=body.get("max_day_risk"))
+        An invalid schedule is never written: a half-saved one could arm on restart.
+
+        ENT-10(4) (v1.53): `used_ids` is the highest schedule-lane (<101) entry
+        number already claimed TODAY per the event log — CondorFilled/
+        EntrySkipped — so ScheduleService.save never reissues an id that a row
+        deleted in THIS save had already fired or been skipped under, even if
+        the persisted schedule itself no longer carries that row. This endpoint
+        is registered unconditionally (schedule composition works before any
+        command surface is wired), so `commands` may be None here; `day()` is
+        only available through `commands` (it reads the live clock's "today").
+        With no commands wired, nothing can fire yet either, so used_ids=None
+        (fall back to the persisted-schedule/submitted-ids floor alone) is safe.
+        """
+        used_ids = None
+        if commands is not None:
+            today = commands.day()
+            used_ids = max(_used_entry_numbers(events, today, "schedule"), default=None)
+        out = schedule.save(body.get("rows", []), max_day_risk=body.get("max_day_risk"),
+                            used_ids=used_ids)
         if out["result"] == "invalid":
             raise HTTPException(status_code=422, detail=out)
         return out
@@ -374,15 +402,48 @@ def create_app(
 
     # --- trade actions (UC-14/UI-16) — only when a command surface is wired ----
     if commands is not None:
+        def _resolved_row_for_id(n: int):
+            """ENT-10(4)/v1.53 (fix, 2026-07-10): a schedule row's identity is its
+            DURABLE id, never its display position — a mid-day edit (reorder/
+            delete) can leave position `n-1` pointing at a DIFFERENT row than the
+            one the operator meant when they pressed fire on row `n`. Look up the
+            row whose PERSISTED "id" equals `n` instead of indexing by position.
+
+            `schedule.view().rows` carries each row's durable "id" (ScheduleService
+            zips persisted rows and their resolved values in the SAME order — see
+            ScheduleService.view()'s own docstring), so the index found there is
+            safe to reuse against `schedule.resolved()`. Returns None when no row
+            carries that id (unknown/stale entry number)."""
+            raw_rows = schedule.view().rows
+            resolved = schedule.resolved()
+            for i, raw in enumerate(raw_rows):
+                if raw.get("id") == n:
+                    return resolved[i]
+            # Backward compatibility: a pre-v1.53 row was never assigned a
+            # durable id (ENT-10(4) leaves it None) and the frontend falls back
+            # to sending its display POSITION as `n` for such a row. Only fall
+            # back positionally when the row at that position genuinely has no
+            # id — a row that DOES carry an id must never be reached by
+            # position (that is exactly the bug this fixes).
+            if 1 <= n <= len(raw_rows) and raw_rows[n - 1].get("id") is None:
+                return resolved[n - 1]
+            return None
+
         @app.get("/entry/{n}/fire-preview")
         def fire_preview(n: int) -> dict[str, Any]:
             """UI-22: what the OK dialog shows — the row's parameters and the
             worst-case ESTIMATE, labelled. No strikes exist yet, so the true number
-            cannot be known here; RSK-04 re-prices at fire time and may still veto."""
-            rows = schedule.resolved()
-            if not 1 <= n <= len(rows):
+            cannot be known here; RSK-04 re-prices at fire time and may still veto.
+
+            `n` is the row's DURABLE entry id (ENT-10(4)), not its display
+            position — see `_resolved_row_for_id`."""
+            row = _resolved_row_for_id(n)
+            if row is None:
                 raise HTTPException(status_code=404, detail="unknown_entry")
-            preview = commands.fire_preview(n, rows[n - 1])
+            # FirePreview.entry_number is set to `n` here — the DURABLE id — so
+            # the frontend's round-tripped preview keys the eventual fire (and its
+            # events) on the durable id, never on a position that can drift.
+            preview = commands.fire_preview(n, row)
             return {**preview.to_dict(), "can_fire": commands.can_fire()}
 
         @app.post("/entry/{n}/fire")
@@ -392,15 +453,16 @@ def create_app(
 
             `press_id` makes a double-click exactly one attempt; `confirmed` is the
             simple OK acknowledgement (UI-22 — never a typed phrase), required in
-            BOTH paper and live."""
-            rows = schedule.resolved()
-            if not 1 <= n <= len(rows):
+            BOTH paper and live. `n` is the row's DURABLE entry id — see
+            `_resolved_row_for_id`."""
+            row = _resolved_row_for_id(n)
+            if row is None:
                 raise HTTPException(status_code=404, detail="unknown_entry")
             press_id = str(body.get("press_id", "")).strip()
             if not press_id:
                 raise HTTPException(status_code=400, detail="press_id_required")
             return await commands.fire(press_id=press_id, entry_number=n,
-                                       row=rows[n - 1], confirmed=bool(body.get("confirmed")))
+                                       row=row, confirmed=bool(body.get("confirmed")))
 
         @app.post("/manual/simulate")
         async def manual_simulate(body: dict[str, Any]) -> dict[str, Any]:

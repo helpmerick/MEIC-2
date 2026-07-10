@@ -4,8 +4,18 @@ from decimal import Decimal as D
 
 import pytest
 
+from meic.application.close_entry import CloseEntry
 from meic.application.protect_position import ProtectPosition, ShortLeg
-from meic.domain.events import EntryClosedInfeasible, SideUnprotected, StopConfirmed, StopPlaced
+from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
+from meic.domain.events import (
+    CondorFilled,
+    EntryClosed,
+    EntryClosedInfeasible,
+    FilledLeg,
+    SideUnprotected,
+    StopConfirmed,
+    StopPlaced,
+)
 from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
@@ -111,3 +121,114 @@ def test_confirmed_qty_matches_both_fake_order_id_and_live_id_shapes():
     assert asyncio.run(p._confirmed_qty("7001")) == 2    # live matched by .id
     assert asyncio.run(p._confirmed_qty("7002")) == 1    # fake matched by .order_id
     assert asyncio.run(p._confirmed_qty("9999")) is None
+
+
+# --- STP-04 AUTO-FLATTEN wiring (the hook existed unwired for weeks) -----------
+
+def _condor_filled_legs():
+    """The whole entry's broker-reported legs (ORD-09) — both sides, so a
+    whole-entry auto-flatten close has something real to close on each."""
+    return (
+        FilledLeg(symbol="SPXW  260707P05940000", right="P", role="long", qty=1, price=D("0.50")),
+        FilledLeg(symbol="SPXW  260707P05990000", right="P", role="short", qty=1, price=D("3.00")),
+        FilledLeg(symbol="SPXW  260707C06060000", right="C", role="short", qty=1, price=D("2.00")),
+        FilledLeg(symbol="SPXW  260707C06110000", right="C", role="long", qty=1, price=D("0.40")),
+    )
+
+
+def test_unprotected_flatten_wires_the_real_close_entry_with_real_legs_and_stop_ids():
+    """STP-04 AUTO-FLATTEN regression: ProtectPosition accepted a close_entry
+    callback for weeks with nothing wiring it in live/paper composition — the
+    critical alert fired and nothing further happened. Here the callback
+    mirrors the composition's real wiring (assemble_close_inputs -> the REAL
+    CloseEntry, exactly like live.py/paper.py `_auto_flatten_entry`) and must
+    actually close the entry's broker-reported legs, not a stand-in."""
+    broker, events, alerts = FakeBroker(), [], RecordingAlerts()
+    events.append(CondorFilled(entry_id="e6", net_credit=D("4.00"), legs=_condor_filled_legs()))
+    broker.script_submit(*[Scripted("reject", payload={"reason": "x"}) for _ in range(3)])  # exhaust retries
+    close_entry = CloseEntry(broker, events)
+
+    async def close_cb(entry_id, initiator):
+        inputs = await assemble_close_inputs(events, broker, entry_id)
+        assert inputs is not None
+        legs, stop_ids = inputs
+        await close_entry.close(entry_id, initiator, resting_stop_ids=stop_ids,
+                                live_legs=legs, close_price=DEFAULT_CLOSE_PRICE)
+
+    p = _protect(broker, events, alerts, stop_retry_attempts=3, close_entry=close_cb)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000")]
+    result = asyncio.run(p.protect(entry_id="e6", basis=StopBasis.TOTAL_CREDIT,
+                                   shorts=shorts, pct=D("95"), total_net_credit=D("4.00")))
+
+    assert result.outcome == "UNPROTECTED_FLATTENED"
+    assert [e for e in events if isinstance(e, EntryClosed)] == \
+        [EntryClosed(entry_id="e6", initiator="unprotected")]
+    # No stop ever confirmed (every placement was rejected) -> CLS-01(3): a
+    # direct marketable close on every recorded leg, not a replace race. All
+    # four of the entry's real legs (both sides) got a close order — the
+    # OPEN ITEM in protect_position.py: unprotected always flattens the WHOLE
+    # entry today, not just the side that went unprotected.
+    working = asyncio.run(broker.working_orders())
+    closed_symbols = {o.intent.legs[0].symbol for o in working if o.intent.kind == "close"}
+    assert closed_symbols == {
+        "SPXW  260707P05940000", "SPXW  260707P05990000",
+        "SPXW  260707C06060000", "SPXW  260707C06110000",
+    }
+
+
+def test_stop_quantity_mismatch_flattens_the_entry():
+    """STP-01 (v1.45): a stop that confirms WORKING but at the wrong size is
+    naked, not retried, not resized — UNPROTECTED_FLATTENED immediately, same
+    escalation path as a stop that never confirmed at all."""
+    from types import SimpleNamespace
+
+    class _WrongSizeBroker:
+        """submit() confirms, but the WORKING order reported back is
+        undersized: a 2-contract stop rests at 1 -> 1 contract naked."""
+
+        async def submit(self, order):
+            return "O-1"
+
+        async def working_orders(self):
+            return [SimpleNamespace(order_id="O-1", intent=SimpleNamespace(contracts=1))]
+
+    events, alerts = [], RecordingAlerts()
+    flattened = []
+
+    async def close_cb(entry_id, initiator):
+        flattened.append((entry_id, initiator))
+
+    p = _protect(_WrongSizeBroker(), events, alerts, close_entry=close_cb)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000")]
+    result = asyncio.run(p.protect(entry_id="e7", basis=StopBasis.TOTAL_CREDIT,
+                                   shorts=shorts, pct=D("95"), total_net_credit=D("4.00"),
+                                   contracts=2))
+
+    assert result.outcome == "UNPROTECTED_FLATTENED"
+    assert any(isinstance(e, SideUnprotected) for e in events)
+    assert any("naked" in msg for _, msg, _ in alerts.calls)
+    assert flattened == [("e7", "unprotected")]
+
+
+def test_auto_flatten_callback_survives_an_empty_leg_book_without_crashing():
+    """If the broker never reported any legs for this entry (no CondorFilled
+    landed yet, or a stale entry_id), assemble_close_inputs returns None — the
+    callback must alert and return, never raise, never fabricate legs."""
+    broker, events, alerts = FakeBroker(), [], RecordingAlerts()
+    broker.script_submit(*[Scripted("reject", payload={"reason": "x"}) for _ in range(3)])
+
+    async def close_cb(entry_id, initiator):
+        inputs = await assemble_close_inputs(events, broker, entry_id)
+        if inputs is None or not inputs[0]:
+            alerts.alert("critical", "STP-04 auto-flatten: no legs recorded", entry_id=entry_id)
+            return
+        raise AssertionError("should never reach here: no legs were recorded")
+
+    p = _protect(broker, events, alerts, stop_retry_attempts=3, close_entry=close_cb)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000")]
+    result = asyncio.run(p.protect(entry_id="e8", basis=StopBasis.TOTAL_CREDIT,
+                                   shorts=shorts, pct=D("95"), total_net_credit=D("4.00")))
+
+    assert result.outcome == "UNPROTECTED_FLATTENED"     # did not crash
+    assert any("no legs recorded" in msg for _, msg, _ in alerts.calls)
+    assert not [e for e in events if isinstance(e, EntryClosed)]  # nothing closed

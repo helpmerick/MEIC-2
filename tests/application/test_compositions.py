@@ -10,7 +10,7 @@ from meic.adapters.tastytrade.adapter import TastytradeAdapter
 from meic.application.execute_entry import Condor
 from meic.composition.live import LiveComposition
 from meic.composition.paper import PaperComposition
-from meic.domain.events import CondorFilled, FilledLeg
+from meic.domain.events import CondorFilled, EntryClosed, FilledLeg
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
 
@@ -94,6 +94,52 @@ def test_paper_on_filled_passes_the_actual_fill_credit_to_protect():
     asyncio.run(comp._on_filled(entry_id, _condor(), None, fill_credit=D("3.60")))
 
     assert captured["total_net_credit"] == D("3.60")
+
+
+# --- STP-04 AUTO-FLATTEN wiring (regression: the hook existed unwired for weeks) --
+
+def test_paper_protect_carries_a_real_close_entry_hook_not_none():
+    """ProtectPosition accepted `close_entry` for weeks; nothing supplied it
+    here. `None` means STP-04's escalation raises its critical alert and then
+    does nothing further — this must never again be the case."""
+    comp = PaperComposition(clock=CLOCK, ticks=SPX)
+    assert comp.protect._close_entry is not None
+    assert comp.protect._close_entry.__self__ is comp     # the comp's own wiring, not a stub
+
+
+def test_live_protect_carries_a_real_close_entry_hook_not_none():
+    comp = LiveComposition(clock=CLOCK, ticks=SPX, provider_secret="s", refresh_token=_cert_jwt())
+    assert comp.protect._close_entry is not None
+    assert comp.protect._close_entry.__self__ is comp
+
+
+def test_paper_auto_flatten_closes_the_entrys_real_legs_with_unprotected_initiator():
+    """Drives the actual wired hook end to end: a CondorFilled with real
+    broker-reported legs, then STP-04 invoking the callback exactly as
+    ProtectPosition would -> the ONE canonical CloseEntry records the close
+    with initiator `unprotected` (STP-04's honest label, see protect_position.py)."""
+    comp = PaperComposition(clock=CLOCK, ticks=SPX)
+    entry_id = "2026-07-06#1"
+    comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.60"), legs=_filled_legs()))
+
+    asyncio.run(comp.protect._close_entry(entry_id, "unprotected"))
+
+    closed = [e for e in comp.events if isinstance(e, EntryClosed)]
+    assert closed == [EntryClosed(entry_id=entry_id, initiator="unprotected")]
+
+
+def test_auto_flatten_survives_an_empty_leg_book_without_crashing():
+    """4(d): if the broker never reported legs for this entry (e.g. the hook
+    fires before a CondorFilled landed), the hook alerts and returns — it
+    never crashes the STP-04 escalation path and never fabricates a leg."""
+    comp = PaperComposition(clock=CLOCK, ticks=SPX)
+    captured = []
+    comp.alerts.alert = lambda level, msg, **ctx: captured.append((level, msg, ctx))
+
+    asyncio.run(comp.protect._close_entry("no-such-entry", "unprotected"))  # must not raise
+
+    assert any(level == "critical" for level, _, _ in captured)
+    assert not [e for e in comp.events if isinstance(e, EntryClosed)]
 
 
 def test_paper_on_filled_falls_back_to_mid_when_fill_credit_is_none():

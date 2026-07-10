@@ -26,6 +26,14 @@ class RecordingBroker:
         self.cancels.append(id)
         return {"result": "cancelled"}
 
+    async def replace(self, id, new):
+        # CLS-01 v1.50: CloseEntry replaces a short's resting stop in ONE port
+        # call rather than a bare cancel() + submit(). This bare recording
+        # double doesn't track real order state, so it just records the old
+        # id (mirroring the old cancel-first log) and submits the new intent.
+        self.cancels.append(id)
+        return await self.submit(new)
+
 
 def _svc(events, state):
     broker = RecordingBroker()
@@ -49,10 +57,10 @@ def test_tc_cls_02_close_is_instant_via_cls_clears_tpf_tags_manual():
 
     res = asyncio.run(svc.close(
         "e1", live_legs=[LiveLeg("P", "PUT", "short", -1), LiveLeg("C", "CALL", "short", -1)],
-        resting_stop_ids=["sP", "sC"], close_price=D("0.05")))
+        resting_stop_ids={"PUT": "sP", "CALL": "sC"}, close_price=D("0.05")))
 
     assert res.result == "closed" and res.initiator == "manual"
-    assert set(broker.cancels) == {"sP", "sC"}                 # stops cancelled (CLS-01)
+    assert set(broker.cancels) == {"sP", "sC"}                 # stops replaced (CLS-01 v1.50)
     closed = [e for e in events if isinstance(e, EntryClosed)]
     assert closed == [EntryClosed(entry_id="e1", initiator="manual")]
     assert state.tpf_floors == {}                              # armed TPF floor cleared
@@ -68,8 +76,8 @@ def test_tc_cls_02_double_click_produces_exactly_one_close():
     svc, broker = _svc(events, state)
     legs = [LiveLeg("P", "PUT", "short", -1)]
 
-    first = asyncio.run(svc.close("e1", live_legs=legs, resting_stop_ids=[], close_price=D("0.05")))
-    second = asyncio.run(svc.close("e1", live_legs=legs, resting_stop_ids=[], close_price=D("0.05")))
+    first = asyncio.run(svc.close("e1", live_legs=legs, resting_stop_ids={}, close_price=D("0.05")))
+    second = asyncio.run(svc.close("e1", live_legs=legs, resting_stop_ids={}, close_price=D("0.05")))
 
     assert first.result == "closed" and second.result == "already_done"
     assert sum(isinstance(e, EntryClosed) for e in events) == 1   # exactly one close

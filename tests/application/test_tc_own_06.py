@@ -27,6 +27,13 @@ class RecordingBroker:
         self.cancelled_ids.append(id)
         return {"result": "cancelled"}
 
+    async def replace(self, id: str, new) -> str:
+        # CLS-01 v1.50: CloseEntry replaces each short's resting stop in ONE
+        # port call. Recorded the same way a bare cancel used to be — the old
+        # stop is gone either way — plus the new order actually submitted.
+        self.cancelled_ids.append(id)
+        return await self.submit(new)
+
     def __getattr__(self, name: str):
         # any account-wide endpoint is a bug — record it and fail loudly
         if name in ("close_all", "close_all_positions", "flatten_account", "cancel_all"):
@@ -53,11 +60,11 @@ def test_tc_own_06_flatten_leaves_foreign_untouched_no_account_close_all():
         OpenEntry("e1",
                   [LiveLeg("SPXW_PUT_A", "PUT", "short", -1),
                    LiveLeg("SPXW_CALL_A", "CALL", "short", -1)],
-                  D("0.05"), resting_stop_ids=["stopA1", "stopA2"]),
+                  D("0.05"), resting_stop_ids={"PUT": "stopA1", "CALL": "stopA2"}),
         OpenEntry("e2",
                   [LiveLeg("SPXW_PUT_B", "PUT", "short", -1),
                    LiveLeg("SPXW_CALL_B", "CALL", "short", -1)],
-                  D("0.05"), resting_stop_ids=["stopB1"]),
+                  D("0.05"), resting_stop_ids={"PUT": "stopB1P", "CALL": "stopB1C"}),
     ]
     asyncio.run(flat.flatten(book))
 
@@ -71,6 +78,7 @@ def test_tc_own_06_flatten_leaves_foreign_untouched_no_account_close_all():
     assert set(broker.submitted_symbols) == {
         "SPXW_PUT_A", "SPXW_CALL_A", "SPXW_PUT_B", "SPXW_CALL_B"}
 
-    # (3) resting stops cancelled; no account-level close-all endpoint ever called
-    assert set(broker.cancelled_ids) == {"stopA1", "stopA2", "stopB1"}
+    # (3) resting stops replaced (CLS-01 v1.50); no account-level close-all
+    # endpoint ever called
+    assert set(broker.cancelled_ids) == {"stopA1", "stopA2", "stopB1P", "stopB1C"}
     assert broker.account_level_calls == []

@@ -202,8 +202,77 @@ class TastytradeAdapter:
             return {"result": "error", "error": repr(e)}
 
     async def replace(self, id, new):
-        await self.cancel(id)  # cert has no atomic replace for these; confirm-cancel then submit
-        return await self.submit(new)
+        """CLS-01 replace: same-leg stop -> marketable buy-to-close in as close
+        to ONE broker operation as the SDK allows.
+
+        *** ATOMIC-REPLACE FINDING (2026-07-10, CLS-01 v1.50 implementation) ***
+        This module's original comment ("cert has no atomic replace for
+        these") was WRONG for this shape. The installed SDK (tastytrade
+        v13, `Account.replace_order`) issues a single `PUT
+        /accounts/{acct}/orders/{id}` that mutates order_type/price/
+        stop_trigger while explicitly EXCLUDING `legs` from the payload
+        (`model_dump_json(exclude={"legs"}, ...)`) — i.e. it keeps the SAME
+        leg (same instrument, same buy_to_close action) and only swaps the
+        order's shape. That is EXACTLY the CLS-01 replace (stop_market ->
+        marketable_limit, same short leg): a native single-call replace
+        exists and is used as the PRIMARY path below.
+
+        UNVERIFIED against cert (flagged for the operator / contract suite,
+        `pytest -m contract` — NOT run as part of this change): whether
+        `replace_order` (a) 400s outright on an order-TYPE change (only
+        same-type reprices — LEX/entry-ladder limit->limit — are proven live
+        today), (b) errors distinctly when the target already filled
+        (ORD-08a), or (c) silently no-ops. Until the contract suite
+        characterizes this, the fallback below is deliberately conservative.
+
+        RESIDUAL GAP (report prominently — this is the operator-escalation
+        item): the FALLBACK path (native call raised) is cancel-then-submit,
+        which is NOT atomic — cert genuinely has no atomic replace for a
+        stop-market -> marketable-limit TYPE change if the native call turns
+        out not to support it. Between the fallback's confirmed cancel and its
+        submit there is a real, if brief, naked window. This gap is why the
+        primary path exists (to avoid the fallback whenever the SDK's native
+        replace actually works) and why it must be exercised in cert before
+        being trusted live.
+        """
+        try:
+            built = await self._build_order(new)
+            resp = await self._account.replace_order(self._session, int(id), built)
+            return str(getattr(resp, "id", "")) or ""
+        except Exception:
+            return await self._replace_fallback(id, new)
+
+    async def _replace_fallback(self, id, new):
+        """NOT atomic (see `replace` docstring) — the residual gap this change
+        must report. Probes via `cancel()` BEFORE ever submitting a second
+        order, so a stop that beat the replace to a fill is never double-
+        bought; anything else that isn't a clean confirmed cancel is treated
+        as ORD-08 "unclassifiable" (transient) and re-raised so the caller
+        retries with the ORIGINAL stop presumed still resting, per
+        ORD-08/CLS-01(2).
+
+        KNOWN LIMITATION (part of the same residual-gap report): `cancel()`
+        today returns only `{"result": "cancelled"}` or `{"result": "error",
+        "error": repr(exc)}` — it does not itself classify WHY a cancel
+        failed (cert's exact error shape for "already filled" vs "already
+        gone" vs "rate limited" is unverified, assumption 5/ORD-08). So this
+        fallback cannot yet distinguish a genuine ORD-08a fill-race from any
+        other cancel failure here; it takes the SAFE default for both
+        (transient — never submit a second order) rather than guess at an
+        unverified error string. That means a live fill-race during THIS
+        fallback path is currently handled as "retry the close later", not
+        "route to LEX immediately" — correct-but-slow rather than wrong. Once
+        the contract suite characterizes cert's cancel-failure payloads, this
+        should classify `error` via `cancel_taxonomy.classify_cancel_failure`
+        and raise `ReplaceFilled` when it resolves to "filled"."""
+        cancel_result = await self.cancel(id)
+        if cancel_result.get("result") == "cancelled":
+            return await self.submit(new)  # confirmed dead just now — safe to submit
+        # "error" (or any other shape): ambiguous -- ORD-08's unclassifiable-
+        # defaults-to-transient rule. Do NOT submit a second order.
+        raise RuntimeError(
+            f"replace fallback: cancel of {id!r} was inconclusive "
+            f"({cancel_result!r}) — ORD-08 transient, original stop presumed resting")
 
     async def working_orders(self) -> list[Any]:
         live = await self._account.get_live_orders(self._session)

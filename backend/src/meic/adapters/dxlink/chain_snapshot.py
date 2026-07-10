@@ -1,15 +1,23 @@
 """Live chain snapshot — turns the broker's chain + DXLink quotes into the pure
 domain's ChainSide pair (DAT-01, STK-04/10).
 
-Two phases, because the ATM band is unknowable without spot:
+Two phases, because the subscription universe is unknowable without spot:
   1. subscribe the index symbol, take the first quote -> spot
-  2. compute the ±band strikes, subscribe their put/call symbols, collect marks
+  2. subscribe the strikes within SUBSCRIBE_SPAN_PTS of spot, collect marks
 
 A strike only gets a Mark if it has a VALID two-sided quote (bid > 0, ask >= bid).
-Anything else is a hole, and STK-10 completeness decides whether the chain is
-usable. Quotes are staleness-stamped: a snapshot older than `max_age_seconds`
-sets `stale`, and the entry gate refuses to trade on it (DAT-02) — which is
-exactly what keeps a closed/illiquid market from producing a "valid" selection.
+Anything else is a hole, and STK-10 decides whether the chain is usable.
+Quotes are staleness-stamped: a snapshot older than `max_age_seconds` sets
+`stale`, and the entry gate refuses to trade on it (DAT-02) — which is exactly
+what keeps a closed/illiquid market from producing a "valid" selection.
+
+v1.51 note: `chain_atm_band_pts` (the old fixed subscription/gate band) is
+RETIRED. Which strikes to SUBSCRIBE to is purely an implementation detail —
+never the STK-10 gate itself, which now inspects each entry's own
+TRADE-RELATIVE reachable set (domain/chain.py: `reachable_strikes`). This
+module's `put_band`/`call_band` fields are the strikes that were SUBSCRIBED
+(diagnostics only — kept for the live P/L card and contract-test visibility;
+STK-10 no longer reads them).
 """
 from __future__ import annotations
 
@@ -20,6 +28,12 @@ from decimal import Decimal
 
 from meic.domain.chain import ChainSide, Mark
 
+# Subscription breadth only (never the STK-10 gate, which inspects the
+# trade-relative reachable set — see the module docstring). 250 pts
+# comfortably covers any reachable set for the doc-06 config ranges
+# (wing_width up to 100 + max_long_shifts up to 10 shifts, well inside 250).
+SUBSCRIBE_SPAN_PTS = Decimal("250")
+
 
 @dataclass(frozen=True)
 class ChainSnapshot:
@@ -27,8 +41,8 @@ class ChainSnapshot:
     expiration: date
     put_side: ChainSide
     call_side: ChainSide
-    put_band: tuple[Decimal, ...]
-    call_band: tuple[Decimal, ...]
+    put_band: tuple[Decimal, ...]   # diagnostics: strikes SUBSCRIBED, not the STK-10 gate
+    call_band: tuple[Decimal, ...]  # diagnostics: strikes SUBSCRIBED, not the STK-10 gate
     symbols: dict[Decimal, tuple[str, str]]  # strike -> (put_symbol, call_symbol)
     taken_at: datetime
     stale: bool = False
@@ -49,15 +63,19 @@ def build_sides(
     spot: Decimal,
     strike_symbols: dict[Decimal, tuple[str, str]],
     quotes: dict[str, tuple],           # symbol -> (bid, ask)
-    band_points: Decimal,
+    subscribe_span_pts: Decimal = SUBSCRIBE_SPAN_PTS,
 ) -> tuple[ChainSide, ChainSide, tuple[Decimal, ...], tuple[Decimal, ...]]:
     """Pure: assemble both ChainSides from strike symbols + collected quotes.
-    Puts run DOWN from the money, calls UP (strikes_toward_otm ordering)."""
+    Puts run DOWN from the money, calls UP (strikes_toward_otm ordering).
+
+    The returned `put_band`/`call_band` tuples are diagnostics (which strikes
+    were within the subscription span) — NOT the STK-10 gate, which inspects
+    the trade-relative reachable set (domain/chain.py: `reachable_strikes`)."""
     put_strikes = tuple(sorted((k for k in strike_symbols if k <= spot), reverse=True))
     call_strikes = tuple(sorted(k for k in strike_symbols if k >= spot))
 
-    put_band = tuple(k for k in put_strikes if spot - k <= band_points)
-    call_band = tuple(k for k in call_strikes if k - spot <= band_points)
+    put_band = tuple(k for k in put_strikes if spot - k <= subscribe_span_pts)
+    call_band = tuple(k for k in call_strikes if k - spot <= subscribe_span_pts)
 
     put_marks: dict[Decimal, Mark] = {}
     call_marks: dict[Decimal, Mark] = {}
@@ -102,7 +120,6 @@ async def snapshot_chain(
     *,
     underlying: str = "SPXW",
     index_symbol: str = "SPX",
-    band_points: Decimal = Decimal("120"),
     spot_timeout_s: float = 10.0,
     quote_timeout_s: float = 12.0,
     max_age_seconds: float = 5.0,
@@ -133,11 +150,11 @@ async def snapshot_chain(
         strike_occ: dict[Decimal, tuple[str, str]] = {}
         for s in expiration.strikes:
             k = Decimal(str(s.strike_price))
-            if abs(k - spot) <= band_points:
+            if abs(k - spot) <= SUBSCRIBE_SPAN_PTS:
                 strike_streamers[k] = streamer_pair(s)
                 strike_occ[k] = occ_pair(s)
         if not strike_streamers:
-            raise RuntimeError(f"no strikes within +/-{band_points} of spot {spot}")
+            raise RuntimeError(f"no strikes within +/-{SUBSCRIBE_SPAN_PTS} of spot {spot}")
 
         wanted = {sym for pair in strike_streamers.values() for sym in pair}
         await streamer.subscribe(Quote, sorted(wanted))
@@ -162,7 +179,8 @@ async def snapshot_chain(
     taken_at = (now() if callable(now) else None) or datetime.now(timezone.utc)
     # build_sides matches quotes to strikes by the SUBSCRIPTION symbols (streamer).
     put_side, call_side, put_band, call_band = build_sides(
-        spot=spot, strike_symbols=strike_streamers, quotes=quotes, band_points=band_points)
+        spot=spot, strike_symbols=strike_streamers, quotes=quotes,
+        subscribe_span_pts=SUBSCRIBE_SPAN_PTS)
 
     return ChainSnapshot(
         spot=spot, expiration=expiration.expiration_date,

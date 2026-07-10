@@ -1,12 +1,52 @@
-"""CloseEntry — the ONE canonical close path (CLS-01/02/04).
+"""CloseEntry — the ONE canonical close path (CLS-01/02/04, v1.50 REPLACE-BASED).
 
 Every close routes through here, differing only in the recorded initiator
 (CLS-02). The broker-request sequence is a pure function of the position, NOT
 the initiator — that is what makes a manual close and a TPF close byte-
-identical (TC-CLS-01). Procedure (CLS-01): cancel the resting short stops and
-confirm, then close all remaining live legs via an ORD-02-style ladder;
-nothing is left resting or open. Idempotency keys (ORD-04) mean no leg closes
-twice.
+identical (TC-CLS-01 scenario 1).
+
+Procedure (CLS-01 v1.50 — supersedes the cancel-first predecessor, born from
+the 2026-07-09 live incident debate: cancel-first accepted ~seconds of
+nakedness; close-first (rejected) armed a two-orders-one-leg race that can
+silently double-buy into an unintended long):
+
+  (1) For EACH short leg with a resting stop: cancel/replace the stop with a
+      marketable buy-to-close of ledger quantity via ONE port call,
+      `broker.replace(stop_id, new_intent)` — the protection BECOMES the
+      exit. There is never a moment with zero working buy orders on the short
+      (naked) and never a moment with two (double-fill race); that guarantee
+      lives in the broker implementation of `replace()` (see
+      `tests/harness/fake_broker.py`, `adapters/sim/simulated_broker.py`,
+      `adapters/tastytrade/adapter.py`), not here — CloseEntry is written
+      purely against the `replace()` PORT semantics (ports.BrokerGateway).
+  (2) `replace()` outcomes, classified per ORD-08 (see `cancel_taxonomy`):
+        - FILLED (ORD-08a): the resting stop executed while the replace was
+          in flight — that side is ALREADY closed. Route it exactly like a
+          normal stop-out: emit the SAME `ShortStopped` event a live stop
+          fill emits (see `SimulatedBroker.try_fill_stop`), so the SAME
+          downstream SIDE_STOPPED -> LEX reaction picks it up. CloseEntry
+          does not invoke RecoverLong itself — LEX-01's trigger already owns
+          that — it only reports the race honestly and never submits a
+          second buy on the same leg.
+        - TERMINAL (ORD-08b): the stop is dead for any other reason (already
+          cancelled, rejected, expired, never existed). Nothing is resting
+          for it any more, so there is nothing left to race — submit the
+          close directly.
+        - anything else (ORD-08 "unclassifiable defaults to transient"):
+          bounded retry, the ORIGINAL stop presumed still resting throughout
+          (never cancelled by us on a failed attempt). Retries exhausted ->
+          critical alert, the stop is left resting (protected, not naked)
+          rather than risk a duplicate close.
+  (3) Remaining LONG legs close via a plain marketable sell — no stops, no
+      race. A long whose SHORT raced to FILLED (case 2/FILLED) is excluded:
+      that side is now a genuine stop-out and its long is LEX's job, not
+      CLS's. A SHORT with NO resting stop recorded (never confirmed,
+      USER_UNPROTECTED, etc.) gets a direct marketable buy-to-close — no
+      replace, no race to run.
+  (4) Nothing of the entry is left resting or open when CLS completes (except
+      a leg whose replace retries are still exhausted this call — see (2)).
+  (5) Every order carries an ORD-04 idempotency key — no leg is ever closed
+      twice.
 
 Exit quantities are capped by the OwnershipLedger (OWN-04) so a shared-symbol
 close only ever touches the bot's own lots.
@@ -16,14 +56,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from meic.domain.events import EntryClosed, SideClosed
+from meic.domain.events import EntryClosed, ShortStopped, SideClosed
 from meic.domain.ownership import OwnershipLedger
 
-from .order_intent import OrderIntent, OrderLeg, right_of
+from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
+from .order_intent import OrderIntent, OrderLeg, marketable_close, right_of
 
 VALID_INITIATORS = frozenset({
-    "manual", "manual_flatten", "take_profit", "eod", "decay", "infeasible_stop", "unprotected",
+    "manual", "manual_flatten", "take_profit", "eod", "decay", "infeasible_stop",
+    # "unprotected" (STP-04 AUTO-FLATTEN, see protect_position.py `_go_unprotected`)
+    # is NOT in CLS-02's operator-ratified initiator list (manual, manual_flatten,
+    # take_profit, eod, decay, infeasible_stop) — flagged for operator
+    # ratification, kept because STP-04 demands the flatten and this is the
+    # honest, distinct label for why it happened.
+    "unprotected",
 })
+
+_SIDE_ORDER = {"PUT": 0, "CALL": 1}  # deterministic order (TC-CLS-01 scenario 1)
+
+
+class _NoOpAlerts:
+    def alert(self, level: str, message: str, **context) -> None:  # pragma: no cover - trivial
+        pass
 
 
 @dataclass(frozen=True)
@@ -35,39 +89,119 @@ class LiveLeg:
 
 
 class CloseEntry:
-    def __init__(self, broker, events: list, ledger: OwnershipLedger | None = None) -> None:
+    def __init__(
+        self,
+        broker,
+        events: list,
+        ledger: OwnershipLedger | None = None,
+        *,
+        alerts=None,
+        replace_retry_attempts: int = 3,
+    ) -> None:
         self._broker = broker
         self._events = events
         self._ledger = ledger or OwnershipLedger()
+        self._alerts = alerts or _NoOpAlerts()
+        self._replace_retry_attempts = max(1, replace_retry_attempts)
 
     async def close(
         self,
         entry_id: str,
         initiator: str,
         *,
-        resting_stop_ids: list[str],
+        resting_stop_ids: dict[str, str],
         live_legs: list[LiveLeg],
         close_price: Decimal,
     ) -> None:
         if initiator not in VALID_INITIATORS:
             raise ValueError(f"unknown close initiator {initiator!r} (CLS-02)")
 
-        # CLS-01 (1): cancel resting short stops, confirm — deterministic order
-        for stop_id in resting_stop_ids:
-            await self._broker.cancel(stop_id)
+        # CLS-01 (1)/(2): shorts first — the replace-based protection-becomes-
+        # exit step. Deterministic side order (PUT, then CALL) so a manual
+        # close and a TPF close of identical positions are byte-identical
+        # (TC-CLS-01 scenario 1) — only the recorded initiator differs.
+        shorts = sorted(
+            (leg for leg in live_legs if leg.role == "short"),
+            key=lambda leg: _SIDE_ORDER.get(leg.side, 2),
+        )
+        stopped_sides: set[str] = set()  # sides that raced to FILLED (ORD-08a)
 
-        # CLS-01 (2): close all remaining live legs via the ladder. One 4-leg
-        # (or per-remaining-side) spread close; quantity OWN-04-capped.
-        for leg in sorted(live_legs, key=lambda l: (l.side, l.role)):
-            qty = self._ledger.cap_exit_qty(leg.symbol, abs(leg.signed_qty)) or abs(leg.signed_qty)
-            action = "buy_to_close" if leg.signed_qty < 0 else "sell_to_close"
+        for leg in shorts:
+            qty = self._exit_qty(leg)
+            intent = marketable_close(
+                entry_id=entry_id, right=right_of(leg.side), contracts=qty,
+                price=close_price, symbol=leg.symbol,
+                idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
+            )
+            stop_id = resting_stop_ids.get(leg.side)
+            if stop_id is None:
+                # CLS-01 (3): no resting stop recorded (never confirmed,
+                # USER_UNPROTECTED, ...) — direct marketable buy-to-close.
+                await self._broker.submit(intent)
+                self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
+                continue
+
+            outcome, fill_price = await self._replace_stop(entry_id, leg.side, stop_id, intent)
+            if outcome == "FILLED":
+                stopped_sides.add(leg.side)
+                self._events.append(ShortStopped(
+                    entry_id=entry_id, side=leg.side, fill=fill_price or close_price,
+                    slippage=Decimal("0"), initiator="resting_stop"))
+            elif outcome == "STILL_RESTING":
+                # ORD-08 transient, retries exhausted this call — the original
+                # stop is untouched and still protecting the short. Never
+                # naked, never double-ordered; CLS-01(4) is deferred, not
+                # violated, for this leg.
+                continue
+            else:  # "REPLACED" or "TERMINAL" — the short is now closed.
+                self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
+
+        # CLS-01 (3): remaining LONG legs — plain marketable sells, no stops,
+        # no race. A long whose short raced to FILLED is excluded here: LEX
+        # (triggered by the ShortStopped event above, exactly as any other
+        # stop fill) owns that side's long sale, not CLS.
+        longs = sorted(
+            (leg for leg in live_legs if leg.role == "long" and leg.side not in stopped_sides),
+            key=lambda leg: _SIDE_ORDER.get(leg.side, 2),
+        )
+        for leg in longs:
+            qty = self._exit_qty(leg)
             await self._broker.submit(OrderIntent(
-                order_type="limit", tif="Day", kind="close", entry_id=entry_id,
+                order_type="marketable_limit", tif="Day", kind="close", entry_id=entry_id,
                 contracts=qty, price=close_price,
                 idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
-                legs=(OrderLeg(right=right_of(leg.side), action=action,
+                legs=(OrderLeg(right=right_of(leg.side), action="sell_to_close",
                                qty=qty, symbol=leg.symbol),)))
             self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
 
         # CLS-04: record the close with its initiator (the ONLY per-initiator diff)
         self._events.append(EntryClosed(entry_id=entry_id, initiator=initiator))
+
+    def _exit_qty(self, leg: LiveLeg) -> int:
+        return self._ledger.cap_exit_qty(leg.symbol, abs(leg.signed_qty)) or abs(leg.signed_qty)
+
+    async def _replace_stop(
+        self, entry_id: str, side: str, stop_id: str, intent: OrderIntent,
+    ) -> tuple[str, Decimal | None]:
+        """CLS-01 (1)/(2): the ONE port call, `broker.replace()`, classified per
+        ORD-08. Returns `(outcome, fill_price)` where outcome is one of
+        "REPLACED" | "FILLED" | "TERMINAL" | "STILL_RESTING"."""
+        last_exc: Exception | None = None
+        for _ in range(self._replace_retry_attempts):
+            try:
+                await self._broker.replace(stop_id, intent)
+                return "REPLACED", None
+            except ReplaceFilled as e:
+                return "FILLED", e.fill_price
+            except ReplaceTerminal:
+                # ORD-08b: nothing is resting for this leg any more — no race
+                # left to run, so submit the close directly rather than retry
+                # a replace against a dead order.
+                await self._broker.submit(intent)
+                return "TERMINAL", None
+            except Exception as e:  # ORD-08(c) / unclassifiable -> transient
+                last_exc = e
+        self._alerts.alert(
+            "critical", "CLS-01 replace exhausted retries; original stop left resting",
+            entry_id=entry_id, side=side, stop_id=stop_id, error=repr(last_exc))
+        return "STILL_RESTING", None

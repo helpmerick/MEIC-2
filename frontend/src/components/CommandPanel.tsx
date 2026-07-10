@@ -60,7 +60,7 @@ export function CommandPanel({
   }
 
   return (
-    <section className="card">
+    <section className="card command-card">
       <h2>Commands</h2>
 
       <div className="cmd-grid">

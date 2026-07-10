@@ -137,14 +137,24 @@ def schedule_rows(state, *, today: date, tz) -> list[ScheduledRow]:
     panel showed. Pin-at-Save (v1.47) means these values are already concrete.
     """
     rows: list[ScheduledRow] = []
-    # ENT-10(4): stamp each row with its 1-based ORIGINAL position in the saved
-    # schedule. The saved schedule is validated strictly-increasing by time, so
-    # saved order == time order — stamping here (before the sort below, which is
-    # therefore a no-op on well-formed state) gives every row a stable identity
-    # that survives later filtering to a remaining-rows subset.
-    for i, entry in enumerate(ScheduleService(state).resolved(), start=1):
+    # ENT-10(4) (v1.53, operator ruling): stamp each row with its DURABLE entry
+    # id — assigned once at Save (schedule_service.save) and never reused — not
+    # its position in this list. A mid-day delete/re-save while ARMED can add,
+    # drop or reorder rows; keying on the durable id is what lets the day task,
+    # ORD-04 idempotency, the exposure book and attempted-today tracking survive
+    # that unaffected, where keying on position would renumber a survivor or
+    # collide it with an already-filled entry.
+    #
+    # A row persisted BEFORE v1.53 has no "id" key yet (migration path): it
+    # falls back to its 1-based position here, exactly the numbering this
+    # function used pre-v1.53 — safe, because such a schedule has never been
+    # re-saved since, so its position has never had a chance to drift.
+    raw_rows = state.entry_schedule or []
+    resolved = ScheduleService(state).resolved()
+    for i, (raw, entry) in enumerate(zip(raw_rows, resolved), start=1):
         when = datetime.combine(today, dtime(entry.time.hour, entry.time.minute), tzinfo=tz)
-        rows.append(ScheduledRow(when, entry, number=i))
+        row_id = raw.get("id") if isinstance(raw, dict) else None
+        rows.append(ScheduledRow(when, entry, number=row_id if row_id is not None else i))
     return sorted(rows, key=lambda r: r.when)
 
 

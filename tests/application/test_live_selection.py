@@ -95,7 +95,12 @@ def test_holey_atm_band_never_selects():
 
 
 def test_credit_gates_reject_a_thin_chain():
-    """All mids far below min_short_premium => the walk finds no valid strike."""
+    """All mids far below min_short_premium => the reachable set (STK-10 v1.51)
+    is EMPTY, since (a) only counts a MARKED strike whose rounded mid lands in
+    the probe premium window — nothing here does. An empty reachable set fails
+    the completeness gate closed ("incomplete_chain") before the probe walk
+    ever runs; this is the v1.51 gate's own behavior (domain/chain.py:
+    `completeness_ok` on an empty set), not a stale walk-level reason."""
     strikes = [D(str(6000 - 5 * i)) for i in range(25)]
     cheap = {int(k): 0.10 for k in strikes}
     calls = [D(str(6000 + 5 * i)) for i in range(25)]
@@ -103,7 +108,7 @@ def test_credit_gates_reject_a_thin_chain():
                 _side(calls, {int(k): 0.10 for k in calls}, descending=False),
                 tuple(strikes[:25]), tuple(calls[:25]))
     condor, reason = _select(snap)
-    assert condor is None and reason in ("no_valid_strikes", "insufficient_credit")
+    assert condor is None and reason == "incomplete_chain"
 
 
 def test_strike_collision_aborts_the_entry():
@@ -129,7 +134,7 @@ def test_build_sides_treats_zero_bid_and_crossed_books_as_holes():
         "C10": (None, None),             # absent   -> hole
     }
     puts, calls, _, _ = build_sides(spot=SPOT, strike_symbols=symbols,
-                                    quotes=quotes, band_points=D("120"))
+                                    quotes=quotes, subscribe_span_pts=D("120"))
     assert puts.is_marked(D("5990")) and puts.marks[D("5990")].mid == D("3.00")
     assert not calls.is_marked(D("5990"))   # zero bid
     assert not puts.is_marked(D("6010"))    # crossed
@@ -139,7 +144,7 @@ def test_build_sides_treats_zero_bid_and_crossed_books_as_holes():
 def test_build_sides_orders_puts_down_and_calls_up_from_spot():
     symbols = {D(str(s)): (f"P{s}", f"C{s}") for s in (5980, 5990, 6000, 6010, 6020)}
     puts, calls, _, _ = build_sides(spot=SPOT, strike_symbols=symbols, quotes={},
-                                    band_points=D("120"))
+                                    subscribe_span_pts=D("120"))
     assert puts.strikes_toward_otm == (D("6000"), D("5990"), D("5980"))
     assert calls.strikes_toward_otm == (D("6000"), D("6010"), D("6020"))
 
@@ -235,6 +240,6 @@ def test_build_sides_matches_quotes_that_arrive_by_streamer_symbol():
     quotes = {".SPXW260709P7300": (D("3.00"), D("3.10")),   # streamer-keyed, as DXLink sends
               ".SPXW260709C7300": (D("2.50"), D("2.60"))}
     puts, calls, _, _ = build_sides(spot=D("7300"), strike_symbols=strike_symbols,
-                                    quotes=quotes, band_points=D("120"))
+                                    quotes=quotes, subscribe_span_pts=D("120"))
     assert puts.marks[D("7300")].bid == D("3.00")
     assert calls.marks[D("7300")].ask == D("2.60")

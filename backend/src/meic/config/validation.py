@@ -15,6 +15,12 @@ STOP_PCT_SET = tuple(range(95, 305, 5))  # {95, 100, …, 300}, exactly (STP-02,
 # reviving the feature fails loudly rather than silently doing nothing.
 TOMBSTONE_KEYS = frozenset({"daily_max_loss", "daily_loss_also_flatten", "risk_eval_seconds"})
 
+# STK-10 v1.51 tombstone: `chain_atm_band_pts` is RETIRED (a fixed ATM band
+# can't track the moving far-OTM dead-strike boundary — superseded by the
+# TRADE-RELATIVE reachable-set gate, domain/chain.py: `reachable_strikes`).
+# Same "reject, never silently ignore" pattern as RSK-02 above.
+TOMBSTONE_KEYS_V151 = frozenset({"chain_atm_band_pts"})
+
 
 class ConfigRejected(ValueError):
     def __init__(self, key: str, reason: str) -> None:
@@ -40,6 +46,8 @@ def validate_config(cfg: dict) -> None:
     for key in cfg:
         if key in TOMBSTONE_KEYS:
             raise ConfigRejected(key, "removed_rsk02")  # RSK-02 tombstone — must not be built
+        if key in TOMBSTONE_KEYS_V151:
+            raise ConfigRejected(key, "removed_v151")   # STK-10 v1.51 tombstone
     if "stop_loss_pct" in cfg:
         validate_stop_loss_pct(int(cfg["stop_loss_pct"]))
     if "stop_basis" in cfg:

@@ -27,7 +27,7 @@ from tastytrade import Session  # noqa: E402
 
 from meic.adapters.dxlink.chain_snapshot import snapshot_chain  # noqa: E402
 from meic.composition.live_selection import LiveCondorSelector, SelectionConfig  # noqa: E402
-from meic.domain.chain import completeness_ok  # noqa: E402
+from meic.domain.chain import completeness_ok, reachable_strikes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,20 +62,31 @@ async def test_live_chain_snapshot_and_selection_read_only(session):
 
     snap = await snapshot_chain(session, max_age_seconds=5.0)
 
-    put_complete = completeness_ok(snap.put_side, band_strikes=snap.put_band,
+    # STK-10 v1.51: completeness is TRADE-RELATIVE (the entry's own reachable
+    # set), never the fixed `put_band`/`call_band` (those are now subscription
+    # diagnostics only — see chain_snapshot.py's module docstring).
+    put_reachable = reachable_strikes(
+        snap.put_side, target_premium=cfg.target_premium, wing_width=cfg.wing_width,
+        otm_direction=Decimal(-1), min_short_premium=cfg.min_short_premium)
+    call_reachable = reachable_strikes(
+        snap.call_side, target_premium=cfg.target_premium, wing_width=cfg.wing_width,
+        otm_direction=Decimal(1), min_short_premium=cfg.min_short_premium)
+    put_complete = completeness_ok(snap.put_side, reachable=put_reachable,
                                    completeness_pct=cfg.completeness_pct)
-    call_complete = completeness_ok(snap.call_side, band_strikes=snap.call_band,
+    call_complete = completeness_ok(snap.call_side, reachable=call_reachable,
                                     completeness_pct=cfg.completeness_pct)
     print(f"\n--- LIVE CHAIN SNAPSHOT ({datetime.now(timezone.utc):%Y-%m-%d %H:%M:%SZ}) ---")
     print(f"  spot            : {snap.spot}")
     print(f"  expiration      : {snap.expiration}")
     print(f"  stale           : {snap.stale}")
-    print(f"  put band/marked : {len(snap.put_band)} / {len(snap.put_side.marks)}  complete={put_complete}")
-    print(f"  call band/marked: {len(snap.call_band)} / {len(snap.call_side.marks)} complete={call_complete}")
+    print(f"  put subscribed/marked  : {len(snap.put_band)} / {len(snap.put_side.marks)}")
+    print(f"  put reachable/marked   : {len(put_reachable)} complete={put_complete}")
+    print(f"  call subscribed/marked : {len(snap.call_band)} / {len(snap.call_side.marks)}")
+    print(f"  call reachable/marked  : {len(call_reachable)} complete={call_complete}")
 
     # the snapshot itself must be structurally sound
     assert snap.spot > 0, "no spot from the index feed"
-    assert snap.put_band and snap.call_band, "no strikes inside the ATM band"
+    assert snap.put_band and snap.call_band, "no strikes subscribed near spot"
 
     selector = LiveCondorSelector(snapshot_provider=lambda: _ready(snap), config=cfg)
     condor, reason = await selector(datetime.now(timezone.utc), 1)

@@ -45,7 +45,7 @@ def day_total_estimate(entries) -> Decimal:
     return sum((worst_case_estimate(e) for e in entries), Decimal("0"))
 
 
-def pinned_row(entry) -> dict[str, Any]:
+def pinned_row(entry, entry_id: int | None = None) -> dict[str, Any]:
     """A ResolvedEntry as the row we PERSIST (v1.47 pin-at-Save, doc 06 §37).
 
     Every parameter concrete. Globals are pre-fills for NEW rows only; they never
@@ -56,6 +56,12 @@ def pinned_row(entry) -> dict[str, Any]:
 
     Decimals go out as strings — exact, never float (the log and the order both
     depend on it).
+
+    `entry_id` is ENT-10(4) (v1.53, operator ruling): every row also carries its
+    DURABLE entry id, assigned once at Save and never reused — the day task,
+    ORD-04 idempotency keys, the exposure book, and attempted-today tracking all
+    key on it, never on list position. It is None only for a row that predates
+    v1.53 (this function's own callers always supply one for a fresh Save).
     """
     return {
         "time": entry.time.strftime("%H:%M"),
@@ -70,7 +76,23 @@ def pinned_row(entry) -> dict[str, Any]:
         "probe_down_max": entry.probe_down_max,
         "strike_method": entry.strike_method,
         "short_delta_target": str(entry.short_delta_target),
+        "id": entry_id,
     }
+
+
+def _row_id(row: dict[str, Any]) -> int | None:
+    """The explicit durable id an incoming row payload already carries, or None
+    if it has none (a brand-new row, or a pre-v1.53 row). A value that cannot
+    parse as an int is treated as absent — the row is re-numbered rather than
+    crashing the save; the frontend never sends anything but its own round-
+    tripped `id` or nothing at all."""
+    v = row.get("id")
+    if v in (None, ""):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -139,7 +161,13 @@ def _parse_time(raw: str) -> time:
 
 def spec_from_row(row: dict[str, Any]) -> EntrySpec:
     """One UI row -> an EntrySpec. Absent keys mean "inherit the global" (doc 06
-    section 37) — an empty cell is not zero."""
+    section 37) — an empty cell is not zero.
+
+    Every field is read with `.get`, so an extra key the row dict carries but
+    EntrySpec has no field for — namely "id" (ENT-10(4), v1.53's durable entry
+    id) or "worst_case_estimate" (view()'s own read-model addition, echoed back
+    on a re-save) — is silently ignored rather than raising.
+    """
     def dec(key):
         v = row.get(key)
         return None if v in (None, "") else Decimal(str(v))
@@ -189,9 +217,16 @@ class ScheduleService:
         return [resolve(spec_from_row(r), self._defaults) for r in rows]
 
     def view(self) -> ScheduleView:
+        raw_rows = self._state.entry_schedule or []
         resolved = self.resolved()
-        rows = [{**pinned_row(r), "worst_case_estimate": str(worst_case_estimate(r))}
-                for r in resolved]
+        # ENT-10(4): echo each row's DURABLE id back to the panel so a re-save
+        # round-trips it (never re-numbering a row the operator didn't touch).
+        # `raw_rows` and `resolved` are the same list, same order (`resolved`
+        # walks `state.entry_schedule` itself) — zip is safe. A pre-v1.53 row
+        # has no "id" key yet; it round-trips as None until the next Save.
+        rows = [{**pinned_row(r, raw.get("id") if isinstance(raw, dict) else None),
+                "worst_case_estimate": str(worst_case_estimate(r))}
+                for raw, r in zip(raw_rows, resolved)]
         return ScheduleView(rows=rows, day_total_estimate=day_total_estimate(resolved),
                             max_day_risk=self.max_day_risk(),
                             config_version=self._state.config_version)
@@ -218,9 +253,33 @@ class ScheduleService:
                                  min_time_before_close_minutes=self._min_before_close)
 
     # --- write -----------------------------------------------------------------
-    def save(self, rows: list[dict[str, Any]], *, max_day_risk: Any = None) -> dict[str, Any]:
+    def save(self, rows: list[dict[str, Any]], *, max_day_risk: Any = None,
+             used_ids: int | None = None) -> dict[str, Any]:
         """UC-02: validate, bump config_version, persist. An invalid schedule is
-        never written — a half-saved schedule could arm on the next restart."""
+        never written — a half-saved schedule could arm on the next restart.
+
+        ENT-10(4) (v1.53, operator ruling): every row gets a DURABLE entry id.
+        A row that already carries "id" (an existing row, edited or not) keeps
+        it VERBATIM; a row with none (newly composed) gets the next free
+        integer. Mid-day edits while ARMED — add, delete, reorder — therefore
+        can never renumber a survivor or double-assign an id: the day task,
+        ORD-04 idempotency keys, the exposure book and attempted-today tracking
+        all key on this id, never on position (blocking saves while armed was
+        REJECTED by the operator; this is the alternative that stays safe).
+
+        An id is never reused within a day, even after its row is deleted: the
+        floor for a fresh assignment is the max of every id already claimed
+        anywhere — the ids on these SUBMITTED rows, the ids still sitting in
+        the PREVIOUSLY persisted schedule (so a row deleted in THIS save keeps
+        its id retired), and `used_ids` — the caller's own scan of today's
+        CondorFilled/EntrySkipped events, the source of truth for a fired row
+        whose id might otherwise have fallen out of the persisted schedule
+        entirely. Schedule ids live below the ENT-11 ad-hoc lane (101+); a
+        realistic schedule never approaches it, so there is no need to cap the
+        assignment here — but `used_ids` callers MUST exclude ad-hoc (>=101)
+        numbers from what they pass, or one ad-hoc fire would jump every
+        following schedule id needlessly past 101.
+        """
         errors = self.validate(rows)
         if errors:
             return {"result": "invalid",
@@ -228,11 +287,26 @@ class ScheduleService:
                                for e in errors]}
 
         version = self._next_version()
+
+        previous_ids = {r.get("id") for r in (self._state.entry_schedule or [])
+                        if isinstance(r, dict) and isinstance(r.get("id"), int)}
+        submitted_ids = {_row_id(r) for r in rows if _row_id(r) is not None}
+        floor = max(previous_ids | submitted_ids
+                    | ({int(used_ids)} if used_ids is not None else set()) | {0})
+        next_id = floor + 1
+
         # v1.47 pin-at-Save: persist CONCRETE values, resolved against the globals
         # in force right now. A later change to a global cannot reach back into a
         # saved row — the row is the contract.
-        self._state.entry_schedule = [
-            pinned_row(resolve(spec_from_row(r), self._defaults)) for r in rows]
+        persisted = []
+        for r in rows:
+            row_id = _row_id(r)
+            if row_id is None:
+                row_id = next_id
+                next_id += 1
+            persisted.append(pinned_row(resolve(spec_from_row(r), self._defaults), row_id))
+        self._state.entry_schedule = persisted
+
         if max_day_risk not in (None, ""):
             self._state.max_day_risk = str(Decimal(str(max_day_risk)))
         self._state.config_version = version

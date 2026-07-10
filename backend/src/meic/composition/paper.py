@@ -26,6 +26,7 @@ from meic.application.leg_book import LegBook
 from meic.application.protect_position import LegsUnrecorded, ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
+from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickTable
 
@@ -53,11 +54,62 @@ class PaperComposition:
         self.alerts = _NullAlerts()
         self.execute = ExecuteEntryAttempt(self.broker, self.clock, self.events, self.ticks,
                                            stop_basis=self.stop_basis)
-        self.protect = ProtectPosition(self.broker, self.clock, self.alerts, self.events, self.ticks)
+        # STP-04 AUTO-FLATTEN: `self._auto_flatten_entry` is a bound method, not
+        # evaluated until called, so it is safe to hand to ProtectPosition here
+        # even though `self.close` (CloseEntry) is constructed a line later —
+        # the closure resolves `self.close` at CALL time, not at construction.
+        self.protect = ProtectPosition(self.broker, self.clock, self.alerts, self.events, self.ticks,
+                                       close_entry=self._auto_flatten_entry)
         self.recover = RecoverLong(self.broker, self.events, self.ticks)
         self.close = CloseEntry(self.broker, self.events)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
+
+    async def _auto_flatten_entry(self, entry_id: str, initiator: str) -> None:
+        """STP-04 AUTO-FLATTEN — ProtectPosition's `close_entry` callback.
+
+        For weeks this hook existed on ProtectPosition (accepted a
+        `close_entry` callback and called it on both the STP-02c post-fill
+        infeasible path and STP-04 UNPROTECTED escalation) but NOTHING wired
+        it here — an unconfirmed/undersized stop raised a critical alert and
+        then did nothing further. This assembles the close inputs exactly the
+        way PanelCommands.close() does for a manual close (ORD-09
+        broker-truth legs from LegBook, stop ids correlated per side from the
+        broker's own working orders — see composition/close_assembly.py,
+        shared with the panel so there is exactly one assembly, not two) and
+        routes through the ONE canonical CloseEntry (CLS-01/02).
+
+        OPEN ITEM — side-scoped flatten (reported to the operator, not
+        resolved here): `config.unprotected_action` (doc 06) distinguishes
+        `flatten_side` (close only the unprotected side) from
+        `flatten_condor` (close the whole entry). `ProtectPosition._go_unprotected`
+        knows the side but the `close_entry` callback it invokes carries only
+        `(entry_id, initiator)` — no side — and `CloseEntry.close` closes an
+        entry's full `live_legs` in one call; there is no side-scoped
+        variant. BOTH settings therefore produce a WHOLE-ENTRY close here.
+        Honouring `flatten_side` narrowly needs a `CloseEntry` extension
+        (e.g. an optional side filter on `live_legs`/`resting_stop_ids`) —
+        deliberately NOT bolted on as a second close path (CLS-02 forbids a
+        second implementation of the close procedure).
+
+        Initiator note: CLS-02's operator-ratified initiator list is
+        `{manual, manual_flatten, take_profit, eod, decay, infeasible_stop}`
+        — `unprotected` is not in it, though `CloseEntry.VALID_INITIATORS`
+        already carries it. STP-04 demands the flatten and `unprotected` is
+        the honest, distinct label for why it happened, so it is kept as-is;
+        the list discrepancy is flagged here for operator ratification, not
+        silently patched around.
+        """
+        inputs = await assemble_close_inputs(self.events, self.broker, entry_id)
+        if inputs is None or not inputs[0]:
+            self.alerts.alert(
+                "critical", "STP-04 auto-flatten: no broker-reported legs recorded for "
+                "this entry; cannot close (ORD-09) — operator must intervene",
+                entry_id=entry_id, initiator=initiator)
+            return
+        live_legs, stop_ids = inputs
+        await self.close.close(entry_id, initiator, resting_stop_ids=stop_ids,
+                               live_legs=live_legs, close_price=DEFAULT_CLOSE_PRICE)
 
     def _shorts(self, entry_id: str, condor) -> list[ShortLeg]:
         """ORD-09: the stops name the symbols the BROKER reported filling.

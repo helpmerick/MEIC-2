@@ -246,18 +246,40 @@ async def _async(v):
     return v
 
 
-def test_chain_atm_band_pts_is_read_from_config_not_hardcoded():
-    """STK-10 regression: chain_atm_band_pts (doc 06) must be wired, so the operator
-    can narrow the completeness band to where quotes exist. Far-OTM 0DTE strikes are
-    listed but unquoted; a hardcoded wide band fails selection on strikes that will
-    never have a mark. Out-of-range falls back to the spec default (150)."""
-    from decimal import Decimal
-    from meic.adapters.api.server import _chain_band_pts
+def test_chain_atm_band_pts_is_retired_from_server_wiring():
+    """STK-10 v1.51: `chain_atm_band_pts` (and its `_chain_band_pts` reader) is
+    RETIRED — a fixed ATM band can't track the moving far-OTM dead-strike
+    boundary. STK-10 now gates on the entry's own trade-relative reachable set
+    (domain/chain.py: `reachable_strikes`), so server.py must no longer offer
+    any way to configure a band at all."""
+    import meic.adapters.api.server as server_module
 
-    assert _chain_band_pts({}) == Decimal("150")                                # spec default
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "70"}) == Decimal("70")  # operator value
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "50"}) == Decimal("50")  # low edge
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "500"}) == Decimal("500")
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "10"}) == Decimal("150")  # < 50 -> default
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "999"}) == Decimal("150") # > 500 -> default
-    assert _chain_band_pts({"MEIC_CHAIN_ATM_BAND_PTS": "junk"}) == Decimal("150")
+    assert not hasattr(server_module, "_chain_band_pts")
+
+
+def test_entry_window_seconds_is_read_from_config_not_hardcoded():
+    """STK-10 v1.51 / ENT-02 (doc 06: range 10-600, default 120) — bounds how
+    long the selector's retry loop may keep taking fresh snapshots."""
+    from meic.adapters.api.server import _entry_window_seconds
+
+    assert _entry_window_seconds({}) == 120                                       # spec default
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "60"}) == 60        # operator value
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "10"}) == 10        # low edge
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "600"}) == 600      # high edge
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "5"}) == 120        # < 10 -> default
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "9999"}) == 120     # > 600 -> default
+    assert _entry_window_seconds({"MEIC_ENTRY_WINDOW_SECONDS": "junk"}) == 120
+
+
+def test_chain_retry_seconds_is_read_from_config_not_hardcoded():
+    """STK-10 v1.51 `chain_retry_seconds` (doc 06: range 1-30, default 5) — the
+    interval between fresh-snapshot retries while the gate is unhealed."""
+    from meic.adapters.api.server import _chain_retry_seconds
+
+    assert _chain_retry_seconds({}) == 5                                        # spec default
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "10"}) == 10        # operator value
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "1"}) == 1          # low edge
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "30"}) == 30        # high edge
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "0"}) == 5          # < 1 -> default
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "31"}) == 5         # > 30 -> default
+    assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "junk"}) == 5

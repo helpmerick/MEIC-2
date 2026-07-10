@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from meic.adapters.occ import simulated_fill_legs
+from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from meic.application.order_intent import OrderIntent
 
 
@@ -126,9 +127,19 @@ class FakeBroker:
         return {"result": "cancelled"}
 
     async def replace(self, id: str, new: Any) -> str:
+        """CLS-01: one call, one outcome. Either the OLD order flips to
+        REPLACED and the NEW order is submitted in the same breath (never a
+        beat with zero or two working buys on the leg), or nothing happens and
+        a typed ORD-08 exception tells the caller which class it hit — never a
+        bare `ValueError` a caller would have to string-sniff."""
         old = self._orders.get(id)
-        if old is None or old.status not in ("WORKING", "PARTIAL"):
-            raise ValueError(f"cannot replace order {id!r} in state {old.status if old else 'missing'}")
+        if old is None:
+            raise ReplaceTerminal(id)               # ORD-08b: never existed
+        if old.status == "FILLED":
+            price = old.fills[-1]["price"] if old.fills else None
+            raise ReplaceFilled(id, fill_price=price)  # ORD-08a: the stop beat us
+        if old.status not in ("WORKING", "PARTIAL"):
+            raise ReplaceTerminal(id)               # ORD-08b: cancelled/rejected/replaced
         old.status = "REPLACED"
         return await self.submit(new)
 

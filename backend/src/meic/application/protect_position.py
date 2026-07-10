@@ -195,7 +195,27 @@ class ProtectPosition:
     async def _go_unprotected(self, entry_id: str, side: str, *, naked: int | None = None) -> None:
         """STP-04: retries exhausted, or the stop confirmed at the wrong size
         (STP-01) — flatten per unprotected_action + alert. A position is never
-        knowingly left without a resting stop that covers all of it."""
+        knowingly left without a resting stop that covers all of it.
+
+        OPEN ITEM (flagged for the operator, not resolved here): doc 06's
+        `unprotected_action` distinguishes `flatten_side` (close only THIS
+        `side`) from `flatten_condor` (close the whole entry), and `side` is
+        right here in scope. But the injected `close_entry` callback's
+        signature is `(entry_id, initiator)` — no side — and the composition
+        wiring (live.py/paper.py `_auto_flatten_entry`) that supplies it
+        always closes the entry's FULL recorded leg set via the one canonical
+        CloseEntry. So today BOTH `flatten_side` and `flatten_condor` produce
+        a whole-entry close; `flatten_side`'s narrower promise is not yet
+        honoured. Narrowing it needs a side-scoped extension to CloseEntry's
+        API (CLS-02 forbids adding a second close path instead).
+
+        Initiator note: `"unprotected"` is not in CLS-02's operator-ratified
+        initiator list (`manual, manual_flatten, take_profit, eod, decay,
+        infeasible_stop`), though `CloseEntry.VALID_INITIATORS` already
+        includes it. Kept as the honest, distinct label STP-04 demands;
+        flagged here for operator ratification rather than silently renamed
+        to fit the existing list.
+        """
         self._events.append(SideUnprotected(entry_id=entry_id, side=side, action=self._unprotected_action))
         if naked is not None:
             self._alerts.alert(

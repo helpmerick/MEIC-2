@@ -16,13 +16,13 @@ function Pill({ label, on, kind }: { label: string; on: boolean; kind: "good" | 
 
 export function Dashboard({ state, connected }: { state: PanelState | null; connected: boolean }) {
   if (!state) {
-    return <section className="card"><h2>Status</h2><p className="muted">Connecting…</p></section>;
+    return <section className="card dashboard-card"><h2>Status</h2><p className="muted">Connecting…</p></section>;
   }
   const enabled = state.entries_enabled;
   const block = state.blocking_state ? BLOCKING[state.blocking_state] : null;
 
   return (
-    <section className="card">
+    <section className="card dashboard-card">
       <h2>Status</h2>
 
       <div className={`hero ${enabled ? "good" : "idle"}`}>

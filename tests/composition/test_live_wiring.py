@@ -163,6 +163,29 @@ def test_schedule_rows_are_sorted_and_dated_today():
     assert all(r.when.date() == TODAY for r in rows)
 
 
+def test_schedule_rows_stamp_the_durable_id_not_list_position():
+    """ENT-10(4) (v1.53): a row deleted mid-schedule must not renumber its
+    survivors. B/C keep ids 2/3 even though, after A is dropped, C sits at list
+    position 2 (not 3)."""
+    state = _state([{"time": "10:00"}, {"time": "11:15"}, {"time": "12:35"}])  # A=1,B=2,C=3
+    saved = list(state.entry_schedule)
+    state.entry_schedule = [saved[1], saved[2]]        # A deleted; B, C remain (positions 1, 2)
+
+    rows = schedule_rows(state, today=TODAY, tz=ET)
+
+    assert [r.number for r in rows] == [2, 3]           # durable ids, NOT re-enumerated 1, 2
+
+
+def test_schedule_rows_falls_back_to_position_for_a_pre_v153_row_with_no_id():
+    """Migration path: a row persisted before v1.53 has no 'id' key at all."""
+    state = _state([{"time": "10:00"}])
+    state.entry_schedule = [{"time": "10:00"}, {"time": "11:15"}]   # bare, no "id"
+
+    rows = schedule_rows(state, today=TODAY, tz=ET)
+
+    assert [r.number for r in rows] == [1, 2]
+
+
 def test_every_scheduled_row_carries_a_resolved_entry():
     """A ScheduledRow with entry=None means 'use the globals' — never in live."""
     rows = schedule_rows(_state([{"time": "10:00"}, {"time": "11:15"}]), today=TODAY, tz=ET)

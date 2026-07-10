@@ -27,6 +27,14 @@
   --badge-bg: rgba(255, 255, 255, 0.06);
   --btn-grad-top: rgba(255, 255, 255, 0.04);
   --btn-grad-bot: rgba(255, 255, 255, 0.01);
+  /* spacing scale — every card/section/form rule below keys off these, so
+     padding, gaps and margins line up consistently across the whole panel */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --field-h: 36px; /* common height for inputs, selects and buttons */
 }
 
 /* light theme — variable overrides only; every rule keys off these vars */
@@ -79,7 +87,7 @@ body {
 }
 :root { font-variant-numeric: tabular-nums; }
 
-.app { max-width: 1120px; margin: 0 auto; padding: 32px 24px 48px; }
+.app { max-width: 1640px; margin: 0 auto; padding: var(--sp-5) var(--sp-4) 48px; }
 
 /* header */
 .app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
@@ -103,28 +111,79 @@ body {
 .theme-toggle:hover { border-color: var(--accent); transform: translateY(-1px); }
 .theme-toggle:active { transform: translateY(0); }
 
-/* layout */
-.grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
-.grid > .report { grid-column: 1 / -1; }
-.grid > .entries-col { grid-column: 1 / -1; }
-.grid > .feed-col { grid-column: 1 / -1; }
-.grid > .next-entry { grid-column: 1 / -1; }
-@media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+/* layout — mobile-first: one column, natural source order (Dashboard,
+   countdown, Commands, Schedule, Manual trade, Report, Entries, Feed). Named
+   grid areas take over from ~900px so every breakpoint places the same
+   elements without re-declaring which class maps to which area. */
+.grid { display: grid; grid-template-columns: 1fr; gap: var(--sp-4); }
+
+.grid > .dashboard-card    { grid-area: dash; }
+.grid > .command-card      { grid-area: cmd; }
+.grid > .next-entry        { grid-area: next; }
+.grid > .schedule-panel    { grid-area: sched; }
+.grid > .manual-trade-card { grid-area: manual; }
+.grid > .report            { grid-area: report; }
+.grid > .entries-col       { grid-area: entries; }
+.grid > .feed-col          { grid-area: feed; }
+
+/* 2-column tablet layout */
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--sp-5);
+    grid-template-areas:
+      "dash    cmd"
+      "next    next"
+      "sched   sched"
+      "manual  manual"
+      "report  entries"
+      "feed    feed";
+  }
+}
+
+/* full desktop layout — a deliberate 12-column grid. Dashboard + Commands
+   share the top row, the countdown is a slim full-width strip beneath them,
+   Schedule spans 2/3 with Manual trade beside it at 1/3, and Report / Entries
+   / Feed share a balanced three-up row. */
+@media (min-width: 1300px) {
+  .grid {
+    grid-template-columns: repeat(12, 1fr);
+    grid-template-areas:
+      "dash   dash   dash   dash   dash   dash   cmd    cmd    cmd    cmd    cmd    cmd"
+      "next   next   next   next   next   next   next   next   next   next   next   next"
+      "sched  sched  sched  sched  sched  sched  sched  sched  manual manual manual manual"
+      "report report report report entries entries entries entries feed   feed   feed   feed";
+  }
+}
 
 .card {
   background: var(--card);
   backdrop-filter: blur(12px);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: var(--sp-5);
   box-shadow: var(--shadow);
   position: relative;
   overflow: hidden;
 }
 .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 1px; background: linear-gradient(90deg, transparent, var(--line-strong), transparent); }
-.card h2 { margin: 0 0 16px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.row { display: flex; align-items: center; gap: 10px; }
+.card h2 {
+  margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+}
+.row { display: flex; align-items: center; gap: var(--sp-2); }
 .between { justify-content: space-between; }
+
+/* card-head: a header row that pairs the h2 with a trailing chip/date/count.
+   The h2 stops owning its own separator so the row (not just the title)
+   spans the border — every card header reads at the same size/weight. */
+.card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--sp-3); margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.card-head h2 { margin: 0; padding-bottom: 0; border-bottom: none; }
 
 /* status hero */
 .hero { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 12px; margin-bottom: 16px; border: 1px solid var(--line); transition: background .2s ease, border-color .2s ease; }
@@ -142,9 +201,10 @@ body {
 .pill.info { color: var(--info); background: var(--info-dim); border-color: rgba(96,165,250,0.22); }
 
 /* commands */
-.cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); }
 .btn {
-  position: relative; padding: 12px 14px; border: 1px solid var(--line-strong);
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  height: var(--field-h); padding: 0 var(--sp-4); border: 1px solid var(--line-strong);
   background: linear-gradient(180deg, var(--btn-grad-top), var(--btn-grad-bot));
   color: var(--text); border-radius: 11px; font-weight: 650; font-size: 13.5px; cursor: pointer;
   transition: transform .12s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;
@@ -158,9 +218,9 @@ body {
 .btn .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.config { display: flex; align-items: flex-end; gap: 10px; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--line); }
-.config label { display: flex; flex-direction: column; gap: 6px; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); flex: 1; }
-.config select { padding: 10px; background: var(--card-solid); color: var(--text); border: 1px solid var(--line-strong); border-radius: 9px; font-size: 13px; }
+.config { display: flex; align-items: flex-end; gap: var(--sp-3); padding-top: var(--sp-4); margin-top: var(--sp-4); border-top: 1px solid var(--line); }
+.config label { display: flex; flex-direction: column; gap: var(--sp-1); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); flex: 1; }
+.config select { height: var(--field-h); padding: 0 var(--sp-3); background: var(--card-solid); color: var(--text); border: 1px solid var(--line-strong); border-radius: 9px; font-size: 13px; }
 .msg { margin-top: 12px; font-size: 12.5px; color: var(--info); min-height: 16px; transition: opacity .2s; }
 .msg.err { color: var(--bad); }
 
@@ -281,9 +341,9 @@ body {
 .mode-switch:active { transform: translateY(0); }
 
 /* API token control + honest mode status tag */
-.token-field { display: inline-flex; gap: 6px; align-items: center; }
+.token-field { display: inline-flex; gap: var(--sp-2); align-items: center; }
 .token-field input {
-  width: 190px; padding: 7px 9px; font-size: 12px;
+  width: 190px; height: var(--field-h); padding: 0 var(--sp-3); font-size: 12px;
   color: var(--text); background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 8px;
 }

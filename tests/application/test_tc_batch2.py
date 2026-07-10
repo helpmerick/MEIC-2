@@ -114,6 +114,12 @@ def test_tc_cls_03_idempotent_close_one_order_per_leg():
         async def cancel(self, oid):
             return {"result": "cancelled"}
 
+        async def replace(self, oid, new):
+            # CLS-01 v1.50: CloseEntry calls replace() for a leg with a
+            # resting stop — a real broker dedupes the resulting order by its
+            # ORD-04 key exactly like any other submit.
+            return await self.submit(new)
+
         async def submit(self, intent):
             key = intent.idempotency_key
             submitted[key] = submitted.get(key, 0) + 1  # a real broker dedupes by key
@@ -122,21 +128,22 @@ def test_tc_cls_03_idempotent_close_one_order_per_leg():
     legs = [LiveLeg("SPXW_5990P", "PUT", "short", -1)]
     b, events = DedupBroker(), []
     for _ in range(2):  # double-click
-        asyncio.run(CloseEntry(b, events).close("e1", "manual", resting_stop_ids=["S"],
+        asyncio.run(CloseEntry(b, events).close("e1", "manual", resting_stop_ids={"PUT": "S"},
                                                 live_legs=legs, close_price=D("0.05")))
     assert all(v == 2 for v in submitted.values())  # same key seen twice...
     assert len(submitted) == 1  # ...but it is ONE key -> the broker places one order
 
 
 def test_tc_cls_04_completeness_stops_cancelled_legs_closed():
-    """TC-CLS-04: after a close, the entry's stops are cancelled and legs closed
-    — nothing left resting."""
+    """TC-CLS-04: after a close, the entry's resting stop is REPLACED (CLS-01
+    v1.50 — never a bare cancel) and both legs are closed — nothing left
+    resting."""
     broker, events = FakeBroker(), []
     s1 = asyncio.run(broker.submit(stop_intent("PUT", entry_id="e1")))
     legs = [LiveLeg("SPXW_5990P", "PUT", "short", -1), LiveLeg("SPXW_5940P", "PUT", "long", 1)]
-    asyncio.run(CloseEntry(broker, events).close("e1", "manual", resting_stop_ids=[s1],
+    asyncio.run(CloseEntry(broker, events).close("e1", "manual", resting_stop_ids={"PUT": s1},
                                                  live_legs=legs, close_price=D("0.05")))
-    assert broker._orders[s1].status == "CANCELLED"           # stop cancelled
+    assert broker._orders[s1].status == "REPLACED"             # stop REPLACED, not bare-cancelled
     assert sum(isinstance(e, SideClosed) for e in events) == 2  # both legs closed
     assert any(isinstance(e, EntryClosed) for e in events)
 
@@ -148,7 +155,7 @@ def test_tc_eod_02_eod_close_via_ladder_initiator_eod():
     close, initiator eod."""
     broker, events = FakeBroker(), []
     legs = [LiveLeg("SPXW_6060C", "CALL", "short", -1)]
-    asyncio.run(CloseEntry(broker, events).close("e1", "eod", resting_stop_ids=["S"],
+    asyncio.run(CloseEntry(broker, events).close("e1", "eod", resting_stop_ids={"CALL": "S"},
                                                  live_legs=legs, close_price=D("0.05")))
     assert [e.initiator for e in events if isinstance(e, EntryClosed)] == ["eod"]
 

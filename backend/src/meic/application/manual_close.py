@@ -37,7 +37,7 @@ class ManualClose:
         return False
 
     async def close(self, entry_id: str, *, live_legs: list[LiveLeg],
-                    resting_stop_ids: list[str], close_price) -> CloseResult:
+                    resting_stop_ids: dict[str, str], close_price) -> CloseResult:
         """Close a filled entry via CLS (initiator `manual`); clear its TPF
         floor. Idempotent: a second call is a no-op (no duplicate orders)."""
         if entry_id in self._done:

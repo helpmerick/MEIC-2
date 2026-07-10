@@ -74,7 +74,7 @@ def test_tc_tpf_05_race_one_buyback_per_leg():
     # only the still-live call side; the put short is NOT bought again.
     live = [LiveLeg("SPXW_6060C", "CALL", "short", -1), LiveLeg("SPXW_6110C", "CALL", "long", 1)]
     asyncio.run(CloseEntry(broker, events).close(
-        "e1", "take_profit", resting_stop_ids=["call_stop"], live_legs=live, close_price=D("0.05")))
+        "e1", "take_profit", resting_stop_ids={"CALL": "call_stop"}, live_legs=live, close_price=D("0.05")))
     orders = list(broker._orders.values())
     is_short_close = lambda o, r: o.intent.legs[0].right == r and o.intent.legs[0].action == "buy_to_close"
     put_short_closes = [o for o in orders if is_short_close(o, "P")]

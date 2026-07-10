@@ -72,10 +72,16 @@ class ScheduledRow:
 
     when: datetime
     entry: object | None = None      # domain.schedule.ResolvedEntry (None => globals)
-    # ENT-10(4): the row's ORIGINAL 1-based schedule position. A mid-day restart
-    # filters the schedule down to the remaining rows; without a stamped number,
+    # ENT-10(4) (v1.53, operator ruling): the row's DURABLE entry id, assigned
+    # once at Save (schedule_service.save) and never reused — NOT its position
+    # in any list. A mid-day restart filters the schedule down to the remaining
+    # rows, and an ARMED mid-day edit (add/delete/reorder) can change that list's
+    # shape at any time; without a stamped, position-independent id,
     # re-enumerating the filtered list would renumber row 3 as row 1 and collide
-    # its entry_id with an already-filled entry (ORD-04 idempotency, RSK-04 book).
+    # its entry_id with an already-filled entry (ORD-04 idempotency, RSK-04
+    # book). A bare ScheduledRow with no `number` (the offline scheduler, or a
+    # pre-v1.53 persisted schedule) falls back to loop position — the pre-v1.53
+    # behaviour, kept only as a migration path.
     number: int | None = None
 
     @property
@@ -157,9 +163,9 @@ class LiveRuntime:
         cap = self.max_entries_per_day if self.max_entries_per_day is not None else len(rows)
         filled = 0
 
-        # ENT-10(4): a mid-day restart passes a FILTERED schedule; rows carry their
-        # ORIGINAL numbers so entry_ids never collide with already-filled entries
-        # (ORD-04/RSK-04).
+        # ENT-10(4): a mid-day restart (or a mid-day ARMED edit) passes a FILTERED
+        # schedule; rows carry their DURABLE ids so entry_ids never collide with
+        # already-filled entries (ORD-04/RSK-04).
         for idx, row in enumerate(rows, start=1):
             n = row.number if row.number is not None else idx
             when = row.when

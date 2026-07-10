@@ -19,7 +19,7 @@ export function ActivityFeed({ activity }: { activity: ActivityLine[] }) {
 
   return (
     <section className="card feed-card">
-      <div className="row between">
+      <div className="card-head">
         <h2>Activity</h2>
         <span className="muted">live</span>
       </div>

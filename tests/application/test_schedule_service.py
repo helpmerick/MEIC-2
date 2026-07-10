@@ -301,8 +301,12 @@ def test_the_saved_row_stores_concrete_values_for_every_parameter():
     assert set(stored) == {
         "time", "contracts", "target_premium", "wing_width", "stop_loss_pct",
         "stop_basis", "stop_rebate_markup", "min_short_premium", "min_total_credit",
-        "probe_down_max", "strike_method", "short_delta_target"}
-    assert not any(v in (None, "") for v in stored.values())
+        "probe_down_max", "strike_method", "short_delta_target", "id"}
+    # every field concrete EXCEPT "id" is intentionally exempt from that check here:
+    # it is a durable identity (ENT-10(4), v1.53), not an inherited parameter, and
+    # this schedule's single fresh row legitimately gets id == 1.
+    assert not any(v in (None, "") for k, v in stored.items() if k != "id")
+    assert stored["id"] == 1
 
 
 def test_globals_are_pre_fills_for_new_rows_only():
@@ -341,3 +345,63 @@ def test_a_row_composed_outside_the_panel_still_resolves():
     state = PersistentState(InMemoryStateStore())
     state.entry_schedule = [{"time": "10:00"}]
     assert _svc_with(state, _defaults(contracts=2)).resolved()[0].contracts == 2
+
+
+# --- ENT-10(4) v1.53: durable entry ids, assigned at Save -----------------------
+
+def test_fresh_rows_get_sequential_ids_from_1():
+    svc = _svc([])
+    out = svc.save([_row("10:00"), _row("11:00"), _row("12:00")])
+    assert [r["id"] for r in out["rows"]] == [1, 2, 3]
+
+
+def test_a_row_with_an_explicit_id_keeps_it_verbatim():
+    svc = _svc([])
+    svc.save([_row("10:00"), _row("11:00")])
+    edited = list(svc._state.entry_schedule)
+    edited[1] = {**edited[1], "contracts": 3}          # edit row 2 in place, id carried
+    out = svc.save(edited)
+    assert [r["id"] for r in out["rows"]] == [1, 2]
+    assert out["rows"][1]["contracts"] == 3
+
+
+def test_deleting_a_fired_row_and_resaving_never_reuses_its_id():
+    """THE operator ruling: A(fired)/B/C, delete A while ARMED, re-save — B and C
+    must keep ids 2 and 3, and a brand new row must never become id 1 again."""
+    svc = _svc([])
+    svc.save([_row("10:00"), _row("11:15"), _row("12:35")])   # A=1, B=2, C=3
+    rows = list(svc._state.entry_schedule)
+    b, c = rows[1], rows[2]
+
+    out = svc.save([b, c, _row("13:00")])   # A deleted, D newly composed
+    ids = [r["id"] for r in out["rows"]]
+    assert ids[:2] == [2, 3]                # B, C unchanged
+    assert ids[2] == 4                      # D gets a FRESH id, never a reused 1
+
+
+def test_used_ids_raises_the_floor_past_an_id_the_persisted_schedule_no_longer_carries():
+    """used_ids models the caller's scan of TODAY's events (a fired row's id might
+    not survive in the persisted schedule at all, e.g. it was deleted in an
+    earlier save that predates this one) -- it must still never be reissued."""
+    svc = _svc([])
+    svc.save([_row("10:00")])          # id 1, then deleted in a prior save already
+    out = svc.save([_row("11:00")], used_ids=5)   # events show id 5 already fired
+    assert out["rows"][0]["id"] == 6
+
+
+def test_new_and_kept_ids_never_collide_within_one_save():
+    svc = _svc([])
+    svc.save([_row("10:00"), _row("11:00"), _row("12:00")])   # 1, 2, 3
+    rows = list(svc._state.entry_schedule)
+    # keep row 3 (id 3), drop rows 1/2, add two new rows -- new ids must start at 4
+    out = svc.save([rows[2], _row("13:00"), _row("14:00")])
+    assert [r["id"] for r in out["rows"]] == [3, 4, 5]
+
+
+def test_view_echoes_the_durable_id_and_a_pre_v153_row_shows_none():
+    svc = _svc([])
+    svc.save([_row("10:00")])
+    assert svc.view().to_dict()["rows"][0]["id"] == 1
+
+    legacy = _svc([{"time": "09:32"}])                  # pre-v1.53: no "id" key at all
+    assert legacy.view().to_dict()["rows"][0]["id"] is None

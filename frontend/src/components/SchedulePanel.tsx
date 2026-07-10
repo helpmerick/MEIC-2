@@ -168,7 +168,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
               <th className="num">Time (ET)</th>
               <th className="num">Target $</th>
               <th className="num">Width</th>
-              <th>Stop %</th>
+              <th className="num">Stop %</th>
               <th className="num">Count</th>
               <th className="num">Worst case (est.)</th>
               <th aria-label="actions" />
@@ -208,7 +208,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     className={errorFor(rowErrors, i, "wing_width") ? "invalid" : ""}
                   />
                 </td>
-                <td>
+                <td className="cell-num">
                   {/* The discrete set is the ONLY stop-% the backend accepts (STP-02) */}
                   <select
                     aria-label={`stop pct ${i + 1}`}
@@ -243,7 +243,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     aria-label={`fire entry ${i + 1}`}
                     title={entriesEnabled ? "Fire this entry now (ENT-09)" : "Blocked: entries are not enabled"}
                     disabled={!entriesEnabled}
-                    onClick={() => void openFireDialog(i + 1)}
+                    onClick={() => void openFireDialog(row.id ?? i + 1)}
                   >
                     ▶
                   </button>

@@ -11,11 +11,9 @@ this mirrors is unit-tested in test_tc_cls_02.
 from __future__ import annotations
 
 import itertools
-from decimal import Decimal
 
-from meic.application.close_entry import LiveLeg
 from meic.application.manual_close import FLATTEN_CONFIRMATION
-from meic.application.leg_book import LegBook
+from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.domain.projection import EntryProjection, fold
 
 _SIDES = ("PUT", "CALL")
@@ -89,24 +87,17 @@ class PanelCommands:
         # ORD-09: close the instruments the BROKER said it filled. This used to
         # build LiveLeg(f"{entry_id}:{s}", ...) — a placeholder that paper ignored
         # and cert would have rejected, because no such instrument exists. If no
-        # legs were recorded we refuse rather than invent a symbol.
-        book = LegBook.from_events(self._comp.events)
-        recorded = book.of(entry_id)
-        if not recorded:
+        # legs were recorded we refuse rather than invent a symbol. Assembly
+        # (legs + per-side stop ids) is shared with the STP-04 AUTO-FLATTEN
+        # hook (composition/close_assembly.py) — one assembly, not two.
+        inputs = await assemble_close_inputs(
+            self._comp.events, self._comp.broker, entry_id, open_sides=set(open_sides))
+        if inputs is None:
             return {"result": "legs_unrecorded", "entry_id": entry_id}
-        legs = [
-            LiveLeg(leg.symbol, leg.side, leg.role,
-                    -leg.qty if leg.role == "short" else leg.qty)
-            for leg in recorded if leg.side in open_sides
-        ]
-        stop_ids = [
-            o.order_id for o in await self._comp.broker.working_orders()
-            if getattr(getattr(o, "intent", None), "entry_id", None) == entry_id
-            and getattr(getattr(o, "intent", None), "order_type", None) == "stop_market"
-        ]
+        legs, stop_ids = inputs
         await self._comp.close.close(
             entry_id, "manual", resting_stop_ids=stop_ids,
-            live_legs=legs, close_price=Decimal("0.05"))
+            live_legs=legs, close_price=DEFAULT_CLOSE_PRICE)
         self._clear_tpf(entry_id)
         return {"result": "closed", "initiator": "manual"}
 

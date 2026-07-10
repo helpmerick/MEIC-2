@@ -144,7 +144,7 @@ def _(world):
     legs = [LiveLeg(l.symbol, l.side, l.role, -l.qty if l.role == "short" else l.qty)
             for l in book.of(ENTRY)]
     asyncio.run(CloseEntry(close_broker, []).close(
-        ENTRY, "manual", resting_stop_ids=[], live_legs=legs, close_price=D("0.05")))
+        ENTRY, "manual", resting_stop_ids={}, live_legs=legs, close_price=D("0.05")))
 
     world["submitted"] = submitted + close_broker_submissions(close_broker)
 
