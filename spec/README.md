@@ -39,6 +39,10 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.57 — 2026-07-10
+- v1.57 changes (operator-designed manual floors, debated to conclusion): **ENT-09b** — ▶ dialog "minimum strikes" toggle; per-side OPTIONAL dropdowns of live validated-universe strikes (≥10/side, strike + distance + mid shown); semantics = FLOOR never pin (walk unchanged among qualifying strikes); credit rules untouched (floor can only cause no_valid_strikes, never weaken $1/$2); advisory best-qualifying-premium preview; REFUSE-AND-RE-PICK when spot crosses a floor (`floor_inside_spot` — the bot never silently reinterprets expired intent); per-press only, evented for audit; STK-10 reachable set starts at the floor. Manual fires only (schedule rows unchanged; absolute strikes are fresh intent there, stale anywhere else). TC-ENT-09.
+- Version: 1.56 — 2026-07-10
+- v1.56 changes (operator-ratified): UC-12 outage drill available in LIVE mode — operator present, typed DRILL confirmation, advisory warnings (marks near trigger / entry within 10 min); `drill_outage_seconds` (10–300, default 60); evidence now explicitly includes clean reconcile (no REC-05 duplicates, no re-placed stops). Drill never touches orders. First supervised live drill scheduled 2026-07-10.
 - Version: 1.55 — 2026-07-10
 - v1.55 changes (operator-designed baseline pre-validation — completes v1.51's trade-relative rework; the surviving false-skip was a dead-but-REACHABLE strike, e.g. a deep-walk wing landing 60+ pts OTM inside the measured dead zone): validated universe captured at ENT-08 warm-up (manual entries: at press); completeness = pct of the VALIDATED universe still fresh (dead-at-baseline counts against nothing — the gate now measures regression from a known-good picture); selection constrained to the universe (dead wing = candidate skip, walk continues); viability floor `min_validated_strikes` (10/side) so a sick-at-baseline feed can never trivially pass on a sliver; 60s early warning at warm-up. Sick-feed guards unchanged. TC-STK-09 (5 scenarios incl. the 24/28→95.8%-passes vs 85.7%-false-skip vector).
 - Version: 1.54 — 2026-07-10

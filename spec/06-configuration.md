@@ -26,6 +26,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `max_long_shifts` | 0–10 | 5 | next-entry | STK-09 — LONG's solo shift budget when its target holds a short; each shift widens the spread (RSK-04 re-evaluates) |
 | `chain_completeness_pct` | 50–100 | 90 | next-entry | STK-10 v1.51 — % of the entry's TRADE-RELATIVE reachable strike set (probe range + wings + shift budgets) that must be marked before selection; MUST be wired, never hardcoded |
 | `min_validated_strikes` | 3–40 | 10 | next-entry | STK-10 v1.55 — baseline viability floor, per side: fewer validated reachable strikes at warm-up ⇒ alert + retry, never trade off a sliver |
+| `drill_outage_seconds` | 10–300 | 60 | immediate | UC-12 v1.56 — outage-drill disconnect duration |
 | ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |
