@@ -191,7 +191,7 @@ describe("App — Results routing (UI-27)", () => {
 
   it("default hash renders the Trading page", async () => {
     render(<App />);
-    expect(await screen.findByText(/status/i)).toBeInTheDocument(); // Dashboard card
+    expect(await screen.findByRole("heading", { name: /control/i })).toBeInTheDocument(); // combined Control card
     expect(screen.queryByTestId("results-page")).not.toBeInTheDocument();
   });
 

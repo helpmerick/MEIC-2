@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, ApiError, STOP_PCT_SET } from "../api";
+import { api, ApiError } from "../api";
 import type { PanelState } from "../types";
 
 // Commands POST to the backend; the UI updates OPTIMISTICALLY for instant
@@ -14,7 +14,6 @@ export function CommandPanel({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; err: boolean } | null>(null);
-  const [pct, setPct] = useState(95);
   const [liveModal, setLiveModal] = useState(false);   // the type-LIVE gate
 
   async function run(
@@ -59,10 +58,12 @@ export function CommandPanel({
     await run("cl", () => api.confirmLive(true), { optimistic: { confirm_live: true } });
   }
 
+  // Commands content only — no card wrapper (ControlPanel supplies the shared
+  // card). The redundant global Stop-loss % control was removed 2026-07-12:
+  // stop % is set per trade in the schedule, so a global default here only
+  // invited confusion.
   return (
-    <section className="card command-card">
-      <h2>Commands</h2>
-
+    <>
       <div className="cmd-grid">
         <button className="btn primary" disabled={busy !== null || armed}
           onClick={() => run("arm", api.arm, { optimistic: { armed: true } })}>
@@ -82,22 +83,6 @@ export function CommandPanel({
         </button>
       </div>
 
-      <div className="config">
-        <label>
-          Stop-loss %
-          <select value={pct} onChange={(e) => setPct(Number(e.target.value))}>
-            {STOP_PCT_SET.map((p) => <option key={p} value={p}>{p}%</option>)}
-          </select>
-        </label>
-        <button className="btn" disabled={busy !== null}
-          onClick={() => run("config", async () => {
-            await api.updateConfig({ stop_loss_pct: pct });
-            setMsg({ text: `stop_loss_pct set to ${pct}%`, err: false });
-          })}>
-          {label("config", "Apply")}
-        </button>
-      </div>
-
       <p className={`msg ${msg?.err ? "err" : ""}`}>{msg?.text ?? ""}</p>
 
       {liveModal && (
@@ -107,7 +92,7 @@ export function CommandPanel({
           onConfirm={() => void confirmLiveOn()}
         />
       )}
-    </section>
+    </>
   );
 }
 

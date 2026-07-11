@@ -117,8 +117,7 @@ body {
    elements without re-declaring which class maps to which area. */
 .grid { display: grid; grid-template-columns: 1fr; gap: var(--sp-4); }
 
-.grid > .dashboard-card    { grid-area: dash; }
-.grid > .command-card      { grid-area: cmd; }
+.grid > .control-card      { grid-area: control; }
 .grid > .next-entry        { grid-area: next; }
 .grid > .schedule-panel    { grid-area: sched; }
 .grid > .manual-trade-card { grid-area: manual; }
@@ -132,7 +131,7 @@ body {
     grid-template-columns: repeat(2, 1fr);
     gap: var(--sp-5);
     grid-template-areas:
-      "dash    cmd"
+      "control control"
       "next    next"
       "sched   sched"
       "manual  manual"
@@ -141,15 +140,15 @@ body {
   }
 }
 
-/* full desktop layout — a deliberate 12-column grid. Dashboard + Commands
-   share the top row, the countdown is a slim full-width strip beneath them,
-   Schedule spans 2/3 with Manual trade beside it at 1/3, and Report / Entries
-   / Feed share a balanced three-up row. */
+/* full desktop layout — a deliberate 12-column grid. The combined Control card
+   (status + commands) spans the top row, the countdown is a slim full-width
+   strip beneath it, Schedule spans 2/3 with Manual trade beside it at 1/3, and
+   Report / Entries / Feed share a balanced three-up row. */
 @media (min-width: 1300px) {
   .grid {
     grid-template-columns: repeat(12, 1fr);
     grid-template-areas:
-      "dash   dash   dash   dash   dash   dash   cmd    cmd    cmd    cmd    cmd    cmd"
+      "control control control control control control control control control control control control"
       "next   next   next   next   next   next   next   next   next   next   next   next"
       "sched  sched  sched  sched  sched  sched  sched  sched  manual manual manual manual"
       "report report report report entries entries entries entries feed   feed   feed   feed";
@@ -186,12 +185,30 @@ body {
 .card-head h2 { margin: 0; padding-bottom: 0; border-bottom: none; }
 
 /* status hero */
-.hero { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 12px; margin-bottom: 16px; border: 1px solid var(--line); transition: background .2s ease, border-color .2s ease; }
-.hero.good { background: var(--good-dim); border-color: rgba(52,211,153,0.25); }
-.hero.idle { background: var(--surface); }
-.hero .hero-icon { font-size: 22px; }
+.hero { display: flex; align-items: center; gap: 16px; padding: 15px 18px; border-radius: 12px; margin-bottom: 16px; border: 1px solid var(--line); transition: background .2s ease, border-color .2s ease; }
+.hero.good { background: linear-gradient(100deg, var(--good-dim), transparent 72%); border-color: rgba(52,211,153,0.28); }
+.hero.idle { background: linear-gradient(100deg, var(--warn-dim), transparent 78%); border-color: rgba(251,191,36,0.18); }
 .hero .hero-title { font-size: 16px; font-weight: 700; }
-.hero .hero-sub { font-size: 12px; color: var(--muted); }
+.hero .hero-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* status orb — a live "radar" ping when firing on schedule, a calm amber dot
+   when a gate is holding entries, grey when disconnected. Replaces the flat 🟢
+   emoji (operator request 2026-07-12). */
+.status-orb { position: relative; width: 12px; height: 12px; border-radius: 50%; flex: none; margin: 5px; background: var(--faint); }
+.status-orb.live { background: var(--good); box-shadow: 0 0 10px 1px color-mix(in srgb, var(--good) 55%, transparent); }
+.status-orb.live::before,
+.status-orb.live::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  border: 1.5px solid var(--good); animation: orb-ping 2.4s cubic-bezier(0, 0, .2, 1) infinite;
+}
+.status-orb.live::after { animation-delay: 1.2s; }
+.status-orb.hold { background: var(--warn); box-shadow: 0 0 8px 0 color-mix(in srgb, var(--warn) 45%, transparent); }
+.status-orb.off { background: var(--faint); }
+@keyframes orb-ping { 0% { transform: scale(1); opacity: .7; } 80%, 100% { transform: scale(3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .status-orb.live::before, .status-orb.live::after { animation: none; } }
+
+/* divider between the status headline and the command buttons in the one card */
+.control-divider { height: 1px; background: var(--line); margin: 18px 0; }
 
 .pills { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface); border: 1px solid var(--line); color: var(--muted); transition: all .18s ease; }

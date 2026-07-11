@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, getApiToken, setApiToken, type OutageDrill } from "./api";
 import { ActivityFeed } from "./components/ActivityFeed";
-import { CommandPanel } from "./components/CommandPanel";
-import { Dashboard } from "./components/Dashboard";
+import { ControlPanel } from "./components/ControlPanel";
 import { DayDrilldown } from "./components/results/DayDrilldown";
 import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
@@ -199,10 +198,9 @@ export function App() {
 
       {onTrading ? (
         <main className="grid">
-          <Dashboard state={state} connected={connected} />
+          <ControlPanel state={state} connected={connected} optimistic={optimistic} refresh={refresh} />
           {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
           <NextEntryCountdown />
-          <CommandPanel state={state} optimistic={optimistic} refresh={refresh} />
           {/* UC-02 composition + ENT-09 fire. The fire button follows the three
               trade-enabling states, exactly as UI-22 requires. */}
           <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
