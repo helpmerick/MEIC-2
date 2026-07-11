@@ -46,8 +46,22 @@ describe("Simulate (read-only, UI-25)", () => {
     const result = await screen.findByTestId("manual-sim-result");
     expect(result).toHaveTextContent("P 7535/7510");
     expect(result).toHaveTextContent("C 7540/7565");
-    expect(result).toHaveTextContent("$4.00");
+    // net_credit is per-share ("4.00"); contracts: 1 -> $400 real cash
+    // (operator request 2026-07-11). worst_case ("4600") is already dollars.
+    expect(result).toHaveTextContent("$400");
+    expect(result).toHaveTextContent("$4600");
     expect(result).toHaveTextContent(/simulation/);
+  });
+
+  it("scales net credit by the simulated contracts count (ENT-04)", async () => {
+    vi.spyOn(api, "manualSimulate").mockResolvedValue({ ...SIM_OK, net_credit: "4.00", contracts: 3 });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.click(screen.getByText("Simulate trade"));
+    const result = await screen.findByTestId("manual-sim-result");
+    // 4.00 * 100 * 3 contracts = $1200
+    expect(result).toHaveTextContent("$1200");
   });
 
   it("renders the skip reason when selection fails", async () => {

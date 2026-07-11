@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
+import { contractDollarsPlain } from "../money";
 import type { FireResult, FloorCandidateRow, FloorCandidates, ManualSimulation } from "../types";
 
 interface ManualParams {
@@ -293,7 +294,10 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
               </div>
               <div className="p-row">
                 <span className="k">Net credit</span>
-                <span className="v">${simResult.net_credit}</span>
+                {/* net_credit is per-share (condor.mid_credit); worst_case below is
+                    ALREADY real dollars (domain/risk.py worst_case_loss applies
+                    x100 x contracts itself) -- operator request 2026-07-11. */}
+                <span className="v">${contractDollarsPlain(simResult.net_credit ?? "0", simResult.contracts ?? 1)}</span>
               </div>
               <div className="p-row">
                 <span className="k">Worst case</span>

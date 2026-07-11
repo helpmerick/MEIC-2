@@ -1,9 +1,22 @@
 import { useEffect, useRef } from "react";
-import type { DayReport } from "../types";
+import type { DayReport, EntryCard } from "../types";
+import { contractDollars, contractDollarsValue, formatDollars } from "../money";
 
-function money(v: string) {
-  const n = Number(v);
-  return (n >= 0 ? "+" : "") + n.toFixed(2);
+// SPX options carry a $100 multiplier and ENT-04 lets an entry trade more
+// than one contract (operator request 2026-07-11). `report`'s Decimal
+// fields (total_credit, day_pnl, per_entry_pnl) are PER-SHARE and NOT
+// contracts-scaled — they are plain sums of each entry's own per-share
+// net_credit/pnl (backend/src/meic/domain/projection.py `day_report`), with
+// no per-entry contracts breakdown of their own. `entries` (the SAME
+// snapshot, same event-log fold — see useLiveBot.ts's `applySnapshot`) is
+// threaded in here only to read each entry's own contracts count off its
+// legs, then the credit/day-P&L tiles are recomputed from `entries` directly
+// (summing each entry's OWN contract-dollar amount) rather than scaling
+// `report.total_credit`/`day_pnl` by one flat multiplier, which would
+// misscale the moment two entries on the same day carry different
+// contracts counts.
+function contractsOf(e: EntryCard | undefined): number {
+  return e?.legs && e.legs.length > 0 ? e.legs[0].qty : 1;
 }
 
 // flashes when its value changes — cheap "something happened" feedback
@@ -26,9 +39,13 @@ function Stat({ label, value, cls, hero }: { label: string; value: string | numb
   );
 }
 
-export function DayReportView({ report }: { report: DayReport | null }) {
+export function DayReportView({ report, entries }: { report: DayReport | null; entries: EntryCard[] }) {
   if (!report) return <section className="card"><h2>Day report</h2><p className="muted">…</p></section>;
-  const pnl = Number(report.day_pnl);
+  const byId = new Map(entries.map((e) => [e.entry_id, e]));
+  const totalCreditDollars = entries.reduce(
+    (sum, e) => sum + contractDollarsValue(e.net_credit, contractsOf(e)), 0);
+  const dayPnlDollars = entries.reduce(
+    (sum, e) => sum + contractDollarsValue(e.pnl, contractsOf(e)), 0);
   return (
     <section className="card">
       <div className="card-head">
@@ -41,8 +58,8 @@ export function DayReportView({ report }: { report: DayReport | null }) {
         <Stat label="Stops" value={report.stops_hit} />
         <Stat label="LEX" value={report.lex_recoveries} />
         <Stat label="Decay" value={report.decay_closes} />
-        <Stat label="Credit" value={money(report.total_credit)} />
-        <Stat label="Day P&L" value={money(report.day_pnl)} cls={pnl >= 0 ? "pos" : "neg"} hero />
+        <Stat label="Credit" value={formatDollars(totalCreditDollars)} />
+        <Stat label="Day P&L" value={formatDollars(dayPnlDollars)} cls={dayPnlDollars >= 0 ? "pos" : "neg"} hero />
       </div>
 
       {Object.keys(report.per_entry_pnl).length > 0 && (
@@ -52,7 +69,7 @@ export function DayReportView({ report }: { report: DayReport | null }) {
             {Object.entries(report.per_entry_pnl).map(([id, v]) => (
               <tr key={id}>
                 <td>{id}</td>
-                <td className={Number(v) >= 0 ? "pos" : "neg"}>{money(v)}</td>
+                <td className={Number(v) >= 0 ? "pos" : "neg"}>{contractDollars(v, contractsOf(byId.get(id)))}</td>
               </tr>
             ))}
           </tbody>

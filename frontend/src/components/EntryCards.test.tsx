@@ -11,6 +11,31 @@ function card(over: Partial<EntryCard> = {}): EntryCard {
   };
 }
 
+// Operator request 2026-07-11: the headline P&L and credit line show real
+// contract dollars (premium x100 x contracts), not the raw per-share Decimal.
+describe("EntryCards — contract-dollar P&L and credit (operator request 2026-07-11)", () => {
+  it("shows the headline P&L and credit in real dollars for a 1-contract entry", () => {
+    render(<EntryCards entries={[card({ net_credit: "5.20", pnl: "0.40" })]} onClose={vi.fn()} />);
+    expect(screen.getByText("+$40")).toBeInTheDocument();
+    expect(screen.getByText("credit $520")).toBeInTheDocument();
+  });
+
+  it("shows a negative headline P&L in real dollars", () => {
+    render(<EntryCards entries={[card({ net_credit: "5.20", pnl: "-1.05" })]} onClose={vi.fn()} />);
+    expect(screen.getByText("-$105")).toBeInTheDocument();
+  });
+
+  it("scales the headline P&L and credit by the entry's own contracts count (ENT-04)", () => {
+    const legs = [
+      { side: "PUT" as const, role: "short" as const, strike: "7535", price: "1.80", qty: 3 },
+      { side: "PUT" as const, role: "long" as const, strike: "7510", price: "0.08", qty: 3 },
+    ];
+    render(<EntryCards entries={[card({ net_credit: "5.20", pnl: "0.40", legs })]} onClose={vi.fn()} />);
+    expect(screen.getByText("+$120")).toBeInTheDocument();
+    expect(screen.getByText("credit $1560")).toBeInTheDocument();
+  });
+});
+
 describe("EntryCards — Close (UI-16)", () => {
   it("shows Close on an open entry and fires onClose instantly (no dialog)", async () => {
     const onClose = vi.fn().mockResolvedValue(undefined);
@@ -64,10 +89,19 @@ describe("EntryCards — placed time / legs / live P&L", () => {
     expect(screen.queryByText(/^Placed /)).toBeNull();
   });
 
-  it("shows the per-side legs with strikes and premium received", () => {
+  it("shows the per-side legs with strikes and premium received in real contract dollars", () => {
+    // premium_received is per-share ("1.72"/"1.88"); LEGS carry qty: 1, so
+    // contract dollars = premium x 100 x 1 (operator request 2026-07-11).
     render(<EntryCards entries={[card({ legs: LEGS, premium_received: PREMIUM })]} onClose={vi.fn()} />);
-    expect(screen.getByText("P 7535/7510 +1.72")).toBeInTheDocument();
-    expect(screen.getByText("C 7540/7565 +1.88")).toBeInTheDocument();
+    expect(screen.getByText("P 7535/7510 +$172")).toBeInTheDocument();
+    expect(screen.getByText("C 7540/7565 +$188")).toBeInTheDocument();
+  });
+
+  it("scales the per-side premium by the entry's own contracts count (ENT-04)", () => {
+    const legs2x = LEGS.map((l) => ({ ...l, qty: 2 }));
+    render(<EntryCards entries={[card({ legs: legs2x, premium_received: PREMIUM })]} onClose={vi.fn()} />);
+    expect(screen.getByText("P 7535/7510 +$344")).toBeInTheDocument();
+    expect(screen.getByText("C 7540/7565 +$376")).toBeInTheDocument();
   });
 
   it("shows a dash for a side's premium when a leg price is missing", () => {

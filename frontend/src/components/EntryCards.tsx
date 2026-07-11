@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { EntryCard, EntryStatus } from "../types";
+import { contractDollars, contractDollarsPlain } from "../money";
 
 // Per-entry lifecycle cards (doc 05 §8). Presentation + the operator's instant
 // Close action (UI-16); all validation stays server-side (UI-03).
@@ -16,9 +17,14 @@ const STATUS_META: Record<EntryStatus, { label: string; cls: string; icon: strin
 
 const TERMINAL: EntryStatus[] = ["CLOSED", "EXPIRED", "DECAY_CLOSED"];
 
-function money(v: string) {
-  const n = Number(v);
-  return (n >= 0 ? "+" : "") + n.toFixed(2);
+// ENT-04: each entry carries its own contracts count, read off any leg's
+// filled quantity (ORD-01: all four legs fill balanced, so any one leg's qty
+// is the entry's contracts) — the same source backend/src/meic/reporting/
+// folds.py's `contracts_of` reads (`entry.legs[0].qty`). An entry with no
+// recorded legs (never filled) defaults to 1; harmless, since every dollar
+// figure it feeds is 0 anyway (no fill, no premium) — never load-bearing.
+function entryContracts(e: EntryCard): number {
+  return e.legs && e.legs.length > 0 ? e.legs[0].qty : 1;
 }
 
 // FEATURE 1: the fill time as the operator's LOCAL wall-clock. `placed_at` is
@@ -28,9 +34,11 @@ function placedTime(placedAt: string | null | undefined): string | null {
   return new Date(placedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// FEATURE 2: "P 7535/7510 +1.72" — short/long strike and the per-side premium
-// (or "—" when the broker reported no allocation for one of the two legs).
-function legLine(e: EntryCard, side: "PUT" | "CALL"): string | null {
+// FEATURE 2: "P 7535/7510 +$172" — short/long strike and the per-side premium
+// in real contract dollars (operator request 2026-07-11: premium x100 x the
+// entry's contracts — "—" when the broker reported no allocation for one of
+// the two legs).
+function legLine(e: EntryCard, side: "PUT" | "CALL", contracts: number): string | null {
   const legs = e.legs;
   if (!legs || legs.length === 0) return null;
   const short = legs.find((l) => l.side === side && l.role === "short");
@@ -38,7 +46,7 @@ function legLine(e: EntryCard, side: "PUT" | "CALL"): string | null {
   if (!short || !long) return null;
   const label = side === "PUT" ? "P" : "C";
   const premium = e.premium_received?.[side];
-  return `${label} ${short.strike}/${long.strike} ${premium != null ? money(premium) : "—"}`;
+  return `${label} ${short.strike}/${long.strike} ${premium != null ? contractDollars(premium, contracts) : "—"}`;
 }
 
 // FEATURE 3: "P/L $+123 (as of HH:MM)", green when >= 0 / red when < 0, "—"
@@ -119,11 +127,12 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
 }) {
   const meta = STATUS_META[e.status] ?? STATUS_META.PENDING;
   const pnl = Number(e.pnl);
+  const contracts = entryContracts(e);
   const [busy, setBusy] = useState(false);
   const closeable = !TERMINAL.includes(e.status);
   const placed = placedTime(e.placed_at);
-  const putLine = legLine(e, "PUT");
-  const callLine = legLine(e, "CALL");
+  const putLine = legLine(e, "PUT", contracts);
+  const callLine = legLine(e, "CALL", contracts);
   const live = livePnl(e);
   const exitControlsAvailable = closeable && onSetFloor && onClearFloor && onSetTarget && onClearTarget;
 
@@ -139,10 +148,10 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
         <span className={`ec-badge ${meta.cls}`}>{meta.icon} {meta.label}</span>
       </div>
       <div className="ec-pnl">
-        <span className={pnl >= 0 ? "pos" : "neg"}>{money(e.pnl)}</span>
+        <span className={pnl >= 0 ? "pos" : "neg"}>{contractDollars(e.pnl, contracts)}</span>
       </div>
       <div className="ec-meta">
-        <span>credit ${Number(e.net_credit).toFixed(2)}</span>
+        <span>credit ${contractDollarsPlain(e.net_credit, contracts)}</span>
         {e.sides_stopped.length > 0 && <span className="tag stop">{e.sides_stopped.join("+")} stopped</span>}
         {e.recovered && <span className="tag lex">LEX</span>}
         {e.sides_expired.length > 0 && <span className="tag exp">{e.sides_expired.length} exp</span>}

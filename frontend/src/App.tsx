@@ -199,7 +199,7 @@ export function App() {
           {/* ENT-11/UI-25: the ad-hoc lane — fire NOW with explicit parameters,
               plus a read-only Simulate. Follows the same entries-enabled gate. */}
           <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
-          <div className="report"><DayReportView report={report} /></div>
+          <div className="report"><DayReportView report={report} entries={entries} /></div>
           <div className="entries-col">
             <EntryCards entries={entries} onClose={closeEntry}
                         onSetFloor={setFloor} onClearFloor={clearFloor}
