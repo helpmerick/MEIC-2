@@ -23,6 +23,8 @@ from fastapi import HTTPException
 
 from meic.adapters.api.app import _strike_from_symbol
 from meic.application.clocks import MutableClock
+from meic.application.market_calendar import is_trading_day, next_trading_day
+from meic.application.nyse_holidays import half_days_near, holidays_near
 from meic.composition.paper import PaperComposition
 from meic.composition.runtime import PaperDemoRuntime
 from meic.domain.ticks import TickRung, TickTable
@@ -342,6 +344,24 @@ def _day_status_extras(rows, now):
     }
 
 
+def _next_trading_day_extras(state, now):
+    """DAY-01/UI-24 (operator ruling 2026-07-11): on a NON-trading day the
+    watch strip must not promise an entry today — a Saturday used to show
+    "next entry 11:56 ET — in 7:03:05". Roll the countdown to the next trading
+    day's first entry instead: same shape as `_day_status_extras`, with
+    `seconds_to_next` spanning the closed days.
+
+    Only ever called on weekends/holidays. On a trading day an exhausted
+    schedule still reads "no more entries today" — TC-UI-06 locks that wording,
+    and the standing schedule genuinely fires nothing more until midnight ET.
+    """
+    from meic.composition.live_gates import ET
+    from meic.composition.live_wiring import schedule_rows
+
+    day = next_trading_day(now.date(), holidays=holidays_near(now.date()))
+    return _day_status_extras(schedule_rows(state, today=day, tz=ET), now)
+
+
 async def _supervise_once(app_state, comp, alerts, todays_rows, runtime, now_fn) -> None:
     """ENT-10: one supervisor tick, factored out of `live_app`'s startup loop so it
     can be unit-tested without a running FastAPI app. Precedence, evaluated in
@@ -385,6 +405,17 @@ async def _supervise_once(app_state, comp, alerts, todays_rows, runtime, now_fn)
         return
 
     now = now_fn()
+
+    # DAY-01 (operator ruling 2026-07-11): consult the exchange calendar BEFORE
+    # scheduling entries. A weekend or market holiday gets no day task at all —
+    # previously every closed day started one whose entries were then each
+    # refused by the at-fire-time ENT-03 market-open gate (which remains, as
+    # the safety net), writing EntrySkipped noise into the event log.
+    from meic.composition.live_gates import ET as _et
+    today = (now.astimezone(_et) if now.tzinfo else now).date()
+    if not is_trading_day(today, holidays=holidays_near(today)):
+        return
+
     rows = _remaining_rows(todays_rows(), now, comp.events, now.date().isoformat())
     if rows:
         app_state.day_task = asyncio.create_task(runtime.run_day(now.date().isoformat(), rows))
@@ -824,8 +855,16 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # whichever call reaches this selector first for that entry).
         baseline_pre_validation=True,
         alert=comp.alerts.alert)
+    # DAY-01/02 (operator ruling 2026-07-11): the exchange calendar the ENT-03
+    # market-open gate consults — previously wired with the dataclass default
+    # (an EMPTY set), so market holidays looked like open days. The rules are
+    # exchange facts computed algorithmically (nyse_holidays.py), not operator
+    # config; a decade out costs nothing and outlives any realistic uptime.
+    _cal_anchor = datetime.now(timezone.utc).date()
     gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
-                            session_valid=_session_valid, buying_power_ok=_buying_power_ok)
+                            session_valid=_session_valid, buying_power_ok=_buying_power_ok,
+                            holidays=holidays_near(_cal_anchor, years_ahead=10),
+                            half_days=half_days_near(_cal_anchor, years_ahead=10))
 
     lead_seconds = _warmup_lead_seconds(env)   # ENT-08 session_warmup_lead_seconds
 
@@ -1344,9 +1383,14 @@ def live_app():
         # filtered set the supervisor hands run_day — an entry already attempted
         # today (e.g. fired early via ENT-09) must not show as "next".
         now = datetime.now(ET)
-        remaining = _remaining_rows(_todays_entry_times(), now, comp.events,
-                                    now.date().isoformat())
-        extras = _day_status_extras(remaining, now)
+        if is_trading_day(now.date(), holidays=holidays_near(now.date())):
+            remaining = _remaining_rows(_todays_entry_times(), now, comp.events,
+                                        now.date().isoformat())
+            extras = _day_status_extras(remaining, now)
+        else:
+            # DAY-01/UI-24 (operator ruling 2026-07-11): weekends and market
+            # holidays roll the countdown to the next trading day's first entry.
+            extras = _next_trading_day_extras(comp.state, now)
         base = {"armed": comp.state.armed,
                 # RSK-06: a supervisor whose ticks are failing must say so —
                 # None when healthy, the last failure's repr otherwise.

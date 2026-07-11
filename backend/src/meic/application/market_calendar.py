@@ -6,7 +6,7 @@ datetime. This is the market_open/market_halted half of the ENT-03 gate.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 RTH_OPEN = time(9, 30)
 RTH_CLOSE = time(16, 0)
@@ -16,6 +16,15 @@ HALF_DAY_CLOSE = time(13, 0)
 def is_trading_day(day: date, *, holidays: frozenset[date] = frozenset()) -> bool:
     """Weekday and not a holiday (DAY-01)."""
     return day.weekday() < 5 and day not in holidays
+
+
+def next_trading_day(after: date, *, holidays: frozenset[date] = frozenset()) -> date:
+    """The first trading day strictly AFTER `after` (DAY-01) — the UI-24
+    weekend/holiday rollover's target day (operator ruling 2026-07-11)."""
+    day = after + timedelta(days=1)
+    while not is_trading_day(day, holidays=holidays):
+        day += timedelta(days=1)
+    return day
 
 
 def session_close(day: date, *, half_days: frozenset[date] = frozenset()) -> time:

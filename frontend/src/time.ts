@@ -35,6 +35,40 @@ function offsetMs(utcMs: number, zone: string): number {
 }
 
 /**
+ * "HH:MM" of a full ISO instant (e.g. /day/status's next_entry_at) rendered in
+ * `zone`; null if unparsable. Unlike `etToZone` this needs no "today" assumption
+ * — the instant carries its own date, so a next entry on the far side of a DST
+ * switch still converts correctly (UI-24 rollover, operator ruling 2026-07-11).
+ */
+export function instantToZone(iso: string, zone = localZone()): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: zone, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(d);
+}
+
+/** The ET calendar date of an instant, "YYYY-MM-DD". */
+function etDateOf(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: ET_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(d);
+}
+
+/**
+ * Short ET weekday ("Mon") of an instant that falls on a DIFFERENT ET calendar
+ * date than now — null when it's still today (or unparsable). UI-24: the
+ * weekend/holiday rollover labels the day so a Saturday reader can't mistake
+ * Monday's entry for one firing today.
+ */
+export function etDayLabel(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  if (etDateOf(d) === etDateOf(new Date())) return null;
+  return new Intl.DateTimeFormat("en-US", { timeZone: ET_ZONE, weekday: "short" }).format(d);
+}
+
+/**
  * A 24-hour "HH:MM" wall-clock time in ET (for TODAY's date) rendered in `zone`.
  * Returns null if the input isn't a valid 24-hour time. DST-aware.
  */
