@@ -1048,15 +1048,24 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     async def _long_quote(long_symbol: str, side: str):
         """EC-STP-06 catch-up (v1.60): the live market data RecoverLong's
         ladder needs to start, off the SAME chain snapshot FEATURE 3 already
-        holds (`snaps.last`) — no new subscription. `None` (no snapshot yet,
-        or the long's strike unmarked/spot absent — NO bid at all) means
-        "nothing can be priced this tick" — the caller retries next tick,
-        never guesses. A STALE snapshot whose mark exists returns a
-        `StaleQuote` (STP-08a v1.62): the bid is too old to price a ladder
-        (LEX-02's age criterion), but after the bounded
-        `lex_quote_wait_seconds` deferral it can still price the LEX-05
-        marketable-at-bid fallback — the freshest bid the system has."""
-        from meic.application.stop_fill_watch import StaleQuote
+        holds (`snaps.last`) — no new subscription. Returns one of:
+
+          * `None` — nothing can be priced this tick: no snapshot yet, or
+            no spot at all (EC-LEX-08 case (c) — no underlying mark means no
+            intrinsic floor is computable either) — the caller retries next
+            tick, never guesses.
+          * `NoBidFloor` (EC-LEX-08 v1.63, case (a)) — the strike itself
+            carries no bid, but spot is present and DAT-02-fresh: the LEX-04
+            intrinsic floor is computable, so the caller can rest a floor
+            sell instead of deferring forever.
+          * `StaleQuote` (STP-08a v1.62) — a bid EXISTS but the snapshot is
+            too old to price a ladder (LEX-02's age criterion); after the
+            bounded `lex_quote_wait_seconds` deferral it can still price the
+            LEX-05 marketable-at-bid fallback — the freshest bid the system
+            has.
+          * `(Quote, intrinsic)` — a fresh, priceable quote.
+        """
+        from meic.application.stop_fill_watch import NoBidFloor, StaleQuote
         from meic.domain.ladder import intrinsic_call, intrinsic_put
 
         snap = snaps.last
@@ -1074,8 +1083,16 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         side_chain = snap.put_side if side == "PUT" else snap.call_side
         mark = side_chain.marks.get(strike)
         spot = getattr(snap, "spot", None)
-        if mark is None or spot is None:
-            return None
+        if spot is None:
+            return None  # EC-LEX-08(c): no underlying mark at all -- cannot price a floor either
+        if mark is None:
+            # EC-LEX-08(a)/(c): the strike itself carries no bid at all.
+            if snap.stale:
+                # A stale spot is not DAT-02-fresh -- never floor off stale
+                # data; defer honestly (case (c) territory until it refreshes).
+                return None
+            intrinsic = intrinsic_put(strike, spot) if side == "PUT" else intrinsic_call(strike, spot)
+            return NoBidFloor(intrinsic=intrinsic)
         intrinsic = intrinsic_put(strike, spot) if side == "PUT" else intrinsic_call(strike, spot)
         from meic.application.recover_long import Quote
 

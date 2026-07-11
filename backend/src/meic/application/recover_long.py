@@ -108,6 +108,8 @@ class RecoverLong:
         intrinsic: Decimal,
         qty: int = 1,
         quote_stale: bool = False,
+        adopt_order_id: str | None = None,
+        adopt_price: Decimal | None = None,
     ) -> LexResult:
         # RPT-07 long recovery (2026-07-11, operator ruling): stamp the long's
         # mark at ladder start -- the honest best-available mark-at-stop,
@@ -131,8 +133,14 @@ class RecoverLong:
 
         ladder = RepriceLadder(start=quote.mid, ticks=self._ticks, attempts=self._attempts, floor=floor)
         tried: list[Decimal] = []
-        working_id = None
-        working_price = None
+        # EC-LEX-08 (v1.63) supersession: when a resting intrinsic-floor
+        # order already exists for this side (`adopt_order_id`), seed the
+        # working order to IT rather than starting fresh -- the first rung
+        # below then takes the existing cancel/replace branch (pre-check
+        # `_filled` -> `replace` -> re-check on exception), which IS the
+        # LEX-08 raced-fill-guarded supersession of the floor.
+        working_id = adopt_order_id
+        working_price = adopt_price
         for rung in ladder.prices():
             tried.append(rung.price)
             intent = OrderIntent(
@@ -194,6 +202,39 @@ class RecoverLong:
         self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price))
         self._events.append(SideClosed(entry_id=entry_id, side=side))
         return LexResult("SOLD", tuple(tried))
+
+    async def rest_floor(self, *, entry_id: str, side: str, long_symbol: str,
+                         intrinsic: Decimal, qty: int = 1) -> tuple[str, Decimal]:
+        """EC-LEX-08 (v1.63): rest a limit sell at the LEX-04 floor with
+        bid = 0 -- max(one minimum tick, intrinsic floored to tick) -- for a
+        side whose long has NO bid at all but a DAT-02-fresh underlying mark
+        makes the floor computable. Journals `LexOrderPlaced(kind="floor")`
+        at placement, like every other LEX order (ORD-09 philosophy).
+
+        Deliberately NO `LongSaleStarted` here: there is no bid/ask to stamp
+        honestly (RPT-07's mark-at-stop) -- that stamp is appended if/when a
+        real quote lets `recover()` supersede this floor, priced off an
+        actual quote at that point."""
+        min_tick = self._ticks.tick_for(Decimal("0"))
+        floor_price = max(min_tick, self._ticks.floor(intrinsic))
+        order_id = await self._broker.submit(OrderIntent(
+            order_type="limit", tif="Day", kind="lex", entry_id=entry_id,
+            contracts=qty, price=floor_price, idempotency_key=f"lex-floor:{entry_id}:{side}",
+            legs=(OrderLeg(right=right_of(side), action="sell_to_close",
+                           qty=qty, symbol=long_symbol),)))
+        self._events.append(LexOrderPlaced(
+            entry_id=entry_id, side=side, broker_order_id=str(order_id),
+            price=floor_price, kind="floor"))
+        return str(order_id), floor_price
+
+    def record_floor_sold(self, entry_id: str, side: str, recovery: Decimal) -> None:
+        """EC-LEX-08: the SAME terminal appends `_sold` makes (LongSold +
+        SideClosed), for a resting floor order discovered FILLED between
+        ticks -- the floor order is never inside a `recover()` ladder call,
+        so nothing else watches it; `stop_fill_watch._try_recover` resolves
+        its fill directly and calls this to close out the side honestly."""
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery))
+        self._events.append(SideClosed(entry_id=entry_id, side=side))
 
     async def _await_fill(self, working_id, seconds: float) -> bool:
         """Poll for `working_id`'s fill for up to `seconds`, returning True as

@@ -151,6 +151,39 @@ td.cell-actions { white-space: nowrap; text-align: right; }
 .meter.warn > i { background: linear-gradient(90deg, var(--warn), #fcd34d); }
 .meter.over > i { background: linear-gradient(90deg, var(--bad), #fca5a5); }
 
+/* --- shortfall tooltip (v1.63 UI-18a) ---------------------------------------
+   Styled, focus- AND tap-capable disclosure — NEVER a native `title`
+   attribute (invisible to touch, unreachable by keyboard focus). The bubble
+   is position:fixed on the trigger's own rect so it escapes .sched-scroll's
+   overflow-x:auto clipping — the same technique as .heatmap-tooltip
+   (results.css), same theme tokens, light/dark both handled for free. */
+.tooltip-wrap { position: relative; display: inline-block; margin-left: 4px; vertical-align: middle; }
+.tooltip-trigger {
+  display: inline-grid; place-items: center;
+  width: 16px; height: 16px; padding: 0;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 999px;
+  transition: color .15s ease, border-color .15s ease;
+}
+.tooltip-trigger:hover,
+.tooltip-trigger:focus-visible { color: var(--text); border-color: var(--line-strong); }
+.tooltip-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-tooltip {
+  position: fixed; z-index: 40; transform: translate(-50%, calc(-100% - 8px));
+  background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 9px;
+  box-shadow: var(--shadow); padding: 8px 12px; pointer-events: none;
+  font-size: 12px; line-height: 1.5; max-width: 260px; white-space: normal;
+  text-align: left; color: var(--text);
+}
+/* Visually hidden but present for assistive tech — the always-rendered copy
+   an aria-describedby resolves to when the visible bubble is closed. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+  white-space: nowrap; border: 0;
+}
+
 /* --- messages -------------------------------------------------------------- */
 .msg {
   font-size: 12px; margin: 8px 0 0; padding: 9px 12px;

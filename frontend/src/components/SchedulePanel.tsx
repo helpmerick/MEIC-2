@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
 import { isValidStopRebateMarkup, normalizeMoneyInput, stopRebateMarkupWorstCase } from "../money";
+import { Tooltip } from "./Tooltip";
 import {
   etToZone,
   isMilitaryTime,
@@ -103,9 +104,10 @@ function markupInvalid(value?: string): boolean {
 // `markup_worst_case_increase` exactly, computed with exact BigInt digit
 // arithmetic (money.ts), never float, on the SAME `stop_loss_pct` the row
 // itself carries (or the panel's default, if the row's own cell is blank).
-// The full UI-18 shortfall sentence moved to a hover tooltip on the box and
-// the hint (operator request 2026-07-11: the inline sentence widened the
-// column) — presentation change escalated to the adviser, wording unchanged.
+// The full UI-18 shortfall sentence lives behind a styled, focus- AND
+// tap-capable Tooltip (role="tooltip") anchored to the visible figure —
+// NEVER a native `title` attribute, which a touch or keyboard-only operator
+// can never reach (v1.63 UI-18a Presentation ruling; wording unchanged).
 function markupTooltip(row: ScheduleRow): string | undefined {
   const raw = (row.stop_rebate_markup ?? "").trim();
   if (!raw || markupInvalid(raw)) return undefined;
@@ -113,6 +115,13 @@ function markupTooltip(row: ScheduleRow): string | undefined {
   if (!(Number(val) > 0)) return undefined;
   const pct = row.stop_loss_pct || DEFAULT_STOP_PCT;
   return `If the long recovers less than $${val}, your net loss exceeds ${pct}% by the shortfall.`;
+}
+
+// Shared id between the Tooltip bubble and the buffer <input>'s
+// aria-describedby, so a keyboard/screen-reader operator tabbed into the
+// input reaches the same disclosure as the visible figure's trigger.
+function markupTooltipId(index: number): string {
+  return `markup-tooltip-content-${index}`;
 }
 
 function MarkupHint({ row, index }: { row: ScheduleRow; index: number }) {
@@ -128,9 +137,18 @@ function MarkupHint({ row, index }: { row: ScheduleRow; index: number }) {
   const val = normalizeMoneyInput(raw);
   if (!(Number(val) > 0)) return null;
   const contracts = Number(row.contracts) || 1;
+  const sentence = markupTooltip(row);
   return (
-    <span className="time-hint" data-testid={`markup-hint-${index}`} title={markupTooltip(row)}>
+    <span className="time-hint" data-testid={`markup-hint-${index}`}>
       worst case +${stopRebateMarkupWorstCase(val, contracts)}
+      {sentence && (
+        <Tooltip
+          id={markupTooltipId(index)}
+          content={sentence}
+          testId={`markup-tooltip-${index}`}
+          label={`shortfall detail, row ${index + 1}`}
+        />
+      )}
     </span>
   );
 }
@@ -297,7 +315,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     aria-label={`long recovery buffer ${i + 1}`}
                     value={row.stop_rebate_markup ?? ""}
                     placeholder="0.00"
-                    title={markupTooltip(row)}
+                    aria-describedby={markupTooltip(row) ? markupTooltipId(i) : undefined}
                     onChange={(e) => patch(i, "stop_rebate_markup", e.target.value)}
                     onBlur={(e) => patch(i, "stop_rebate_markup", normalizeMoneyInput(e.target.value))}
                     className={

@@ -245,6 +245,17 @@ describe("STP-02b / UI-18 — long-recovery buffer ($ stop_rebate_markup)", () =
     expect(save.mock.calls[0][0][0].stop_rebate_markup).toBe("");
   });
 
+  it("keeps the dollar worst-case figure permanently visible", async () => {
+    // v1.63 UI-18a: the dollar figure is visible whenever markup is
+    // set/valid/>0 — BEFORE any focus, hover, or tap.
+    vi.spyOn(api, "getSchedule").mockResolvedValue({
+      ...VIEW,
+      rows: [{ ...VIEW.rows[0], contracts: 1, stop_rebate_markup: "0.30" }, VIEW.rows[1]],
+    });
+    await renderPanel();
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$60");
+  });
+
   it("shows the worst-case dollar figure for markup 0.30, 1 contract: +$60", async () => {
     await renderPanel();
     fireEvent.change(screen.getByLabelText("contracts 1"), { target: { value: "1" } });
@@ -258,14 +269,63 @@ describe("STP-02b / UI-18 — long-recovery buffer ($ stop_rebate_markup)", () =
     expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$120");
   });
 
-  it("discloses the UI-18 shortfall sentence as a hover tooltip on the box AND the hint", async () => {
-    // Presentation ruled by the operator 2026-07-11 (the inline sentence
-    // widened the column); wording is the spec sentence verbatim. Escalated.
+  it("discloses the UI-18 shortfall sentence alongside the dollar figure", async () => {
+    // Presentation ruled by the operator 2026-07-11/2026-07-12 (v1.63
+    // UI-18a): the sentence lives behind a styled Tooltip anchored to the
+    // dollar figure, never a native title; wording is the spec sentence
+    // verbatim.
     await renderPanel();
     fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.50" } });
     const sentence = /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i;
-    expect(screen.getByTestId("markup-hint-0").getAttribute("title")).toMatch(sentence);
-    expect(screen.getByLabelText("long recovery buffer 1").getAttribute("title")).toMatch(sentence);
+
+    // row 1's own composed contracts is 2 -> 0.50 x 100 x 2 x 2 = $200
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$200");
+
+    fireEvent.click(screen.getByRole("button", { name: "shortfall detail, row 1" }));
+    expect(screen.getByTestId("markup-tooltip-0")).toHaveTextContent(sentence);
+  });
+
+  it("shortfall tooltip is focus- and tap-capable, never a native title attribute", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.50" } });
+    const sentence = /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i;
+
+    const trigger = screen.getByRole("button", { name: "shortfall detail, row 1" });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // keyboard focus reveals it
+    fireEvent.focus(trigger);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(sentence);
+    fireEvent.blur(trigger);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // a pointer tap reveals it too
+    fireEvent.click(trigger);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(sentence);
+
+    // never a native title attribute anywhere carries the sentence
+    document.querySelectorAll("[title]").forEach((el) => {
+      expect(el.getAttribute("title")).not.toMatch(/net loss exceeds/i);
+    });
+    expect(screen.getByLabelText("long recovery buffer 1")).not.toHaveAttribute("title");
+  });
+
+  it("the buffer input's aria-describedby resolves to the sentence even while the tooltip is closed", async () => {
+    // Final-review finding (2026-07-12): a keyboard operator tabbed into the
+    // input (which does not open the tooltip) must still have the disclosure
+    // announced — so the describedby target is an always-present hidden node.
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.50" } });
+
+    const input = screen.getByLabelText("long recovery buffer 1");
+    const describedBy = input.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(screen.queryByRole("tooltip")).toBeNull(); // bubble is closed
+    const node = document.getElementById(describedBy as string);
+    expect(node).not.toBeNull();
+    expect(node).toHaveTextContent(
+      /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i,
+    );
   });
 
   it("pads a bare '.15' to '0.15' on blur — and never outlines it red", async () => {

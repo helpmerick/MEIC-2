@@ -294,38 +294,62 @@ def _(world, vitest_ui07_result):
     assert "a zero-P&L trading day renders as a flat trading cell, visually distinct from a weekend" in output
 
 
-# --- Scenario: The local label is the browser's zone, not geolocation ---------------
+# --- Scenario: The local label reads "local", zone from the browser, no geolocation --
 #
-# UI-23a label wording divergence escalated 2026-07-11: the operator ruled the
-# shipped echo label reads "local", while the ratified UI-23a text says the
-# resolved city (e.g. "London"). Pending that ruling, these steps pin ONLY the
-# invariants BOTH versions share — the conversion zone comes exclusively from
-# `Intl.DateTimeFormat().resolvedOptions().timeZone`, and no geolocation /
-# location lookup exists anywhere in the frontend source. The shipped "local"
-# wording is deliberately NOT asserted against the ratified city wording here.
+# UI-23a v1.63 ruling (ratified 2026-07-11): the echo AND countdown label read
+# "local" (never a city name); the zone still derives exclusively from the
+# browser's Intl setting, never geolocation. Three Then steps now cover this:
+# the wording itself, the Intl-only zone source, and (unrelated to time, but
+# sharing this scenario per the feature file) the UI-18a tooltip's shape.
 
-@then("the echo label names the Intl-resolved zone and no location lookup ever occurs")
-def _(world, vitest_ui07_result):
+@then('the echo and countdown label converted times "local" and never a city name')
+def _(world):
+    # SchedulePanel's TimeHint renders "≈ {etToZone(raw)} local" (never the
+    # zone's city) and NextEntryCountdown labels its converted echo "local"
+    # too — grep the shipped source rather than re-deriving it, so a future
+    # regression back to a city name fails THIS check, not just intuition.
+    schedule_src = (FRONTEND_SRC / "components" / "SchedulePanel.tsx").read_text(encoding="utf-8")
+    countdown_src = (FRONTEND_SRC / "components" / "NextEntryCountdown.tsx").read_text(encoding="utf-8")
+
+    assert "local" in schedule_src, "SchedulePanel must label its converted-time echo 'local'"
+    assert "local" in countdown_src, "NextEntryCountdown must label its converted-time echo 'local'"
+
+    # Neither rendered echo uses zoneLabel() (the city-deriving helper) as the
+    # label text — it may still exist in time.ts as a utility, but no
+    # component may splice it into a rendered echo/countdown label.
+    for src, name in ((schedule_src, "SchedulePanel.tsx"), (countdown_src, "NextEntryCountdown.tsx")):
+        assert "zoneLabel(" not in src, \
+            f"{name} must not use zoneLabel() (a city name) for the local echo/countdown label"
+
+
+@then("the zone derives from the browser Intl setting and no location lookup ever occurs")
+def _(world):
     src_files = [p for p in FRONTEND_SRC.rglob("*")
                  if p.suffix in (".ts", ".tsx") and ".test." not in p.name]
     assert src_files, "frontend source tree not found"
     joined = "\n".join(p.read_text(encoding="utf-8") for p in src_files)
 
-    # The ONE zone source both label wordings share: the browser's own Intl
-    # setting — resolved in exactly one place (time.ts localZone()).
+    # The ONE zone source: the browser's own Intl setting — resolved in
+    # exactly one place (time.ts localZone()).
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in joined
     time_ts = (FRONTEND_SRC / "time.ts").read_text(encoding="utf-8")
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in time_ts
 
     # No geolocation / location lookup of ANY kind, anywhere in the frontend:
-    # nothing is looked up, requested, or tracked (UI-23a's shared clause).
+    # nothing is looked up, requested, or tracked (UI-23a).
     for forbidden in ("geolocation", "getCurrentPosition", "watchPosition",
                       "ipinfo", "ip-api", "geoip", "ipgeolocation"):
         assert forbidden.lower() not in joined.lower(), \
             f"location lookup found in frontend source: {forbidden}"
 
-    # And the Intl-resolved zone is what the label machinery names (zoneLabel
-    # resolves the IANA zone to its city — the ratified wording's mechanism,
-    # exercised green regardless of which label wording ultimately ships).
+
+@then("the shortfall tooltip is styled, focus- and tap-capable, never a native title attribute")
+def _(world, vitest_ui07_result):
+    # UI-18a Presentation (v1.63): the shortfall sentence lives behind a
+    # styled, focus- AND tap-capable Tooltip (role="tooltip") — NEVER a
+    # native `title` (unreachable by touch or keyboard focus). Bound to the
+    # REAL vitest SchedulePanel suite, same binding strategy as every other
+    # frontend clause in this file.
     rc, output = vitest_ui07_result
     assert rc == 0, output
+    assert "shortfall tooltip is focus- and tap-capable, never a native title attribute" in output

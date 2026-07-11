@@ -106,6 +106,16 @@ class StaleQuote:
     intrinsic: Decimal
 
 
+@dataclass(frozen=True)
+class NoBidFloor:
+    """EC-LEX-08 (v1.63): the long's strike is UNMARKED (no bid at all) but a
+    DAT-02-fresh underlying mark exists, so the LEX-04 intrinsic floor is
+    computable. `_try_recover` rests an intrinsic-floor sell (one-time critical
+    alert on placement); a usable quote arriving later supersedes it."""
+
+    intrinsic: Decimal
+
+
 def _stop_specs(events) -> dict[tuple[str, str], StopPlaced]:
     """The latest recorded `StopPlaced` per (entry_id, side) -- carries the
     trigger (needed for EC-STP-06 slippage) and, for every stop placed since
@@ -406,35 +416,49 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
 
       1. ORD-09: no broker-reported long recorded -> cannot name the
          instrument to sell; critical alert (once), operator must intervene.
-      2. Double-ladder guard: a sell-to-close for this long still WORKING at
+      2. EC-LEX-08 (v1.63) resting-floor lookup: has a prior tick already
+         rested an intrinsic-floor sell for this side? If so, check FIRST
+         whether it has itself filled between ticks (the floor order is never
+         inside a `recover()` call, so nothing else watches it) -- filled ⇒
+         terminal append via `RecoverLong.record_floor_sold`, done.
+      3. Double-ladder guard: a sell-to-close for this long still WORKING at
          the broker (last tick's rung, or its LEX-05 fallback) -> SKIP; never
-         start a second ladder beside it.
-      3. OWN standdown (operator ruling 2026-07-10): the long is no longer
+         start a second ladder beside it. Skipped when a floor is tracked --
+         that floor IS the resting sell, and steps 5/6 below manage or
+         supersede it explicitly rather than being blanket-skipped here.
+      4. OWN standdown (operator ruling 2026-07-10): the long is no longer
          held at the broker -> the operator disposed of it directly; no LEX
          order, info alert (once).
-      4. Quote guard, BOUNDED (STP-08a v1.62 -- "on invalid quotes LEX
+      5. Quote guard, BOUNDED (STP-08a v1.62 -- "on invalid quotes LEX
          follows its own ratified path: deferral only within the retry
          cadence, then the marketable-at-bid fallback; a naked-side recovery
-         never waits indefinitely"). Two distinct cases:
+         never waits indefinitely"). Distinct cases:
+           * `NoBidFloor` (EC-LEX-08 v1.63 -- NO bid at all, but a DAT-02-fresh
+             underlying mark makes the LEX-04 floor computable): already
+             resting ⇒ nothing to do; else rest it now via
+             `RecoverLong.rest_floor` and fire the one-time critical alert AT
+             PLACEMENT (announced, not discovered).
            * `StaleQuote` (a bid EXISTS but is stale-invalid, LEX-02's age
              criterion): defer while the total elapsed since this side's
              FIRST deferral is under `lex_quote_wait_seconds`; at/past the
              window, stop deferring and start LEX via the LEX-05 fallback
              (`RecoverLong.recover(quote_stale=True)` -- marketable limit at
-             that bid, never a ladder off stale prices).
-           * `None` (NO bid at all -- snapshot absent, or the strike simply
-             unmarked): a marketable order cannot be priced, so the side
+             that bid, never a ladder off stale prices). A resting floor is
+             left alone: a stale bid is no improvement over the floor.
+           * `None` (NO bid at all AND no fresh underlying mark -- EC-LEX-08
+             case (c)): a marketable order cannot be priced, so the side
              keeps deferring, forever if need be, with the R3-F3 one-time
-             critical alert standing. A price is never invented. (The
-             ratified text presumes a quote that is merely INVALID; with no
-             bid whatsoever the "never waits indefinitely" promise is
-             unsatisfiable without guessing -- flagged, not improvised.)
+             critical alert standing. A price is never invented. A resting
+             floor is left alone (still hedging; no spam).
          A USABLE quote arriving at any point -- including mid-window --
-         clears the deferral state and starts the normal ladder.
+         clears the deferral state and starts the normal ladder; if a floor
+         was resting, it is SUPERSEDED via the raced-fill-guarded
+         cancel/replace (LEX-08 -- `RecoverLong.recover(adopt_order_id=...,
+         adopt_price=...)`), resuming LEX-03 pricing.
 
     `RecoverLong.recover()` itself appends `LongSaleStarted` when -- and only
-    when -- a ladder genuinely (re)starts past all four guards, so a retry
-    tick that skips at any guard journals nothing (no marker spam)."""
+    when -- a ladder genuinely (re)starts past all guards, so a retry tick
+    that skips at any guard journals nothing (no marker spam)."""
     broker, events = comp.broker, comp.events
     long_leg = _long_leg_for(events, entry_id, side)
     if long_leg is None:
@@ -449,18 +473,70 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
                     "orphaned long manually.",
                     entry_id=entry_id, side=side)
         return
-    if await _sell_still_working(broker, long_leg.symbol):
+
+    key = (entry_id, side)
+    # EC-LEX-08 (v1.63): this side's resting intrinsic-floor order, if a
+    # prior tick placed one. Looked up BEFORE the double-ladder guard -- with
+    # a floor tracked, THIS function manages/supersedes it explicitly below
+    # instead of being blanket-skipped by that guard.
+    floor_orders = getattr(comp, "_stop_fill_floor_orders", None)
+    if floor_orders is None:
+        floor_orders = {}
+        comp._stop_fill_floor_orders = floor_orders
+    floor = floor_orders.get(key)
+
+    if floor is not None:
+        # The resting floor may itself have FILLED between ticks -- nothing
+        # else watches it (it is never inside a `recover()` ladder call).
+        filled, price = await _resolve_by_order_id(broker, floor[0])
+        if filled:
+            comp.recover.record_floor_sold(entry_id, side,
+                                           price if price is not None else floor[1])
+            floor_orders.pop(key, None)
+            getattr(comp, "_stop_fill_quote_deferrals", {}).pop(key, None)
+            getattr(comp, "_stop_fill_quote_deferred_since", {}).pop(key, None)
+            return
+
+    if floor is None and await _sell_still_working(broker, long_leg.symbol):
         return  # a prior rung/fallback is still resting -- never a second ladder
+
     if not await _long_still_held(broker, long_leg.symbol):
+        floor_orders.pop(key, None)
         _alert_once(comp, alerts, (entry_id, side, "standdown"), "info",
                     "EC-STP-06 catch-up: the short's stop had already filled, but the "
                     "long was no longer held at the broker -- standing down (operator disposed "
                     "of it directly, OWN-09/10). No LEX order submitted.",
                     entry_id=entry_id, side=side, symbol=long_leg.symbol)
         return
+
     got = await quote_provider(long_leg.symbol, side)
-    key = (entry_id, side)
+
+    if isinstance(got, NoBidFloor):
+        # EC-LEX-08(a)/(b): no bid at all, but the floor is computable off a
+        # fresh underlying mark. Already resting -> nothing new to place;
+        # not yet resting -> rest it now, critical alert AT PLACEMENT
+        # (operator addition: a degraded-liquidity recovery is announced,
+        # not discovered).
+        if floor is not None:
+            return
+        order_id, price = await comp.recover.rest_floor(
+            entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
+            intrinsic=got.intrinsic, qty=long_leg.qty)
+        floor_orders[key] = (order_id, price)
+        _alert_once(comp, alerts, (entry_id, side, "lex_floor_rested"), "critical",
+                    f"EC-LEX-08: no bid for {long_leg.symbol}; resting intrinsic-floor sell "
+                    f"at {price} (a degraded-liquidity recovery, announced not discovered).",
+                    entry_id=entry_id, side=side, symbol=long_leg.symbol)
+        getattr(comp, "_stop_fill_quote_deferrals", {}).pop(key, None)
+        getattr(comp, "_stop_fill_quote_deferred_since", {}).pop(key, None)
+        return
+
     if got is None or isinstance(got, StaleQuote):
+        if floor is not None:
+            # EC-LEX-08: the floor is resting and hedging already -- a
+            # stale bid is no improvement over the intrinsic floor, and no
+            # bid at all changes nothing either. Leave it resting, no spam.
+            return
         # Deferral bookkeeping, shared by both invalid-quote flavours: the
         # R3-F3 consecutive-tick count (alert threshold) and, since v1.62,
         # the epoch instant of this side's FIRST deferral (the bounded
@@ -508,8 +584,17 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
     getattr(comp, "_stop_fill_quote_deferrals", {}).pop(key, None)
     getattr(comp, "_stop_fill_quote_deferred_since", {}).pop(key, None)
     quote, intrinsic = got
-    await comp.recover.recover(entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
-                               quote=quote, intrinsic=intrinsic, qty=long_leg.qty)
+    if floor is not None:
+        # EC-LEX-08(b): a usable quote SUPERSEDES the resting floor via the
+        # raced-fill-guarded cancel/replace (LEX-08) -- recover() adopts the
+        # floor's own order id/price as the ladder's starting working order.
+        await comp.recover.recover(entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
+                                   quote=quote, intrinsic=intrinsic, qty=long_leg.qty,
+                                   adopt_order_id=floor[0], adopt_price=floor[1])
+        floor_orders.pop(key, None)
+    else:
+        await comp.recover.recover(entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
+                                   quote=quote, intrinsic=intrinsic, qty=long_leg.qty)
 
 
 async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
