@@ -1,5 +1,14 @@
+import { contractDollars } from "../../money";
 import type { DaySlippageFamilies } from "../../types";
-import { GapNote, plainDollars } from "./shared";
+import { GapNote } from "./shared";
+
+// Stop-out slippage arrives as PER-SHARE price units (EC-STP-03 "fill −
+// trigger" — the spec's own $ figure). Operator ruling 2026-07-11: display
+// the real cash impact per contract instead (×100 via the shared exact
+// converter), so a −0.10 gap reads "-$10". Ticks stay ticks.
+function slipDollars(v: string | null | undefined): string {
+  return v == null ? "—" : contractDollars(v);
+}
 
 // RPT-06 (slippage in) / RPT-07 (slippage out, four families). Only the
 // stop-outs family is exposed, and only at the single-DAY grain
@@ -35,10 +44,10 @@ export function SlippagePanels({ daySlippage }: { daySlippage?: DaySlippageFamil
               <tbody>
                 <tr>
                   <td>{daySlippage.stop_outs.n}</td>
-                  <td>{plainDollars(daySlippage.stop_outs.mean)}</td>
-                  <td>{plainDollars(daySlippage.stop_outs.p50)}</td>
-                  <td>{plainDollars(daySlippage.stop_outs.p90)}</td>
-                  <td>{plainDollars(daySlippage.stop_outs.max)}</td>
+                  <td>{slipDollars(daySlippage.stop_outs.mean)}</td>
+                  <td>{slipDollars(daySlippage.stop_outs.p50)}</td>
+                  <td>{slipDollars(daySlippage.stop_outs.p90)}</td>
+                  <td>{slipDollars(daySlippage.stop_outs.max)}</td>
                   <td>{daySlippage.stop_outs.mean_ticks ?? "—"}</td>
                 </tr>
               </tbody>
