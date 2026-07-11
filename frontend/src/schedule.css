@@ -27,7 +27,16 @@ table.schedule thead th {
 table.schedule thead th.num { text-align: center; }
 table.schedule tbody tr { transition: background .15s ease; }
 table.schedule tbody tr:hover { background: var(--hover); }
-table.schedule tbody td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: middle; }
+/* TOP-aligned, not middle: a cell whose hint sits under the box (time's local
+   echo, the buffer's worst-case figure) would otherwise centre the whole
+   box+hint block and push its box up out of line with the hint-less cells
+   (operator report 2026-07-11). Top-aligning puts every box on one line; the
+   hint hangs below without moving anything. */
+table.schedule tbody td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+/* text-only / button cells: centre their content against the 36px box height
+   so they sit on the boxes' midline, not the cell's top edge */
+td.cell-wc { line-height: var(--field-h); }
+td.cell-actions .icon-btn { margin-top: calc((var(--field-h) - 30px) / 2); }
 table.schedule tbody tr:first-child td { border-top: none; }
 
 .schedule input,
