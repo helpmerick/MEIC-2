@@ -1271,8 +1271,10 @@ Scenario: Heatmap honesty
   And a fabricated 0-0 never renders
   And weekends render visually distinct from zero-P&L trading days
 
-Scenario: The local label is the browser's zone, not geolocation
-  Then the echo label names the Intl-resolved zone and no location lookup ever occurs
+Scenario: The local label reads "local", zone from the browser, no geolocation
+  Then the echo and countdown label converted times "local" and never a city name
+  And the zone derives from the browser Intl setting and no location lookup ever occurs
+  And the shortfall tooltip is styled, focus- and tap-capable, never a native title attribute
 ```
 
 ## Results dashboard (doc 10)
@@ -1437,6 +1439,40 @@ Scenario: Recovery order of operations
   And a stop-free entry above target on recovery closes immediately
 ```
 
+**TC-RPT-10** — RPT-16 one-time backfill (v1.63)
+```gherkin
+Scenario: Imported days render cash and are excluded from quality metrics
+  Given a backfilled day with fills netting +355.12 and an imported settlement of -369.00
+  Then the day renders net -13.88 with the broker-imported badge
+  And it appears in no Sharpe, expectancy, streak, outcome, targeting, or slippage figure
+  And it counts as a trading day in period buckets
+
+Scenario: Transaction-level idempotency
+  Given a day imported fills-only and then re-imported
+  Then exactly the missing settlement rows are added once and a third run is a true no-op
+
+Scenario: Never CondorFilled, never foreign, never guessed
+  Then imported rows are ExternalFillImported events only
+  And only operator-listed order ids import; foreign fills never do
+  And a settlement symbol shared with skipped-foreign fills is counted ambiguous_settlements and skipped
+```
+
+**TC-LEX-10** — EC-LEX-08 no bid at all (v1.63)
+```gherkin
+Scenario: An intrinsic floor rests when the book is empty but spot is fresh
+  Given a long P7510 with no bid, SPX at 7480, and lex_quote_wait_seconds elapsed
+  Then a limit sell rests at 30.00 (intrinsic floored to tick)
+  And the one-time critical alert fires when the floor order is placed
+
+Scenario: Quote resumption supersedes the floor
+  Given the resting floor order and a usable bid arriving
+  Then the raced-fill-guarded cancel/replace resumes normal ladder pricing
+
+Scenario: No bid and no spot defers honestly
+  Given neither a bid nor a fresh underlying mark
+  Then the side defers with the one-time critical alert and no price is ever invented
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1467,7 +1503,8 @@ Scenario: Recovery order of operations
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
 | RPT-01→15 / UI-25/26/27 | TC-RPT-01→09 | | RPT-15 (zero drift) | TC-RPT-09 |
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
-| UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | | |
+| UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
+| EC-LEX-08 | TC-LEX-10 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |

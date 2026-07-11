@@ -131,11 +131,15 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
   a projection bug and block nothing but demand investigation. Extends PNL-04
   (broker authority) from the day report to every dashboard number.
 
+- **RPT-16 One-time broker backfill (v1.63, operator-ratified — consolidates the 2026-07-10 in-chat rulings).** A day predating the journal MAY be imported from broker records: (1) distinct event type `ExternalFillImported` (day, at, order_id, symbol, action, quantity, price, imported_at, source; additive `value`/`fee` fields for settlement rows) — NEVER `CondorFilled`: imported history is data, not intent; (2) bot's book only — the import takes an EXPLICIT operator-supplied list of bot/agent order ids; foreign fills never import (OWN-03); (3) cash-level rendering only — fills, net cash delta, fees; EXCLUDED from all strategy-quality metrics (Sharpe/Sortino/expectancy/streaks/outcome taxonomy/targeting/slippage): entry-level intent was never recorded and is not honestly reconstructable; counts as a trading day (RPT-01); (4) trust badge `broker-imported` (UI-25 third state) — broker truth by construction, but NEVER `broker-confirmed` (confirmation means bot-computed numbers MATCHED the broker, meaningless here); (5) idempotent at TRANSACTION level — identity (at, symbol, action); re-runs add only missing rows, then true no-op; evented and auth-gated; (6) read-only broker surface, no order capability; (7) **settlements import ALWAYS** (operator ruling): Receive-Deliver rows fetched with end_date = day+1 (settlements can post next-day), action = broker transaction_sub_type, value = broker signed net_value, fee = |net_value − value|; zero-value expiry rows import too (terminal-state documentation); (8) shared-symbol guard — settlement rows carry no order id and match by SYMBOL against imported fills; a symbol also present in skipped-foreign fills is SKIPPED and counted `ambiguous_settlements`, never guessed. Record: the one executed import is order 482390058 (2026-07-09) with all exclusions logged; its symbol matching was exact (all four settlement symbols unshared).
+
 ## UI rules (also in doc 03)
 
 - **UI-25 Trust & mode presentation.** Every metric block carries its badge:
-  broker-confirmed ✓ (all days in scope passed RPT-15) or bot-computed with
-  unreconciled-day count ("22/23 days broker-confirmed"). PAPER banners per
+  broker-confirmed ✓ (all days in scope passed RPT-15), bot-computed with
+  unreconciled-day count ("22/23 days broker-confirmed"), or **broker-imported
+  (v1.63, RPT-16)** for backfilled days — broker truth by construction, never
+  conflated with confirmation. PAPER banners per
   SIM-05.
 - **UI-27 Placement (operator rule, 2026-07-10).** The dashboard is a
   **separate page (client-side route) inside the existing single-page
