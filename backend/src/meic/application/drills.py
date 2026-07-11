@@ -23,8 +23,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
+
+from meic.reporting.mae_mfe import consumed_fraction
 
 DRILL_CONFIRMATION = "DRILL"
+
+# UC-12 near-trigger drill guidance (operator ruling 2026-07-11): warn when
+# trigger-distance consumed is >= 50%.
+NEAR_TRIGGER_THRESHOLD = Decimal("0.50")
 
 _PAPER_HONESTY = ("PAPER: proves the recovery mechanism + timestamp evidence, not "
                   "broker-side independence (SIM-06). Bot-independent proof is the "
@@ -57,14 +64,57 @@ def drill_confirmation_ok(*, mode: str, confirmation: str) -> bool:
     return True
 
 
-def drill_guidance(*, near_trigger: bool = False, entry_soon: bool = False) -> list[str]:
+@dataclass(frozen=True)
+class OpenShortMark:
+    """One open short leg's live trigger-distance inputs, for
+    `near_trigger_status` below (operator ruling 2026-07-11): the recorded
+    fill and the resting stop's trigger, plus the CURRENT live mark -- `None`
+    when this tick has no usable mark for it (never a guess, D10-style
+    honesty)."""
+
+    fill: Decimal
+    trigger: Decimal
+    mark: Decimal | None
+
+
+def near_trigger_status(shorts: list[OpenShortMark]) -> bool | None:
+    """UC-12 near-trigger drill guidance (operator ruling 2026-07-11):
+    trigger-distance consumed = (current mark − fill) / (trigger − fill) --
+    the SAME shared formula RPT-12's MAE uses
+    (`reporting.mae_mfe.consumed_fraction`), evaluated at the CURRENT live
+    mark rather than the worst RECORDED sample.
+
+    True: ANY open short's consumed fraction is >= `NEAR_TRIGGER_THRESHOLD`
+    (50%) -- a confirmed breach warns even if some OTHER side's mark is
+    unusable. False: every short has a usable mark and none reached 50%.
+    `None`: at least one short has NO usable mark and none of the computable
+    ones already breached -- an honest "unknown", never silently reported as
+    False (no warning-suppression claim). An empty `shorts` list (nothing
+    open to watch) is `False` -- there is genuinely nothing to warn about."""
+    unknown = False
+    for s in shorts:
+        if s.mark is None:
+            unknown = True
+            continue
+        consumed = consumed_fraction(s.mark, fill=s.fill, trigger=s.trigger)
+        if consumed is not None and consumed >= NEAR_TRIGGER_THRESHOLD:
+            return True
+    return None if unknown else False
+
+
+def drill_guidance(*, near_trigger: bool | None = False, entry_soon: bool = False) -> list[str]:
     """UC-12 v1.56: advisory warnings for the confirmation dialog — GUIDANCE,
     never a hard block (the operator is supervising and may proceed anyway).
-    `near_trigger`: a short mark sits within 50% of its trigger distance.
-    `entry_soon`: a scheduled/armed entry fires within 10 minutes."""
+    `near_trigger` (operator ruling 2026-07-11, `near_trigger_status` above):
+    True warns explicitly; `None` (no usable live mark for at least one open
+    short) warns that trigger-distance is UNKNOWN rather than silently
+    reporting no warning at all; False is silent. `entry_soon`: a
+    scheduled/armed entry fires within 10 minutes."""
     warnings: list[str] = []
-    if near_trigger:
+    if near_trigger is True:
         warnings.append("a short mark is within 50% of its trigger distance")
+    elif near_trigger is None:
+        warnings.append("trigger-distance unknown for at least one open short (no live mark)")
     if entry_soon:
         warnings.append("an entry is scheduled to fire within 10 minutes")
     return warnings

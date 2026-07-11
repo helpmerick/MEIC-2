@@ -63,7 +63,13 @@ def _alert_orphaned_failure(comp, context: str):
 # (condor, skip_reason) — exactly one is non-None
 Selector = Callable[..., Awaitable[tuple[Condor | None, str | None]]]
 GatesProvider = Callable[[], Awaitable[GateSnapshot]]
-Warmup = Callable[[datetime], Awaitable[None]]
+# ENT-08 (operator ruling 2026-07-11): widened to carry the upcoming entry's
+# number and its own SelectionConfig (row.selection) alongside `when` -- the
+# real warm-up wiring (server.py `_wire_live_day`) needs BOTH to lock the
+# STK-10 v1.55 baseline under the SAME (when, entry_number) key the fire will
+# use (LiveCondorSelector.warm_baseline). `config` is `None` for a bare
+# ScheduledRow (offline/global-settings callers).
+Warmup = Callable[[datetime, int, "SelectionConfig | None"], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -170,9 +176,12 @@ class LiveRuntime:
             n = row.number if row.number is not None else idx
             when = row.when
             # ENT-08: warm up ahead of the entry; never let it delay the clock.
+            # `n` and `row.selection` (v1.55 hook, operator ruling 2026-07-11):
+            # so the warm-up can lock the STK-10 baseline under the SAME
+            # (when, entry_number) key the fire below will use.
             if self.warmup is not None:
                 await comp.clock.wait_until(when - timedelta(seconds=self.warmup_lead_seconds))
-                await self.warmup(when)
+                await self.warmup(when, n, row.selection)
 
             await comp.clock.wait_until(when)
 

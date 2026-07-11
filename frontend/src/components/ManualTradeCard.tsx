@@ -10,9 +10,9 @@
 // exists, or says plainly that none has been run yet, rather than fabricating
 // a number the way the schedule row's static formula would.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
-import type { FireResult, ManualSimulation } from "../types";
+import type { FireResult, FloorCandidateRow, FloorCandidates, ManualSimulation } from "../types";
 
 interface ManualParams {
   contracts: number | "";
@@ -63,6 +63,9 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
   const [open, setOpen] = useState(false);
   const [params, setParams] = useState<ManualParams>({ ...BLANK });
   const [floors, setFloors] = useState<FloorParams>({ ...BLANK_FLOORS });
+  const [floorCandidates, setFloorCandidates] = useState<FloorCandidates | null>(null);
+  const [floorCandidatesError, setFloorCandidatesError] = useState<string | null>(null);
+  const [loadingFloorCandidates, setLoadingFloorCandidates] = useState(false);
   const [simResult, setSimResult] = useState<ManualSimulation | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [simulating, setSimulating] = useState(false);
@@ -77,6 +80,46 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
         ? (value === "" ? "" : Number(value))
         : value,
     }));
+
+  // ENT-09b v1.57 (finished to spec): the floor dropdowns are populated from
+  // the LIVE VALIDATED UNIVERSE via the same tested backend endpoint the
+  // scheduled-row dialog uses (UI-03: nothing is decided here, only shown
+  // back). Free numeric entry is gone — it could name a strike that doesn't
+  // exist, which is exactly why the dropdown was ratified.
+  async function loadFloorCandidates() {
+    setFloorCandidatesError(null);
+    setLoadingFloorCandidates(true);
+    try {
+      setFloorCandidates(await api.manualFloorCandidates(nonEmpty(params)));
+    } catch (e) {
+      setFloorCandidates(null);
+      setFloorCandidatesError(e instanceof ApiError ? String(e.detail) : String(e));
+    } finally {
+      setLoadingFloorCandidates(false);
+    }
+  }
+
+  // Populate (and re-populate on re-enable) when the operator turns the
+  // floors toggle on — a stale set from a previous open would silently name
+  // strikes that may no longer be live.
+  useEffect(() => {
+    if (floors.enabled) void loadFloorCandidates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [floors.enabled]);
+
+  const putCandidates: FloorCandidateRow[] = floorCandidates?.available ? floorCandidates.put ?? [] : [];
+  const callCandidates: FloorCandidateRow[] = floorCandidates?.available ? floorCandidates.call ?? [] : [];
+  // Honest note for every reason the dropdown can have nothing to offer: not
+  // wired at all, a request that failed, or a wired-but-stale/empty snapshot.
+  const floorCandidatesNote = loadingFloorCandidates
+    ? "loading live candidates…"
+    : floorCandidatesError
+      ? `candidates unavailable — ${floorCandidatesError}`
+      : floorCandidates && !floorCandidates.available
+        ? "candidates unavailable — no live chain wired"
+        : floorCandidates && putCandidates.length === 0 && callCandidates.length === 0
+          ? "no live candidates yet — snapshot not fresh"
+          : null;
 
   // Simulate is read-only and works regardless of armed state (UI-25) — it
   // never checks `entriesEnabled`.
@@ -183,22 +226,39 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
               <>
                 <label className="field">
                   <span>Put floor</span>
-                  <input
+                  <select
                     aria-label="manual put floor"
                     value={floors.put_floor}
-                    placeholder="none"
+                    disabled={putCandidates.length === 0}
                     onChange={(e) => setFloors((f) => ({ ...f, put_floor: e.target.value }))}
-                  />
+                  >
+                    <option value="">none</option>
+                    {/* live validated universe, puts descending from the money (backend-sorted) */}
+                    {putCandidates.map((r) => (
+                      <option key={r.strike} value={r.strike}>
+                        {r.strike} ({r.distance_pts} pts) · ${r.mid}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="field">
                   <span>Call floor</span>
-                  <input
+                  <select
                     aria-label="manual call floor"
                     value={floors.call_floor}
-                    placeholder="none"
+                    disabled={callCandidates.length === 0}
                     onChange={(e) => setFloors((f) => ({ ...f, call_floor: e.target.value }))}
-                  />
+                  >
+                    <option value="">none</option>
+                    {/* live validated universe, calls ascending from the money (backend-sorted) */}
+                    {callCandidates.map((r) => (
+                      <option key={r.strike} value={r.strike}>
+                        {r.strike} ({r.distance_pts} pts) · ${r.mid}
+                      </option>
+                    ))}
+                  </select>
                 </label>
+                {floorCandidatesNote && <p className="note">{floorCandidatesNote}</p>}
                 <p className="note">
                   Puts select short at or below the floor; calls select short at or above it.
                   A floor can only cause a skip — it never weakens the credit rules.

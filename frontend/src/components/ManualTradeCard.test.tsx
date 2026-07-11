@@ -111,6 +111,105 @@ describe("Fire (ENT-11)", () => {
   });
 });
 
+// ENT-09b v1.57 (finished to spec): the floor pickers are DROPDOWNS populated
+// from the live validated universe via api.manualFloorCandidates — free
+// numeric entry is gone (it could name a strike that doesn't exist).
+describe("floor dropdowns (ENT-09b v1.57)", () => {
+  const CANDIDATES = {
+    available: true,
+    put: [
+      { strike: "7535", distance_pts: "15", mid: "3.10" },
+      { strike: "7530", distance_pts: "20", mid: "2.80" },
+    ],
+    call: [
+      { strike: "7565", distance_pts: "15", mid: "2.90" },
+      { strike: "7570", distance_pts: "20", mid: "2.50" },
+    ],
+    spot: "7550",
+    quote_at: "2026-07-11T15:00:00+00:00",
+  };
+
+  it("fetches and renders live candidates as dropdown options when the toggle is enabled", async () => {
+    const fc = vi.spyOn(api, "manualFloorCandidates").mockResolvedValue(CANDIDATES);
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+    await waitFor(() => expect(fc).toHaveBeenCalled());
+
+    const putSelect = await screen.findByLabelText("manual put floor");
+    const callSelect = screen.getByLabelText("manual call floor");
+    expect(putSelect.tagName).toBe("SELECT");
+    expect(putSelect).not.toBeDisabled();
+    expect(callSelect).not.toBeDisabled();
+    expect(putSelect).toHaveTextContent("7535 (15 pts) · $3.10");
+    expect(putSelect).toHaveTextContent("7530 (20 pts) · $2.80");
+    expect(callSelect).toHaveTextContent("7565 (15 pts) · $2.90");
+  });
+
+  it("no free-text numeric entry remains for the floors", async () => {
+    vi.spyOn(api, "manualFloorCandidates").mockResolvedValue(CANDIDATES);
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+
+    await screen.findByLabelText("manual put floor");
+    expect(screen.getByLabelText("manual put floor").tagName).toBe("SELECT");
+    expect(screen.getByLabelText("manual call floor").tagName).toBe("SELECT");
+  });
+
+  it("selecting a strike carries it through to the fire request", async () => {
+    vi.spyOn(api, "manualFloorCandidates").mockResolvedValue(CANDIDATES);
+    const fire = vi.spyOn(api, "manualFire").mockResolvedValue({ result: "filled", initiator: "manual_entry" });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+
+    await screen.findByLabelText("manual put floor");
+    fireEvent.change(screen.getByLabelText("manual put floor"), { target: { value: "7535" } });
+
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByText("OK"));
+    await waitFor(() => expect(fire).toHaveBeenCalled());
+
+    expect(fire.mock.calls[0][0].put_floor).toBe("7535");
+  });
+
+  it("disables the dropdown with an honest note when there are no candidates (stale snapshot)", async () => {
+    vi.spyOn(api, "manualFloorCandidates").mockResolvedValue({
+      available: true, put: [], call: [], spot: null, quote_at: null,
+    });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+
+    await waitFor(() => expect(screen.getByLabelText("manual put floor")).toBeDisabled());
+    expect(screen.getByLabelText("manual call floor")).toBeDisabled();
+    expect(screen.getByText(/no live candidates yet/)).toBeInTheDocument();
+  });
+
+  it("disables the dropdown with an honest note when no candidate provider is wired", async () => {
+    vi.spyOn(api, "manualFloorCandidates").mockResolvedValue({ available: false });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+
+    await waitFor(() => expect(screen.getByLabelText("manual put floor")).toBeDisabled());
+    expect(screen.getByText(/no live chain wired/)).toBeInTheDocument();
+  });
+
+  it("disables the dropdown with an honest note when the request itself fails", async () => {
+    vi.spyOn(api, "manualFloorCandidates").mockRejectedValue(new ApiError(500, "boom"));
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByLabelText("enable minimum strike floors"));
+
+    await waitFor(() => expect(screen.getByLabelText("manual put floor")).toBeDisabled());
+    expect(screen.getByText(/candidates unavailable/)).toBeInTheDocument();
+  });
+});
+
 describe("validation errors surfaced from the backend (UI-03)", () => {
   it("shows a 422 error from Simulate without deciding anything itself", async () => {
     vi.spyOn(api, "manualSimulate").mockRejectedValue(

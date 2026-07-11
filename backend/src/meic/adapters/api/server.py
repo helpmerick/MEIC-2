@@ -213,6 +213,18 @@ def _chain_retry_seconds(env: dict[str, str]) -> int:
     return raw if 1 <= raw <= 30 else 5
 
 
+def _warmup_lead_seconds(env: dict[str, str]) -> float:
+    """ENT-08 `session_warmup_lead_seconds` (doc 06: range 10-300, default 60)
+    — how far ahead of each scheduled entry the real warm-up runs. Out-of-range
+    falls back to the spec default (the same reject-the-dial convention as
+    `_chain_completeness_pct` above)."""
+    try:
+        raw = float(env.get("MEIC_SESSION_WARMUP_LEAD_SECONDS", "60"))
+    except ValueError:
+        return 60.0
+    return raw if 10 <= raw <= 300 else 60.0
+
+
 def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
     """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
     "required for return metrics"). Operator-set only: account net-liq is
@@ -738,6 +750,8 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     and threw the composed schedule rows away — while the paper composition and
     every unit test had all of it armed.
     """
+    from meic.application.timeouts import run_warmup
+    from meic.application.warmup import ALERT_AT_SECONDS
     from meic.composition.live_gates import LiveMarketGates
     from meic.composition.live_selection import LiveCondorSelector, SelectionConfig
     from meic.composition.live_selection import floor_candidates as floor_candidates_fn
@@ -813,9 +827,64 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
                             session_valid=_session_valid, buying_power_ok=_buying_power_ok)
 
+    lead_seconds = _warmup_lead_seconds(env)   # ENT-08 session_warmup_lead_seconds
+
+    async def _entry_warmup(when: datetime, entry_number: int,
+                            config: SelectionConfig | None) -> None:
+        """ENT-08 (operator ruling 2026-07-11): real T-60 warm-up wiring,
+        reusing ONLY the existing probe/snapshot machinery -- no new
+        streaming infrastructure is built here.
+
+          1/2. token validity + account-stream heartbeat -> the SAME
+               `_session_valid` the ~60s health loop already runs (a light
+               authenticated call; the SDK `Session` under `comp.broker`
+               renews its own access token on any authenticated call it
+               makes, exactly as it does for every other call this process
+               issues -- there is no separate adapter-level "seconds until
+               expiry" reader available to drive an INDEPENDENT
+               `session_token_expiry_buffer_seconds` timer here; this is a
+               known scope boundary of the existing machinery, not silently
+               faked).
+          3.   DXLink chain subscription freshness -> the SAME `snaps.take()`
+               the selector itself uses at fire time; a freshly-taken
+               snapshot IS a live, ticking subscription -- there is nothing
+               further to "resubscribe" beyond taking a fresh one.
+          4.   hard wall-clock cap (NFR-03, `timeouts.run_warmup`), bounded so
+               it can never run past `ALERT_AT_SECONDS` before the entry --
+               the clock must never slip (ENT-08). Still-unresolved at the
+               cap raises a critical alert (ENT-08.4) rather than silently
+               proceeding.
+
+        STK-10 v1.55 hook: once a fresh snapshot is in hand, locks THIS
+        entry's validated-universe baseline under the SAME (when,
+        entry_number) key the fire will use
+        (`LiveCondorSelector.warm_baseline`) -- so fire-time completeness
+        measures regression from a T-60 picture instead of approximating the
+        capture lazily at the first fire-time attempt.
+        """
+        async def _prime() -> None:
+            try:
+                await _session_valid()
+            except Exception as exc:  # noqa: BLE001 -- warm-up never crashes the scheduler
+                comp.alerts.alert("warning", f"ENT-08 warm-up session probe failed: {exc!r}")
+            try:
+                await snaps.take()
+            except Exception as exc:  # noqa: BLE001
+                comp.alerts.alert("warning", f"ENT-08 warm-up chain probe failed: {exc!r}")
+            selector.warm_baseline(snaps.last, config, when=when, entry_number=entry_number)
+
+        cap_seconds = max(0.0, lead_seconds - ALERT_AT_SECONDS)
+        completed, _ = await run_warmup(_prime(), cap_seconds=cap_seconds)
+        if not completed:
+            comp.alerts.alert(
+                "critical",
+                f"ENT-08 warm-up capped at T-{ALERT_AT_SECONDS:.0f}s for entry "
+                f"#{entry_number} at {when.isoformat()} -- firing on schedule regardless")
+
     # RSK-04 + RSK-08 + ENT-03 BP, all armed. Also wraps comp.broker so the order
     # cap counts every order any service submits.
     runtime = build_live_runtime(comp, selector=selector, market_gates=gates,
+                                 warmup=_entry_warmup, warmup_lead_seconds=lead_seconds,
                                  max_entries_per_day=_max_entries(comp),
                                  drift=drift, max_clock_drift_ms=max_drift_ms)
 
@@ -975,13 +1044,21 @@ def live_app():
     def _drill_guidance_provider() -> list[str]:
         """UC-12 v1.56: advisory-only warnings for the drill confirmation
         dialog. `entry_soon` is real (the composed schedule's own next-fire
-        time); a near-trigger-mark check is NOT computed here (STP-02c's
-        "trigger distance" has no single canonical percentage without picking
-        a reference basis, and this warning is guidance only, never a
-        block) -- flagged as a follow-up, not a blocking gap."""
+        time). `near_trigger` (operator ruling 2026-07-11): real too, off the
+        SAME open-short frame EC-STP-06's catch-up uses
+        (`stop_fill_watch._open_short_legs` -- an open short with a
+        `StopPlaced` on record) and the live chain snapshot FEATURE 3 already
+        holds -- no new subscription. Each short's fill/trigger feed the
+        SAME shared formula RPT-12's MAE uses
+        (`reporting.mae_mfe.consumed_fraction` via
+        `application.drills.near_trigger_status`); a mark this tick cannot
+        price (no snapshot, stale, or the strike unmarked) is `None` --
+        honest 'unknown', never a guess and never silently treated as
+        'not near'."""
         from datetime import timedelta as _td
 
-        from meic.application.drills import drill_guidance
+        from meic.application.drills import OpenShortMark, drill_guidance, near_trigger_status
+        from meic.application.stop_fill_watch import _open_short_legs
         from meic.composition.live_gates import ET as _ET
         from meic.composition.live_wiring import schedule_rows
 
@@ -989,7 +1066,17 @@ def live_app():
         rows = schedule_rows(comp.state, today=now.date(), tz=_ET)
         remaining = _remaining_rows(rows, now, comp.events, now.date().isoformat())
         entry_soon = bool(remaining) and (min(r.when for r in remaining) - now) <= _td(seconds=600)
-        return drill_guidance(near_trigger=False, entry_soon=entry_soon)
+
+        snap = live["snapshots"].last
+        shorts: list[OpenShortMark] = []
+        for _entry_id, side, leg, spec in _open_short_legs(comp.events):
+            mark = None
+            if snap is not None and not snap.stale:
+                side_chain = snap.put_side if side == "PUT" else snap.call_side
+                mark = _leg_mid(side_chain, Decimal(_strike_from_symbol(leg.symbol)))
+            shorts.append(OpenShortMark(fill=leg.price, trigger=spec.trigger, mark=mark))
+
+        return drill_guidance(near_trigger=near_trigger_status(shorts), entry_soon=entry_soon)
 
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],

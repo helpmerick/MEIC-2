@@ -2,7 +2,7 @@
 from decimal import Decimal as D
 
 from meic.domain.events import EntryMarkSample
-from meic.reporting.mae_mfe import excursion
+from meic.reporting.mae_mfe import consumed_fraction, excursion
 
 
 def _sample(entry_id, mid, side="PUT"):
@@ -35,3 +35,19 @@ def test_none_valued_samples_are_excluded_never_treated_as_zero():
                _sample("e1", D("3.40"))]
     result = excursion("e1", "PUT", samples, fill=D("3.00"), trigger=D("3.80"))
     assert result.mae_pct == D("0.5")  # only the 3.40 sample counted, not a fabricated 0
+
+
+# --- consumed_fraction: the shared formula (operator ruling 2026-07-11) -------
+# `excursion` above and application/drills.py's near-trigger drill guidance
+# MUST share this ONE implementation — never two copies of the same math.
+
+def test_consumed_fraction_matches_excursions_own_arithmetic():
+    samples = [_sample("e1", D("3.80"))]
+    result = excursion("e1", "PUT", samples, fill=D("3.00"), trigger=D("3.80"))
+    assert consumed_fraction(D("3.80"), fill=D("3.00"), trigger=D("3.80")) == result.mae_pct == D("1")
+
+
+def test_consumed_fraction_is_none_when_trigger_equals_fill():
+    """No distance to measure against — D10-style honesty, never a fabricated
+    zero or infinity."""
+    assert consumed_fraction(D("3.50"), fill=D("3.00"), trigger=D("3.00")) is None

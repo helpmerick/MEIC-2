@@ -166,6 +166,26 @@ export interface FireResult {
   fill_credit?: string;
 }
 
+// ENT-09b (v1.57): the ▶ dialog's floor dropdown candidates, from the entry's
+// live VALIDATED UNIVERSE — puts descending from the money, calls ascending,
+// each with its distance from spot (points) and live mid (backend/composition/
+// live_selection.py: floor_candidates). `available: false` (no provider wired,
+// e.g. paper) or an empty side list (no snapshot yet / stale) both mean the
+// dropdown has nothing honest to offer.
+export interface FloorCandidateRow {
+  strike: string;
+  distance_pts: string;
+  mid: string;
+}
+
+export interface FloorCandidates {
+  available: boolean;
+  put?: FloorCandidateRow[];
+  call?: FloorCandidateRow[];
+  spot?: string | null;
+  quote_at?: string | null;
+}
+
 // ENT-11/UI-25: the ad-hoc manual-trade card's Simulate result. Read-only — it
 // places no order and appends no event. `worst_case` here is REAL (computed from
 // the selector's actual strikes), unlike the schedule row's pre-selection

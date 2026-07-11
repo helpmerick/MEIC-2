@@ -165,16 +165,20 @@ def test_warmup_runs_before_each_entry_and_does_not_delay_it():
     broker = FakeBroker(); broker.autofill(IS_CONDOR)
     clock = FastClock(OPEN - timedelta(minutes=5))  # boot before the entry time
     comp = _Comp(clock, broker)
-    warmed: list[datetime] = []
+    warmed: list[tuple] = []
 
-    async def warmup(when):
-        warmed.append(clock.now())  # observed at T-lead, before the entry time
+    # ENT-08 (operator ruling 2026-07-11): the callable now also carries the
+    # entry number + its SelectionConfig (row.selection), so the real warm-up
+    # wiring can lock the STK-10 v1.55 baseline under the SAME key the fire
+    # will use — see tests/application/test_live_app.py's warm-up capstone.
+    async def warmup(when, n, config):
+        warmed.append((clock.now(), n, config))  # observed at T-lead, before the entry time
 
     times = [OPEN]
     filled = asyncio.run(_runtime(comp, warmup=warmup, warmup_lead_seconds=60).run_day("2026-07-07", times))
 
     assert filled == 1
-    assert warmed == [OPEN - timedelta(seconds=60)]  # ran at T-60, ahead of the entry
+    assert warmed == [(OPEN - timedelta(seconds=60), 1, None)]  # ran at T-60, ahead of the entry
     assert clock.now() == OPEN                        # ENT-08: the clock never slipped
     assert comp.protected == ["2026-07-07#1"]         # entry still fired on time
 

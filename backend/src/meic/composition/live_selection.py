@@ -126,13 +126,19 @@ class LiveCondorSelector:
     chain_retry_seconds: int = 5                       # STK-10 default (doc 06)
     # STK-10 v1.55 baseline pre-validation. OPT-IN, like `clock` above: `False`
     # (the default) keeps every pre-v1.55 caller on the untouched v1.51
-    # per-attempt reachable-set recompute. When `True`, the FIRST attempt for
-    # a given (when, entry_number) captures the validated universe -- at
-    # ENT-08 warm-up if the caller already ran one (a warm-up that never calls
-    # this selector leaves the first fire-time attempt to do it, which is
-    # exactly "manual ENT-09 entries: at press") -- and every retry within the
-    # entry window reuses that SAME locked baseline rather than recomputing
-    # it. See `_locked_baseline` below.
+    # per-attempt reachable-set recompute. When `True`, the FIRST capture for
+    # a given (when, entry_number) locks the validated universe, and every
+    # later attempt within the entry window (including the eventual fire)
+    # reuses that SAME locked baseline rather than recomputing it.
+    #
+    # Scheduled entries (operator ruling 2026-07-11, closing the v1.55 gap):
+    # the ENT-08 warm-up (server.py `_wire_live_day`'s real warm-up wiring)
+    # calls `warm_baseline` at T-60 with the SAME (when, entry_number) key the
+    # fire will use, so the baseline is ALREADY locked before the fire's first
+    # attempt ever runs -- there is no longer a fire-time approximation for
+    # scheduled entries. Manual ENT-09 entries have no warm-up step, so their
+    # first capture genuinely happens at press ("at press" per spec, not an
+    # approximation of anything). See `_locked_baseline`/`warm_baseline` below.
     baseline_pre_validation: bool = False
     # RSK-06-style alert sink for the v1.55(3) viability floor (sliver
     # baseline): `alert(level, message)`. `None` is a valid no-op (tests that
@@ -230,6 +236,25 @@ class LiveCondorSelector:
 
         self._baseline = _Baseline(put=put_validated, call=call_validated)
         return self._baseline, None
+
+    def warm_baseline(self, snap, config: SelectionConfig | None, *,
+                      when: datetime, entry_number: int) -> None:
+        """ENT-08 (v1.55 hook, operator ruling 2026-07-11): called by the real
+        warm-up wiring at T-60, with the SAME (when, entry_number) key the
+        eventual fire will use -- so the fire's first `_attempt` finds this
+        entry's baseline already locked instead of capturing it lazily.
+
+        A no-op when baseline pre-validation is off, or `snap` is missing/
+        stale (nothing honest to lock from yet -- the fire's own retry loop
+        is what handles that, exactly as it does when no warm-up ran at all).
+        Sliver detection/alerting is unchanged: `_locked_baseline` still
+        alerts and returns `(None, "incomplete_chain")` on a too-thin universe,
+        it simply does not lock -- the fire retries the capture, same as
+        v1.55's per-attempt behavior."""
+        if not self.baseline_pre_validation or snap is None or snap.stale:
+            return
+        c = config or self.config
+        self._locked_baseline(snap, c, when=when, entry_number=entry_number)
 
     async def _attempt(self, c: SelectionConfig, *, when: datetime,
                        entry_number: int, put_floor: Decimal | None = None,

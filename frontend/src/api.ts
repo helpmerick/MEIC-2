@@ -4,7 +4,8 @@
 
 import type {
   ActivityLine, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
-  FireResult, ManualSimulation, PanelState, Preflight, ReportSummary, ScheduleRow, ScheduleView,
+  FireResult, FloorCandidates, ManualSimulation, PanelState, Preflight, ReportSummary, ScheduleRow,
+  ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -137,6 +138,10 @@ export const api = {
     post<ManualSimulation>("/manual/simulate", params),
   manualFire: (params: Record<string, unknown> & { press_id: string; confirmed: boolean }) =>
     post<FireResult>("/manual/fire", params),
+  // ENT-09b v1.57: the ad-hoc ▶ dialog's floor dropdowns, for the row's OWN
+  // parameters (target/wing/width feed the reachable-set computation).
+  manualFloorCandidates: (params: Record<string, unknown>) =>
+    post<FloorCandidates>("/manual/floor-candidates", params),
 
   // --- RPT-09/10 results dashboard (doc 10) ---------------------------------
   // Read-only, origin-open exactly like /state and /report (RPT-10).

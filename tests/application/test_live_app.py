@@ -520,6 +520,153 @@ def test_live_app_outage_drill_runs_when_confirmed_with_a_mode_aware_honesty_not
     assert "PAPER" not in body["honesty_note"]
 
 
+# --- ENT-08 (v1.9/v1.55) warm-up wiring capstone -------------------------------
+# The SIXTH member of the "exists but unwired" class (after RSK-04, the day
+# supervisor, TPF/TPT, EC-STP-06's stop-fill detector, ...): `warmup=` has
+# existed on LiveRuntime/build_live_runtime since v1.9, but live_app() never
+# passed one — the entry never actually warmed anything up. `plan_warmup`
+# (application/warmup.py) is a pure decision proven by TC-ENT-06; nothing
+# production-side ever called it or ran a real session/chain probe at T-60.
+
+def test_live_app_wires_a_real_warmup_not_none(monkeypatch, tmp_path):
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    runtime = app.state.runtime
+
+    assert runtime.warmup is not None, "ENT-08: live_app() must wire a REAL warm-up"
+    assert callable(runtime.warmup)
+    assert runtime.warmup_lead_seconds == 60.0   # doc 06 session_warmup_lead_seconds default
+
+
+def _healthy_side(direction, n: int = 25):
+    """A realistic chain side with >= min_validated_strikes(10) reachable,
+    two-sided-marked strikes on the default SelectionConfig() — mirrors
+    tests/bdd/test_tc_stk_09.py's `_healthy_side` fixture, so the STK-10
+    v1.55 baseline this warm-up locks is not a sliver."""
+    from meic.domain.chain import ChainSide, Mark
+
+    spot = Decimal("6000")
+    strikes = tuple(spot + direction * Decimal(5 * i) for i in range(n))
+
+    def curve(i):
+        return max(Decimal("0.15"), Decimal("3.60") - Decimal("0.30") * i)
+
+    marks = {}
+    for i, s in enumerate(strikes):
+        mid = curve(i)
+        marks[s] = Mark(bid=mid - Decimal("0.05"), ask=mid + Decimal("0.05"))
+    return ChainSide(strikes, marks)
+
+
+def test_warmup_actually_primes_session_and_chain_and_locks_the_v155_baseline(monkeypatch, tmp_path):
+    """Non-None alone cannot catch a warm-up that is wired but does nothing —
+    exactly the 2026-07-10 review-finding pattern pinned by
+    test_stop_fill_detector_drives_lex_with_a_real_quote... above. Drive the
+    REAL warm-up end-to-end and assert it (1) runs the session probe (a
+    clock-drift reading lands), (2) refreshes the held chain snapshot, and
+    (3) locks the STK-10 v1.55 baseline for the upcoming entry under the SAME
+    (when, entry_number) key the fire will reuse (operator ruling
+    2026-07-11) — so the fire's first attempt finds it already locked rather
+    than approximating the capture lazily at fire time."""
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+    runtime = app.state.runtime
+    now = datetime.now(timezone.utc)
+
+    comp.broker._inner.working_orders = lambda: _async([])
+    comp.broker._inner.server_time = lambda: _async(now)
+
+    fake_snap = SimpleNamespace(
+        spot=Decimal("6000"), stale=False, taken_at=now,
+        put_side=_healthy_side(Decimal(-1)), call_side=_healthy_side(Decimal(1)))
+
+    async def _fake_snapshot_chain(session):
+        return fake_snap
+
+    import meic.adapters.dxlink.chain_snapshot as _cs_mod
+    monkeypatch.setattr(_cs_mod, "snapshot_chain", _fake_snapshot_chain)
+
+    assert runtime.measure_drift_ms() == float("inf")    # nothing probed yet
+    assert app.state.chain_snapshots.last is None
+
+    when = datetime(2026, 7, 11, 15, 30, tzinfo=timezone.utc)
+    selector = runtime.selector
+    assert selector._baseline_key is None
+
+    asyncio.run(runtime.warmup(when, 1, None))
+
+    assert abs(runtime.measure_drift_ms()) < 2000.0      # ENT-08.1/.2: session probe ran
+    assert app.state.chain_snapshots.last is fake_snap    # ENT-08.3: chain probe ran
+
+    # v1.55 hook: the SAME (when, entry_number) key the fire will use is
+    # already locked -- the fire's first attempt reuses it, never a fresh
+    # fire-time capture.
+    assert selector._baseline_key == (when, 1)
+    assert selector._baseline is not None
+
+
+def test_drill_guidance_reflects_a_real_near_trigger_short(monkeypatch, tmp_path):
+    """UC-12 near-trigger guidance (operator ruling 2026-07-11): the drill
+    endpoint's `guidance` must reflect a REAL open short's live trigger-
+    distance -- `_drill_guidance_provider` used to hardcode `near_trigger=
+    False` unconditionally. Drive it end-to-end: an open PUT short with a
+    recorded stop trigger, a chain snapshot mark 80% of the way from fill to
+    trigger, and assert the warning actually appears in the drill evidence."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.domain.chain import ChainSide, Mark
+    from meic.domain.events import CondorFilled, FilledLeg, StopPlaced
+    from tests.harness.fake_broker import FakeBroker
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+    comp.broker = FakeBroker()
+
+    entry_id = "2026-07-11#1"
+    put_short_symbol = "SPXW  260711P07535000"      # strike 7535
+    comp.events.append(CondorFilled(entry_id=entry_id, net_credit=Decimal("4.00"), legs=(
+        FilledLeg(symbol="SPXW  260711P07510000", right="P", role="long", qty=1, price=Decimal("1.00")),
+        FilledLeg(symbol=put_short_symbol, right="P", role="short", qty=1, price=Decimal("3.00")),
+        FilledLeg(symbol="SPXW  260711C07570000", right="C", role="short", qty=1, price=Decimal("2.00")),
+        FilledLeg(symbol="SPXW  260711C07590000", right="C", role="long", qty=1, price=Decimal("1.00")),
+    )))
+    comp.events.append(StopPlaced(entry_id=entry_id, side="PUT", trigger=Decimal("4.00"),
+                                  broker_order_id="STOP-1"))
+
+    # 80% of the way from the 3.00 fill to the 4.00 trigger -- ABOVE the 50%
+    # warn threshold (mid of bid 3.75 / ask 3.85 == 3.80).
+    put_side = ChainSide(strikes_toward_otm=(Decimal("7535"),),
+                        marks={Decimal("7535"): Mark(bid=Decimal("3.75"), ask=Decimal("3.85"))})
+    call_side = ChainSide(strikes_toward_otm=(), marks={})
+    app.state.chain_snapshots.last = SimpleNamespace(
+        stale=False, spot=Decimal("7550"), put_side=put_side, call_side=call_side)
+
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+    r = client.post("/drill/outage", json={"confirmation": "DRILL", "outage_seconds": 0})
+    assert r.status_code == 200
+    guidance = r.json()["guidance"]
+    assert "a short mark is within 50% of its trigger distance" in guidance
+
+
 def test_drill_outage_seconds_is_read_from_config_not_hardcoded(monkeypatch, tmp_path):
     """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) must
     come from config — the endpoint used to hardcode 2.0 regardless of the

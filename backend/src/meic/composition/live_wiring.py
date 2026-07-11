@@ -178,6 +178,7 @@ def build_live_runtime(
     selector,
     market_gates,
     warmup=None,
+    warmup_lead_seconds: float = 60.0,   # ENT-08 doc 06 session_warmup_lead_seconds default
     max_entries_per_day: int | None = None,
     daily_order_cap: int = DEFAULT_DAILY_ORDER_CAP,
     order_cap_buffer: int = DEFAULT_ORDER_CAP_BUFFER,
@@ -204,6 +205,7 @@ def build_live_runtime(
         selector=selector,
         market_gates=market_gates,
         warmup=warmup,
+        warmup_lead_seconds=warmup_lead_seconds,
         max_entries_per_day=max_entries_per_day,
         max_day_risk=max_day_risk_of(comp.state),   # RSK-04
         order_cap=cap,                              # RSK-08
