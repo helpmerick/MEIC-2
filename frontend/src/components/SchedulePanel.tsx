@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
+import { isValidStopRebateMarkup, stopRebateMarkupWorstCase } from "../money";
 import {
   etToZone,
   isMilitaryTime,
@@ -75,6 +76,45 @@ function TimeHint({ value }: { value?: string }) {
   return (
     <span className="time-hint" data-testid="time-hint">
       ≈ {etToZone(raw)} local
+    </span>
+  );
+}
+
+// A locally-detectable bad stop_rebate_markup: outside $0.00-$5.00 or not a
+// $0.05 step (STP-02b, doc 06 §60). The backend (domain/schedule.py) is
+// authoritative and re-checks on Save; this only outlines the cell early —
+// mirrors `timeInvalid` above exactly. Empty is "unfilled" (inherits the
+// global default), never wrong.
+function markupInvalid(value?: string): boolean {
+  const raw = (value ?? "").trim();
+  if (!raw) return false;
+  return !isValidStopRebateMarkup(raw);
+}
+
+// UI-18: whenever a row's buffer is set, valid, and > 0, disclose the exact
+// worst-case consequence BEFORE saving. The spec-mandated sentence (doc 03
+// §UI-18) plus the total worst-case dollar figure across the whole position
+// (operator request 2026-07-11), which mirrors domain/stop_policy.py's
+// `markup_worst_case_increase` exactly — computed with exact BigInt digit
+// arithmetic (money.ts), never float, on the SAME `stop_loss_pct` the row
+// itself carries (or the panel's default, if the row's own cell is blank).
+function MarkupHint({ row, index }: { row: ScheduleRow; index: number }) {
+  const raw = (row.stop_rebate_markup ?? "").trim();
+  if (!raw) return null;
+  if (markupInvalid(raw)) {
+    return (
+      <span className="time-hint bad" data-testid={`markup-hint-${index}`}>
+        $0.00–$5.00, $0.05 steps
+      </span>
+    );
+  }
+  if (!(Number(raw) > 0)) return null;
+  const pct = row.stop_loss_pct || DEFAULT_STOP_PCT;
+  const contracts = Number(row.contracts) || 1;
+  return (
+    <span className="time-hint" data-testid={`markup-hint-${index}`}>
+      worst case +${stopRebateMarkupWorstCase(raw, contracts)} — if the long recovers less
+      than ${raw}, your net loss exceeds {pct}% by the shortfall
     </span>
   );
 }
@@ -170,6 +210,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
               <th className="num">Target $</th>
               <th className="num">Width</th>
               <th className="num">Stop %</th>
+              <th className="num">Long-recovery buffer $</th>
               <th className="num">Count</th>
               <th className="num">Worst case (est.)</th>
               <th aria-label="actions" />
@@ -221,6 +262,22 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                       <option key={p} value={p}>{p}%</option>
                     ))}
                   </select>
+                </td>
+                <td className="cell-num">
+                  {/* STP-02b / UI-18: pre-credits expected long recovery into the
+                      stop trigger — an operator-set constant, never model-driven. */}
+                  <input
+                    aria-label={`long recovery buffer ${i + 1}`}
+                    value={row.stop_rebate_markup ?? ""}
+                    placeholder="0.00"
+                    onChange={(e) => patch(i, "stop_rebate_markup", e.target.value)}
+                    className={
+                      errorFor(rowErrors, i, "stop_rebate_markup") || markupInvalid(row.stop_rebate_markup)
+                        ? "invalid"
+                        : ""
+                    }
+                  />
+                  <MarkupHint row={row} index={i} />
                 </td>
                 <td className="cell-num">
                   {/* ENT-04 (v1.44): each row trades its OWN size */}

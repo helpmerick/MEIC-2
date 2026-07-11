@@ -90,3 +90,48 @@ export function formatDollars(n: number): string {
   else if (s.endsWith("0")) s = s.slice(0, -1);
   return (cleaned < 0 ? "-$" : "+$") + s;
 }
+
+// --- STP-02b / UI-18: stop_rebate_markup ------------------------------------
+// $0.00-$5.00, step $0.05 (doc 06 §60; backend validation in
+// domain/schedule.py's validate_entry). BigInt integer-cents arithmetic
+// throughout — no float ever touches the range/step check (0.15 % 0.05 is
+// NOT exactly 0 in IEEE754, which would misclassify a perfectly valid value).
+
+const _MONEY_RE = /^(\d+)(?:\.(\d+))?$/;
+
+/** Parse a non-negative Decimal STRING to integer CENTS, or `null` if it is
+ * not a plain non-negative decimal, OR carries any sub-cent precision (this
+ * field's step is whole nickels — a value like "0.001" is never valid, and
+ * silently truncating it would accept something the backend rejects). */
+function _toCentsExact(value: string): bigint | null {
+  const m = _MONEY_RE.exec(value.trim());
+  if (!m) return null;
+  const [, intPart, fracPart = ""] = m;
+  if (fracPart.length > 2 && /[1-9]/.test(fracPart.slice(2))) return null;
+  const cents2 = (fracPart + "00").slice(0, 2);
+  return BigInt(intPart) * 100n + BigInt(cents2);
+}
+
+/** STP-02b: is `value` a legal `stop_rebate_markup` — $0.00–$5.00, $0.05
+ * steps? Empty/blank is valid (it means "inherit the global default",
+ * never "zero" — matches every other optional schedule-row cell in this
+ * codebase). Used to REJECT a bad value client-side (outline the cell),
+ * never to clamp it — the backend (domain/schedule.py) stays authoritative. */
+export function isValidStopRebateMarkup(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) return true;
+  const cents = _toCentsExact(raw);
+  if (cents === null) return false;
+  if (cents < 0n || cents > 500n) return false;
+  return cents % 5n === 0n;
+}
+
+/** UI-18: the worst-case extra dollar loss a `stop_rebate_markup` can cause,
+ * mirroring domain/stop_policy.py's `markup_worst_case_increase` exactly —
+ * `markup * 100 * contracts * 2` (both sides stopping is the worst case).
+ * Exact BigInt digit arithmetic (same `multiplyDecimalString` this module's
+ * other exports already use) — no float ever touches the number. Caller is
+ * expected to have already checked `isValidStopRebateMarkup`. */
+export function stopRebateMarkupWorstCase(markup: string, contracts = 1): string {
+  return multiplyDecimalString(markup, 100 * contracts * 2);
+}

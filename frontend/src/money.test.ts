@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { contractDollars, contractDollarsPlain, contractDollarsValue, formatDollars } from "./money";
+import {
+  contractDollars,
+  contractDollarsPlain,
+  contractDollarsValue,
+  formatDollars,
+  isValidStopRebateMarkup,
+  stopRebateMarkupWorstCase,
+} from "./money";
 
 // Operator request 2026-07-11: SPX options carry a $100 multiplier, so a
 // per-share premium Decimal string must be shifted two places (never
@@ -89,5 +96,68 @@ describe("formatDollars — rendering a summed aggregate", () => {
   it("cleans float summation noise (e.g. 224 + 296 computed via several additions)", () => {
     const sum = contractDollarsValue("2.24") + contractDollarsValue("2.96");
     expect(formatDollars(sum)).toBe("+$520");
+  });
+});
+
+// STP-02b / UI-18: $0.00-$5.00, step $0.05 (doc 06 §60).
+describe("isValidStopRebateMarkup — range + step, reject never clamp", () => {
+  it("accepts blank — inherits the global default, never treated as zero", () => {
+    expect(isValidStopRebateMarkup("")).toBe(true);
+    expect(isValidStopRebateMarkup("   ")).toBe(true);
+  });
+
+  it("accepts the low and high edges", () => {
+    expect(isValidStopRebateMarkup("0.00")).toBe(true);
+    expect(isValidStopRebateMarkup("5.00")).toBe(true);
+  });
+
+  it("accepts every legal $0.05 step, not just round numbers", () => {
+    expect(isValidStopRebateMarkup("0.05")).toBe(true);
+    expect(isValidStopRebateMarkup("0.30")).toBe(true);
+    expect(isValidStopRebateMarkup("4.95")).toBe(true);
+  });
+
+  it("rejects a step that isn't a multiple of $0.05", () => {
+    expect(isValidStopRebateMarkup("0.13")).toBe(false);
+    expect(isValidStopRebateMarkup("0.01")).toBe(false);
+    // the classic float trap: 0.15 % 0.05 !== 0 in IEEE754 — must still pass
+    expect(isValidStopRebateMarkup("0.15")).toBe(true);
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(isValidStopRebateMarkup("-0.05")).toBe(false);
+    expect(isValidStopRebateMarkup("5.05")).toBe(false);
+    expect(isValidStopRebateMarkup("10.00")).toBe(false);
+  });
+
+  it("rejects unparsable input", () => {
+    expect(isValidStopRebateMarkup("abc")).toBe(false);
+    expect(isValidStopRebateMarkup("0.05.05")).toBe(false);
+  });
+
+  it("rejects genuine sub-cent precision (the field's step is whole nickels)", () => {
+    expect(isValidStopRebateMarkup("0.301")).toBe(false);
+  });
+});
+
+describe("stopRebateMarkupWorstCase — mirrors domain/stop_policy.py's markup_worst_case_increase", () => {
+  it("markup 0.30, 1 contract: +$60", () => {
+    expect(stopRebateMarkupWorstCase("0.30", 1)).toBe("60");
+  });
+
+  it("markup 0.30, 2 contracts: +$120", () => {
+    expect(stopRebateMarkupWorstCase("0.30", 2)).toBe("120");
+  });
+
+  it("defaults to 1 contract when omitted", () => {
+    expect(stopRebateMarkupWorstCase("0.30")).toBe("60");
+  });
+
+  it("zero markup is zero worst case", () => {
+    expect(stopRebateMarkupWorstCase("0.00", 3)).toBe("0");
+  });
+
+  it("the high edge, several contracts, exact", () => {
+    expect(stopRebateMarkupWorstCase("5.00", 4)).toBe("4000");
   });
 });

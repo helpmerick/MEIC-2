@@ -684,3 +684,79 @@ def test_drill_outage_seconds_is_read_from_config_not_hardcoded(monkeypatch, tmp
     monkeypatch.setenv("MEIC_DRILL_OUTAGE_SECONDS", "90")
     app = live_app()
     assert app.state.commands._default_drill_outage_seconds == 90.0
+
+
+# --- ITEM 1 (operator ruling 2026-07-11): event-driven stop-fill reaction -------
+# "the stop being hit triggers the long sale immediately; only if that fails
+# does the periodic check force it." TastytradeAdapter.order_events() (the
+# account order-status stream, STP-04/ORD-05/LEX-01) already existed and was
+# fully contract-tested (test_order_events_account_stream_receives_status) but
+# NOTHING in live_app ever consumed it — detect_and_recover_stop_fills ran
+# ONLY off the ~60s health tick (_probe_once). This is the SEVENTH member of
+# the "exists but unwired" class (RSK-04, the day supervisor, TPF/TPT,
+# EC-STP-06's own health-tick wiring, ENT-08 warm-up, ...). Drive the REAL
+# live_app(): fake the adapter's order_events() stream to yield ONE
+# terminal-filled event and assert a wired consumer reacts by invoking the
+# SAME detect_and_recover_stop_fills pass immediately -- not only via the
+# ~60s health tick that _connect()'s own boot probe already exercises once.
+
+def test_live_app_wires_a_real_order_event_consumer_that_triggers_the_stop_fill_pass(monkeypatch, tmp_path):
+    import time as _time
+
+    from fastapi.testclient import TestClient
+
+    import meic.application.stop_fill_watch as sfw
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    calls: list[bool] = []
+
+    async def _fake_pass(comp, alerts, quote_provider):
+        calls.append(True)
+
+    monkeypatch.setattr(sfw, "detect_and_recover_stop_fills", _fake_pass)
+
+    app = live_app()
+    comp = app.state.composition
+
+    import asyncio
+
+    consumed: list[bool] = []
+
+    async def _fake_order_events():
+        consumed.append(True)
+        yield {"type": "order_status", "order_id": "1", "status": "filled", "raw": None}
+        # Block "forever" (until the consumer task is cancelled on shutdown)
+        # rather than exhausting the generator -- an exhausted generator
+        # would make the consumer reconnect in a tight loop, re-yielding (and
+        # re-reacting to) the same event over and over as fast as the CPU
+        # allows, which is not what this test means to exercise.
+        await asyncio.Event().wait()
+
+    comp.broker._inner.order_events = _fake_order_events
+    comp.broker._inner.positions = lambda: _async([])
+    comp.broker._inner.working_orders = lambda: _async([])
+    comp.broker._inner.server_time = lambda: _async(datetime.now(timezone.utc))
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        # give the background consumer a beat to read the one fake event and
+        # react to it -- the boot health probe already ran _probe_once() ONCE
+        # synchronously inside the startup event above, so `calls` already
+        # holds exactly one entry from THAT tick before the push path can add
+        # a second. Only a REAL wired consumer produces a second call.
+        deadline = _time.monotonic() + 3.0
+        while len(calls) < 2 and _time.monotonic() < deadline:
+            _time.sleep(0.02)
+
+    assert consumed, ("live_app must wire a REAL consumer of the adapter's own "
+                      "order_events() stream (STP-04/ORD-05/LEX-01) -- nothing read it")
+    assert len(calls) >= 2, (
+        "a terminal-filled order event must trigger detect_and_recover_stop_fills "
+        "IMMEDIATELY (operator ruling 2026-07-11), not only via the ~60s health tick "
+        f"(saw {len(calls)} call(s): the boot tick alone accounts for only one)")

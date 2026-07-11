@@ -210,6 +210,100 @@ describe("server-side validation (UI-03)", () => {
   });
 });
 
+describe("STP-02b / UI-18 — long-recovery buffer ($ stop_rebate_markup)", () => {
+  it("renders the saved value and sends an edited one on Save", async () => {
+    const save = vi.spyOn(api, "saveSchedule").mockResolvedValue({ ...VIEW, config_version: "v4" });
+    vi.spyOn(api, "getPreflight").mockResolvedValue({ passed: true, blocked_by: null, checks: [] });
+    await renderPanel();
+
+    const input = screen.getByLabelText("long recovery buffer 1");
+    expect(input).toHaveValue("");   // an unset row inherits the global default, never zero
+
+    fireEvent.change(input, { target: { value: "0.30" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0][0][0].stop_rebate_markup).toBe("0.30");
+  });
+
+  it("an empty cell is sent as empty — inherits the global, not zero", async () => {
+    const save = vi.spyOn(api, "saveSchedule").mockResolvedValue({ ...VIEW, config_version: "v4" });
+    vi.spyOn(api, "getPreflight").mockResolvedValue({ passed: true, blocked_by: null, checks: [] });
+    await renderPanel();
+
+    // explicitly touch the cell and clear it, exactly like the existing
+    // target_premium "empty cell" test above — a row VIEW never populated
+    // this key for is `undefined`, not `""`, until the operator interacts
+    // with the cell at all. Two distinct values (not "" -> "") so the DOM's
+    // React value tracker actually fires onChange for the second edit.
+    const input = screen.getByLabelText("long recovery buffer 1");
+    fireEvent.change(input, { target: { value: "0.10" } });
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0][0][0].stop_rebate_markup).toBe("");
+  });
+
+  it("shows the worst-case dollar figure for markup 0.30, 1 contract: +$60", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("contracts 1"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.30" } });
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$60");
+  });
+
+  it("shows the worst-case dollar figure for markup 0.30, 2 contracts: +$120", async () => {
+    await renderPanel();   // row 1's own composed contracts is already 2 (VIEW fixture)
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.30" } });
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$120");
+  });
+
+  it("discloses the UI-18 shortfall sentence alongside the dollar figure", async () => {
+    await renderPanel();
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.50" } });
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent(
+      /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i,
+    );
+  });
+
+  it("shows nothing when the buffer is zero or blank (UI-18: only discloses when markup > 0)", async () => {
+    await renderPanel();
+    expect(screen.queryByTestId("markup-hint-0")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.00" } });
+    expect(screen.queryByTestId("markup-hint-0")).toBeNull();
+  });
+
+  it("rejects an invalid step client-side (reject, never clamp) and shows the range/step hint", async () => {
+    await renderPanel();
+    const input = screen.getByLabelText("long recovery buffer 1");
+
+    fireEvent.change(input, { target: { value: "0.13" } });
+    expect(input).toHaveClass("invalid");
+    expect(input).toHaveValue("0.13");   // never silently rewritten/clamped
+    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("$0.00–$5.00, $0.05 steps");
+  });
+
+  it("rejects an out-of-range value client-side", async () => {
+    await renderPanel();
+    const input = screen.getByLabelText("long recovery buffer 1");
+    fireEvent.change(input, { target: { value: "5.05" } });
+    expect(input).toHaveClass("invalid");
+  });
+
+  it("marks the cell from a server-side 422 too", async () => {
+    await renderPanel();
+    vi.spyOn(api, "saveSchedule").mockRejectedValue(
+      new ApiError(422, {
+        errors: [{ field: "stop_rebate_markup", reason: "out_of_range", index: 0 }],
+      }),
+    );
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("long recovery buffer 1")).toHaveClass("invalid"),
+    );
+  });
+});
+
 describe("UC-02 pre-flight checklist", () => {
   it("shows pass/fail per item after a save", async () => {
     vi.spyOn(api, "saveSchedule").mockResolvedValue({ ...VIEW, config_version: "v4" });

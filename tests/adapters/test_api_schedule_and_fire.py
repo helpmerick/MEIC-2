@@ -117,6 +117,38 @@ def test_an_invalid_schedule_is_422_with_every_error_and_persists_nothing():
     assert state.entry_schedule == [] and state.config_version is None
 
 
+def test_stop_rebate_markup_round_trips_through_the_http_save_endpoint():
+    """STP-02b/UI-18 (ITEM 2, operator ruling 2026-07-11): the SchedulePanel's
+    new "Long-recovery buffer $" input posts `stop_rebate_markup` on each row
+    exactly like every other row field — this endpoint's `body: dict[str,
+    Any]` already forwards rows verbatim to ScheduleService.save (no
+    filtering to drop), so a value the operator sets round-trips through
+    Save -> GET unmodified."""
+    c, state = _client([])
+    r = c.post("/schedule", json={"rows": [_row("10:00", stop_rebate_markup="0.30")]})
+    assert r.status_code == 200
+    assert state.entry_schedule[0]["stop_rebate_markup"] == "0.30"
+
+    body = c.get("/schedule").json()
+    assert body["rows"][0]["stop_rebate_markup"] == "0.30"
+
+
+def test_stop_rebate_markup_out_of_range_is_a_422():
+    c, _ = _client([])
+    r = c.post("/schedule", json={"rows": [_row("10:00", stop_rebate_markup="5.05")]})
+    assert r.status_code == 422
+    assert any(e["field"] == "stop_rebate_markup" and e["reason"] == "out_of_range"
+              for e in r.json()["detail"]["errors"])
+
+
+def test_stop_rebate_markup_bad_step_is_a_422():
+    c, _ = _client([])
+    r = c.post("/schedule", json={"rows": [_row("10:00", stop_rebate_markup="0.13")]})
+    assert r.status_code == 422
+    assert any(e["field"] == "stop_rebate_markup" and e["reason"] == "bad_step"
+              for e in r.json()["detail"]["errors"])
+
+
 def test_per_side_is_refused_at_the_row_level():
     c, _ = _client([])
     r = c.post("/schedule", json={"rows": [_row(stop_basis="per_side")]})

@@ -1151,6 +1151,11 @@ def live_app():
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
     app.state.exit_monitor = live["exit_monitor"]     # TPF-03/TPT-04 bot-side monitor
     app.state.stop_fill_detector = live["stop_fill_detector"]  # EC-STP-06 catch-up (v1.60)
+    # ITEM 1 (operator ruling 2026-07-11): shared single-flight lock so the
+    # order-event push consumer and the health tick's own call to
+    # stop_fill_detector (below, in _probe_once) never run the pass
+    # concurrently -- see application/order_event_watch.py.
+    app.state.stop_fill_lock = asyncio.Lock()
     # The held chain-snapshot holder itself (same object every enricher/monitor
     # reads) — exposed like exit_monitor above so the EC-STP-06 end-to-end test
     # can install a snapshot and prove `_long_quote` actually reads marks off
@@ -1229,8 +1234,13 @@ def live_app():
             # Deliberately awaited inline, never a background task: the
             # double-ladder guard in stop_fill_watch reasons about broker
             # working-order state, and a concurrently re-entering tick would
-            # race it.
-            await live["stop_fill_detector"]()
+            # race it. ITEM 1 (operator ruling 2026-07-11) added a SECOND
+            # caller of this same pass -- the order-event push consumer -- so
+            # this is now also funnelled through stop_fill_lock (single-
+            # flight, matching the guarantee this comment already relied on
+            # when this tick was the only caller).
+            async with app.state.stop_fill_lock:
+                await live["stop_fill_detector"]()
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
         try:
@@ -1283,6 +1293,33 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_health_loop() -> None:
         task = getattr(app.state, "health_task", None)
+        if task:
+            task.cancel()
+
+    # ITEM 1 (operator ruling 2026-07-11): "the stop being hit triggers the
+    # long sale immediately; only if that fails does the periodic check force
+    # it." Alongside the health loop above -- created unconditionally at
+    # startup, same shape (one supervised background task, cancelled on
+    # shutdown). It does not wait for `_connect()` to succeed first: reusing
+    # the adapter's own `order_events()` on a session that is not yet
+    # connected simply fails like any other stream death, and
+    # `consume_order_events`'s own reconnect/backoff loop retries until
+    # `comp.connect` (a separate startup hook) has made the session live --
+    # so this functionally "starts on broker connect" without the two hooks
+    # needing to coordinate directly. Reuses `live["stop_fill_detector"]`,
+    # the SAME closure `_probe_once` calls -- one decision path, matched
+    # single-flight via `stop_fill_lock` (see order_event_watch.py).
+    @app.on_event("startup")
+    async def _start_order_event_consumer() -> None:
+        from meic.application.order_event_watch import consume_order_events
+
+        app.state.order_event_task = asyncio.create_task(
+            consume_order_events(comp.broker.order_events, live["stop_fill_detector"],
+                                 app.state.stop_fill_lock, alerts))
+
+    @app.on_event("shutdown")
+    async def _stop_order_event_consumer() -> None:
+        task = getattr(app.state, "order_event_task", None)
         if task:
             task.cancel()
 
