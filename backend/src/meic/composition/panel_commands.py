@@ -21,7 +21,7 @@ from __future__ import annotations
 import itertools
 from decimal import Decimal
 
-from meic.application.manual_close import FLATTEN_CONFIRMATION
+from meic.application.manual_close import FLATTEN_CONFIRMATION, ManualClose
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.domain import tpf as tpf_domain
 from meic.domain import tpt as tpt_domain
@@ -60,6 +60,9 @@ class PanelCommands:
         # UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) --
         # used whenever a drill request doesn't specify its own duration.
         self._default_drill_outage_seconds = default_drill_outage_seconds
+        # CLS-03 (2026-07-11 wiring): the ratified cancel path for a WORKING
+        # (pre-fill) entry — built lazily, see `_cancel_service`.
+        self._manual_close: ManualClose | None = None
 
     # --- ENT-09 manual fire (UI-22) ---------------------------------------------
     def can_fire(self) -> bool:
@@ -132,6 +135,16 @@ class PanelCommands:
         if e.close_initiator or not open_sides:
             return {"result": "already_closed"}
 
+        # CLS-03 (UC-14/TC-CLS-02, 2026-07-11 wiring): "If the entry's opening
+        # order is still PENDING/WORKING (nothing filled), 'close' means cancel
+        # the entry order ... — no close orders are placed for unfilled legs."
+        # Nothing filled == no broker-reported legs AND no credit collected.
+        # The working order id comes from the ladder's registry (it is
+        # journaled nowhere else); a pre-fill entry whose ladder already ended
+        # has nothing working and nothing to cancel.
+        if not e.legs and not e.net_credit:
+            return await self._cancel_working_entry(entry_id)
+
         # ORD-09: close the instruments the BROKER said it filled. This used to
         # build LiveLeg(f"{entry_id}:{s}", ...) — a placeholder that paper ignored
         # and cert would have rejected, because no such instrument exists. If no
@@ -149,6 +162,37 @@ class PanelCommands:
         self._clear_tpf(entry_id)
         self._clear_tpt(entry_id)
         return {"result": "closed", "initiator": initiator}
+
+    def _cancel_service(self) -> ManualClose:
+        """CLS-03/CLS-02: `ManualClose.cancel_working` is the ONE ratified
+        cancel path for a WORKING entry (its post-cancel fills re-check is the
+        2026-07-11 race guard). Built LAZILY so it binds the composition's
+        LIVE alert sink and broker: server.py installs `comp.alerts` (and
+        wraps `comp.broker`) AFTER this command object is constructed."""
+        if self._manual_close is None:
+            comp = self._comp
+            self._manual_close = ManualClose(comp.close, comp.broker, comp.state,
+                                             alerts=comp.alerts, events=comp.events)
+        return self._manual_close
+
+    async def _cancel_working_entry(self, entry_id: str) -> dict:
+        """CLS-03: cancel a WORKING (pre-fill) entry's opening order. The
+        stand-down flag is raised BEFORE the broker cancel goes out, so the
+        reprice ladder (execute_entry) never replaces — on the live adapter's
+        cancel-then-submit fallback, never RESUBMITS — the order out from
+        under the cancel. A `race_detected` outcome (the entry filled in the
+        click→cancel window) alerts critically and journals a
+        ReconciliationMismatch inside `cancel_working` itself; it is returned
+        distinctly so the UI never renders it as a clean cancel."""
+        registry = getattr(self._comp, "working_entries", None)
+        order_id = registry.get(entry_id) if registry is not None else None
+        if order_id is None:
+            return {"result": "no_working_order", "entry_id": entry_id}
+        registry.request_cancel(entry_id)
+        res = await self._cancel_service().cancel_working(entry_id, order_id)
+        # cancel_working cleared the TPF floor; TPT targets are panel-side.
+        self._clear_tpt(entry_id)
+        return {"result": res.result, "initiator": res.initiator, "entry_id": entry_id}
 
     async def switch_mode(self, target: str, confirmation: str = "") -> dict:
         """UC-10/DAY-05: stage a paper/live switch. Requires a flat book (derived

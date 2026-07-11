@@ -538,6 +538,74 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
     await reconciler.reconcile_day(day)
 
 
+def _journaled_own_order_ids(events) -> set[str]:
+    """OWN-03: every broker order id the bot itself journaled placing — today
+    `StopPlaced.broker_order_id` (v1.60) and `DecayBuybackPlaced.
+    broker_order_id` (v1.61), read generically off any event carrying the
+    field. The EOD-03 sweep cancels ONLY these: on a shared account
+    (single-account operation is first-class, v1.49) the operator's own
+    working orders are never touched and never flagged uncancellable.
+
+    KNOWN LIMIT (flagged, not improvised around): LEX-ladder and entry-ladder
+    orders journal no broker order ids. An in-flight LEX order at the bell is
+    EOD-04's own case ("keep working until close; whatever remains expires"),
+    and a live entry ladder's current id is merged in by the caller from the
+    working-entry registry — so the practical gap is a LEX order only, which
+    EOD-04 says to leave alone anyway."""
+    ids: set[str] = set()
+    for e in events:
+        oid = getattr(e, "broker_order_id", None)
+        if oid:
+            ids.add(str(oid))
+    return ids
+
+
+async def _maybe_eod_sweep_once(comp, now_fn, *, half_days: frozenset = frozenset()) -> None:
+    """EOD-03: "All resting stop orders for positions that expired or were
+    closed MUST be cancelled at EOD; the day does not end until the bot
+    confirms zero working orders remain (or logs a critical alert naming each
+    one it could not cancel)."
+
+    Runs at/after the CALENDAR session close (DAY-02/DAY-01a: 13:00 ET on a
+    half day — never a hardcoded 16:00), on a trading day with activity (the
+    same RPT-01 gate `_maybe_eod_reconcile_once` uses), ONCE per day:
+    journal-gated on `EodSweepCompleted`, so it is idempotent across ticks
+    AND restarts. A sweep that completed with uncancellable orders already
+    raised EOD-03's named critical alerts — the rule's own "or" clause — so
+    it is complete and not re-run; a sweep that CRASHED (broker unreachable)
+    journals nothing and retries next tick, exactly like the reconcile.
+
+    Stop Trading (RSK-01) deliberately does NOT gate this: RSK-01 blocks new
+    entries "and does nothing else", and cancelling day-end working orders is
+    risk-reducing housekeeping EOD-03 makes unconditional. The raced-fill
+    case (an order that FILLED while being cancelled) raises EndOfDaySweep's
+    own distinct critical alert through `comp.alerts`. Factored out of the
+    health tick, mirroring `_maybe_eod_reconcile_once`, so it is
+    unit-testable without a running FastAPI app."""
+    from meic.application.eod_sweep import EndOfDaySweep
+    from meic.application.market_calendar import session_close
+    from meic.domain.events import EodSweepCompleted
+    from meic.reporting.folds import trading_days
+
+    now = now_fn()
+    if now.time() < session_close(now.date(), half_days=half_days):
+        return
+    day = now.date().isoformat()
+    if day not in trading_days(comp.events):
+        return  # no activity today -> no bot orders to sweep (RPT-01 gate)
+    if any(isinstance(e, EodSweepCompleted) and e.date == day for e in comp.events):
+        return  # already swept today (journal-gated; survives restart)
+
+    own = _journaled_own_order_ids(comp.events)
+    registry = getattr(comp, "working_entries", None)
+    if registry is not None:
+        own |= registry.order_ids()   # a live entry ladder's id is journaled nowhere
+    result = await EndOfDaySweep(comp.broker, comp.alerts, own_order_ids=own).sweep()
+    comp.events.append(EodSweepCompleted(
+        date=day, cancelled=len(result.cancelled),
+        uncancellable=len(result.uncancellable), raced_fills=len(result.raced_fills)))
+
+
 # Terminal card states — no further P/L to estimate once here (matches the
 # frontend's own TERMINAL list, EntryCards.tsx).
 _TERMINAL_STATUSES = {"CLOSED", "EXPIRED", "DECAY_CLOSED"}
@@ -1208,6 +1276,10 @@ def live_app():
     # shape as the reconciler's) for settlement capture, run BEFORE the
     # reconcile compare in `_probe_once` below.
     settlement_broker_reads = _BrokerReadFacade(comp.broker)
+    # EOD-03 (2026-07-11): the sweep's half-day calendar — the SAME algorithmic
+    # exchange facts the DAY-01/02 gates use (nyse_holidays), a decade out, so
+    # a 13:00 half-day close sweeps at 13:00 (DAY-02), never a hardcoded 16:00.
+    eod_half_days = half_days_near(datetime.now(timezone.utc).date(), years_ahead=10)
 
     async def _boot_reconcile() -> None:
         """REC-02/04: adopt broker truth before any trading is possible. Anything
@@ -1256,6 +1328,16 @@ def live_app():
         # rest of this tick's duties need. See order_event_watch.py for the
         # two callers (this loop and the order-event push consumer) that now
         # share that lock.
+        try:
+            # EOD-03 (2026-07-11 wiring): the day-end order-audit sweep —
+            # at/after the CALENDAR session close (13:00 on half days), once
+            # per day, journal-gated. Runs BEFORE the settlement/reconcile
+            # region below: cancel-and-confirm the working orders first, then
+            # count the money. A crash here retries next tick, never a crash.
+            await _maybe_eod_sweep_once(comp, lambda: datetime.now(ET),
+                                        half_days=eod_half_days)
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
         try:
             # RPT-15: once per tick, past EOD settlement, on a day with
             # activity, not yet reconciled -- see _maybe_eod_reconcile_once's

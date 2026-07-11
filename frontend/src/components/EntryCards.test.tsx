@@ -65,6 +65,21 @@ describe("EntryCards — Close (UI-16)", () => {
     render(<EntryCards entries={[card({ status: "STOPPED", sides_stopped: ["PUT"] })]} onClose={vi.fn()} />);
     expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
   });
+
+  // UC-14/TC-CLS-02 (CLS-03): "On a WORKING entry the action is Cancel entry
+  // ... also instant" — the PENDING card's button must SAY so, and still fire
+  // the one shared close handler (CLS-02: the UI has no close logic of its own).
+  it("a PENDING (working) entry's action reads Cancel entry and fires instantly (CLS-03)", async () => {
+    const onClose = vi.fn().mockResolvedValue(undefined);
+    render(<EntryCards entries={[card({ status: "PENDING", net_credit: "0", pnl: "0" })]}
+                       onClose={onClose} />);
+
+    expect(screen.queryByRole("button", { name: /^close$/i })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /cancel entry/i }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("e1");
+  });
 });
 
 // FEATURE 1/2/3: placed time, per-side legs, live P/L on the card.

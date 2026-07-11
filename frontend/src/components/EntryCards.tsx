@@ -130,6 +130,10 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
   const contracts = entryContracts(e);
   const [busy, setBusy] = useState(false);
   const closeable = !TERMINAL.includes(e.status);
+  // UC-14/CLS-03: a PENDING/WORKING entry has nothing filled to close — the
+  // same button is the instant "Cancel entry" (backend routes it to the
+  // CLS-03 cancel; the UI has no close logic of its own, CLS-02).
+  const pending = e.status === "PENDING";
   const placed = placedTime(e.placed_at);
   const putLine = legLine(e, "PUT", contracts);
   const callLine = legLine(e, "CALL", contracts);
@@ -199,8 +203,11 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
       )}
       {closeable && (
         <button className="ec-close" onClick={handleClose} disabled={busy}
-                title="Close this entry now (no confirmation, UI-16)">
-          {busy ? <span className="spin" /> : null}{busy ? "Closing…" : "Close"}
+                title={pending
+                  ? "Cancel this entry's working order now (CLS-03, no confirmation)"
+                  : "Close this entry now (no confirmation, UI-16)"}>
+          {busy ? <span className="spin" /> : null}
+          {busy ? (pending ? "Cancelling…" : "Closing…") : (pending ? "Cancel entry" : "Close")}
         </button>
       )}
     </div>

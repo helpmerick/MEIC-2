@@ -81,6 +81,11 @@ def _sample_instances() -> dict[type, ev.Event]:
             symbol="SPXW  260709C07540000", action="Cash Settled Assignment", quantity=1,
             price=D("7540.00"), fee=D("5.00"), imported_at="2026-07-10T09:00:00-04:00",
             source="tastytrade_history", value=D("-369.00")),
+        # EOD-03 (2026-07-11 wiring): the day-end order-audit sweep's
+        # once-per-day journal gate — counts only; the order NAMES live in the
+        # sweep's own critical alerts.
+        ev.EodSweepCompleted: ev.EodSweepCompleted(
+            date="2026-07-11", cancelled=2, uncancellable=0, raced_fills=1),
         # EOD-01 v1.59 (LIVE settlement capture, distinct from the RPT-16
         # import above): the pinned 2026-07-09 C7540 cash-settled assignment.
         ev.SettlementRecorded: ev.SettlementRecorded(

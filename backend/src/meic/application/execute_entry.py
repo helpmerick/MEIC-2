@@ -125,6 +125,14 @@ class ExecuteEntryAttempt:
         min_stop_distance_ticks: int = 2,
         underlying: str = "SPXW",
         alerts=None,   # ORD-09 cross-check mismatches are alert-only
+        # CLS-03 seam (2026-07-11 wiring): the shared WorkingEntryOrders
+        # registry, or None (every pre-wiring caller — behaviour unchanged).
+        # The ladder is the only code that knows a pre-fill entry's broker
+        # order id; publishing it here is what gives the panel's Cancel-entry
+        # path (ManualClose.cancel_working) something to cancel, and the
+        # registry's cancel flag is what lets the ladder stand down instead
+        # of repricing an order the operator just cancelled.
+        working_orders=None,
     ) -> None:
         # NOTE (v1.44): there is deliberately no `contracts_per_entry` here. ENT-04
         # made contracts a PER-ENTRY value — it rides on the Condor (the schedule
@@ -144,12 +152,21 @@ class ExecuteEntryAttempt:
         self._min_distance = min_stop_distance_ticks
         self._underlying = underlying
         self._alerts = alerts
+        self._working = working_orders   # CLS-03 seam; None => no-op
         # The GLOBAL stop settings, used by any row that overrides none of them.
         self.default_stop = StopParams(stop_basis, stop_loss_pct, stop_rebate_markup)
 
     def _skip(self, day: str, n: int, reason: str) -> EntryOutcome:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
         return EntryOutcome("SKIPPED", reason)
+
+    # --- CLS-03 seam helpers (no-ops when no registry is wired) ----------------
+    def _register(self, entry_id: str, order_id) -> None:
+        if self._working is not None:
+            self._working.record(entry_id, order_id)
+
+    def _cancel_requested(self, entry_id: str) -> bool:
+        return self._working is not None and self._working.cancel_requested(entry_id)
 
     @staticmethod
     def worst_case(condor: Condor) -> Decimal:
@@ -227,6 +244,20 @@ class ExecuteEntryAttempt:
                           initiator: str = "schedule",
                           put_floor: Decimal | None = None,
                           call_floor: Decimal | None = None) -> EntryOutcome:
+        try:
+            return await self._run_ladder(day, n, entry_id, condor, initiator,
+                                          put_floor=put_floor, call_floor=call_floor)
+        finally:
+            # CLS-03 seam: however the attempt ended (fill, skip, operator
+            # cancel or error), this entry no longer has a working order to
+            # cancel — clear the registry entry and any spent stand-down flag.
+            if self._working is not None:
+                self._working.clear(entry_id)
+
+    async def _run_ladder(self, day, n, entry_id, condor: Condor,
+                          initiator: str = "schedule",
+                          put_floor: Decimal | None = None,
+                          call_floor: Decimal | None = None) -> EntryOutcome:
         ladder = RepriceLadder(
             start=condor.mid_credit, ticks=self._ticks,
             attempts=self._reprice_attempts, floor=condor.min_total_credit)
@@ -240,6 +271,16 @@ class ExecuteEntryAttempt:
         working_id = None
         working_price = None
         for step in rungs:
+            # CLS-03 (UC-14/TC-CLS-02, 2026-07-11 wiring): the operator
+            # cancelled this WORKING entry through the panel — the broker-side
+            # cancel already went out via ManualClose.cancel_working (the one
+            # ratified path). Stand down instead of repricing: a replace here
+            # would race that cancel, and the live adapter's cancel-then-submit
+            # replace fallback could even RE-SUBMIT the very order the operator
+            # just cancelled. Falls through to the shared cancel-and-confirm
+            # block below, so the raced-fill guard applies here identically.
+            if working_id is not None and self._cancel_requested(entry_id):
+                break
             # ENT-04 (v1.44): the size is THIS ROW's `contracts`, not a global knob.
             intent = OrderIntent(
                 order_type="limit", tif="Day", kind="iron_condor", entry_id=entry_id,
@@ -253,6 +294,7 @@ class ExecuteEntryAttempt:
             )
             if working_id is None:
                 working_id = await self._broker.submit(intent)
+                self._register(entry_id, working_id)   # CLS-03: publish the id
             else:
                 # ORD-02 reprice — but NEVER reprice an order that has already
                 # filled. A live fill registers a beat after it happens at the
@@ -264,6 +306,7 @@ class ExecuteEntryAttempt:
                                                    working_price, initiator)
                 try:
                     working_id = await self._broker.replace(working_id, intent)
+                    self._register(entry_id, working_id)  # CLS-03: a replace mints a new id
                 except Exception:
                     # REPRICE-RACE SWEEP (2026-07-11): the pre-check above narrows
                     # the window but does not close it — a live fill can still
@@ -277,6 +320,11 @@ class ExecuteEntryAttempt:
                     if await self._filled(working_id):
                         return await self._record_fill(entry_id, working_id, condor, expiration,
                                                        working_price, initiator)
+                    if self._cancel_requested(entry_id):
+                        # CLS-03: the operator's cancel landed inside this
+                        # replace round trip — not a genuine error. Stand down
+                        # through the shared cancel-and-confirm block below.
+                        break
                     raise
             working_price = step.price
 
@@ -285,7 +333,7 @@ class ExecuteEntryAttempt:
             # reprice interval and stop the moment it fills — never waiting the whole
             # interval (that would leave the fill unprotected) and never repricing a
             # filled order.
-            if await self._await_fill(working_id, self._reprice_seconds):
+            if await self._await_fill(working_id, self._reprice_seconds, entry_id=entry_id):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
                                                working_price, initiator,
                                                put_floor=put_floor, call_floor=call_floor)
@@ -312,17 +360,25 @@ class ExecuteEntryAttempt:
                 return await self._record_fill(entry_id, working_id, condor, expiration,
                                                working_price, initiator,
                                                put_floor=put_floor, call_floor=call_floor)
+        if working_id is not None and self._cancel_requested(entry_id):
+            # CLS-03: cancelled by the operator, not priced out at the floor —
+            # recorded distinctly so the day report says WHY it never filled.
+            return self._skip(day, n, "cancelled_by_operator")
         return self._skip(day, n, "unfilled_at_floor")
 
-    async def _await_fill(self, working_id, seconds: float) -> bool:
+    async def _await_fill(self, working_id, seconds: float, entry_id: str | None = None) -> bool:
         """Poll for `working_id`'s fill for up to `seconds`, returning True as soon
         as it fills. The first check is immediate (synchronous paper fills return
         here with no wait); otherwise it re-checks every `entry_fill_poll_seconds`.
-        Returning True is what keeps the ladder from repricing a filled order."""
+        Returning True is what keeps the ladder from repricing a filled order.
+        An operator cancel (CLS-03) ends the wait early — False, so the rung
+        loop's stand-down check runs instead of sitting out the interval."""
         deadline = self._clock.now() + timedelta(seconds=seconds)
         while True:
             if await self._filled(working_id):
                 return True
+            if entry_id is not None and self._cancel_requested(entry_id):
+                return False
             if self._clock.now() >= deadline:
                 return False
             nxt = min(deadline, self._clock.now() + timedelta(seconds=self._poll_seconds))

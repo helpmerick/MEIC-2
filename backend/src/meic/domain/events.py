@@ -456,6 +456,31 @@ class ExternalFillImported(Event):
 
 
 @dataclass(frozen=True)
+class EodSweepCompleted(Event):
+    """EOD-03: the end-of-day order-audit sweep ran to completion for `date`.
+
+    Journaled ONCE per trading day by the live wiring's health tick (see
+    adapters/api/server.py `_maybe_eod_sweep_once`) AFTER
+    `application/eod_sweep.EndOfDaySweep.sweep()` returned. The presence of
+    this event for a date is what makes the sweep once-per-day and idempotent
+    across restarts -- the same journal-gating shape RPT-15's reconcile uses
+    (DayBrokerConfirmed/CorrectionRecord).
+
+    Counts only: the NAMES of any uncancellable/raced orders are already in
+    the critical alerts EndOfDaySweep itself raised. EOD-03's own text is
+    satisfied either way -- "the day does not end until the bot confirms zero
+    working orders remain (or logs a critical alert naming each one it could
+    not cancel)" -- so a sweep that completed WITH alerts is still complete
+    and is not re-run; a sweep that CRASHED (broker unreachable) journals
+    nothing and is retried on the next health tick, mirroring the
+    reconcile's own retry rule."""
+    date: str
+    cancelled: int = 0
+    uncancellable: int = 0
+    raced_fills: int = 0
+
+
+@dataclass(frozen=True)
 class SettlementRecorded(Event):
     """EOD-01 v1.59 (operator-ratified, 2026-07-09 escalation): settlement
     cash is BROKER-JOURNALED, never merely computed. This is the LIVE path's

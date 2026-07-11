@@ -26,6 +26,7 @@ from meic.application.leg_book import LegBook
 from meic.application.protect_position import LegsUnrecorded, ProtectPosition, ShortLeg
 from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
+from meic.application.working_entries import WorkingEntryOrders
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickTable
@@ -52,8 +53,12 @@ class PaperComposition:
         self.state = PersistentState(InMemoryStateStore())
         self.state.trading_mode = "paper"  # DAY-05
         self.alerts = _NullAlerts()
+        # CLS-03 seam (2026-07-11): same registry as live — the panel's
+        # Cancel-entry path is mode-unaware (SIM-05).
+        self.working_entries = WorkingEntryOrders()
         self.execute = ExecuteEntryAttempt(self.broker, self.clock, self.events, self.ticks,
-                                           stop_basis=self.stop_basis)
+                                           stop_basis=self.stop_basis,
+                                           working_orders=self.working_entries)
         # STP-04 AUTO-FLATTEN: `self._auto_flatten_entry` is a bound method, not
         # evaluated until called, so it is safe to hand to ProtectPosition here
         # even though `self.close` (CloseEntry) is constructed a line later —

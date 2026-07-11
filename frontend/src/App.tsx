@@ -35,7 +35,17 @@ export function App() {
   const closeEntry = useCallback(async (id: string) => {
     try {
       const r = await api.closeEntry(id);
-      flash(r.result === "closed" ? `Closed ${id}` : `${id}: ${r.result}`, "ok");
+      // CLS-03: a WORKING entry's Close is a Cancel entry — `cancelled` is its
+      // clean outcome; `race_detected` means the entry FILLED in the
+      // click→cancel window (the backend already raised the critical alert and
+      // journaled the mismatch) and must never read like a clean cancel.
+      if (r.result === "race_detected") {
+        flash(`${id}: cancel raced a fill — position may be live, check alerts`, "err");
+      } else if (r.result === "cancelled") {
+        flash(`Cancelled entry ${id}`, "ok");
+      } else {
+        flash(r.result === "closed" ? `Closed ${id}` : `${id}: ${r.result}`, "ok");
+      }
       refresh();
     } catch (e) {
       flash(`Close failed: ${e instanceof ApiError ? e.detail : String(e)}`, "err");

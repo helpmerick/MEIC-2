@@ -44,6 +44,26 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await waitFor(() => expect(screen.getByText(/closed e1/i)).toBeInTheDocument());
   });
 
+  it("a cancelled working entry toasts as a cancel, not a close (CLS-03)", async () => {
+    const spy = vi.spyOn(api, "closeEntry").mockResolvedValue({ result: "cancelled" });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    expect(spy).toHaveBeenCalledWith("e1");
+    await waitFor(() => expect(screen.getByText(/cancelled entry e1/i)).toBeInTheDocument());
+  });
+
+  it("race_detected surfaces as an error toast, never a clean cancel (CLS-03 race guard)", async () => {
+    vi.spyOn(api, "closeEntry").mockResolvedValue({ result: "race_detected" });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    const toast = await waitFor(() => screen.getByText(/cancel raced a fill/i));
+    expect(toast.closest(".toast")?.className).toContain("err");
+  });
+
   it("Flatten all does nothing when the operator cancels the confirmation", async () => {
     const spy = vi.spyOn(api, "flatten").mockResolvedValue({ result: "flattened", entries: [] });
     vi.spyOn(window, "prompt").mockReturnValue(null); // cancelled

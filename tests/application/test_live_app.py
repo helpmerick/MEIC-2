@@ -878,3 +878,308 @@ def test_stop_fill_poll_loop_drives_the_detector_on_its_own_env_interval(monkeyp
         "detect_and_recover_stop_fills REPEATEDLY on MEIC_STOP_FILL_POLL_S's own "
         f"cadence, independent of the push consumer and the ~60s health tick "
         f"(saw {len(calls)} call(s) in the window)")
+
+
+# --- EOD-03 order-audit sweep wiring capstones (2026-07-11, last two items) ----
+# The NINTH member of the "exists but unwired" class: `EndOfDaySweep`
+# (application/eod_sweep.py) was complete and unit-tested (incl. the 2026-07-11
+# raced-fill flagging) but constructed NOWHERE outside its tests — EOD-03's
+# "the day does not end until the bot confirms zero working orders remain"
+# never actually ran in live. The wiring mirrors RPT-15's reconcile: a factored
+# `_maybe_eod_sweep_once` gate driven by the SAME ~60s health tick, at/after
+# the CALENDAR session close (DAY-02 half days, never a hardcoded 16:00), once
+# per day, journal-gated on `EodSweepCompleted` so a restart never re-sweeps.
+
+class _EodAlerts:
+    def __init__(self):
+        self.records = []
+
+    def alert(self, level, message, **context):
+        self.records.append((level, message))
+
+
+class _EodSweepBroker:
+    """Minimal broker for the sweep: working orders that disappear when
+    cancelled, plus an injectable fills feed for the raced-fill case."""
+
+    def __init__(self, working=(), fills=()):
+        self._working = {str(w): {"order_id": str(w)} for w in working}
+        self._fills = [dict(f) for f in fills]
+        self.cancelled = []
+
+    async def working_orders(self):
+        return list(self._working.values())
+
+    async def cancel(self, oid):
+        self.cancelled.append(str(oid))
+        self._working.pop(str(oid), None)
+        return {"result": "cancelled"}
+
+    async def fills_since(self, cursor):
+        return list(self._fills)
+
+
+def _eod_comp(day="2026-07-10", broker=None, events=None):
+    from types import SimpleNamespace
+
+    from meic.domain.events import DayArmed
+
+    evs = events if events is not None else []
+    evs.insert(0, DayArmed(date=day, entry_count=1))  # RPT-01: a day with activity
+    return SimpleNamespace(events=evs, broker=broker or _EodSweepBroker(),
+                           alerts=_EodAlerts())
+
+
+def test_live_app_health_tick_runs_the_eod_03_sweep_gate(monkeypatch, tmp_path):
+    """The wiring capstone: `_probe_once` (boot + every health tick) must
+    actually invoke the factored EOD-03 sweep gate — same proof shape as the
+    push-consumer capstone above (monkeypatch the gate, drive the REAL app
+    startup, assert the wired tick called it). Fails at HEAD: the gate does
+    not even exist."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api import server
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    calls = []
+
+    async def _fake_gate(comp, now_fn, **kw):
+        calls.append(True)
+
+    monkeypatch.setattr(server, "_maybe_eod_sweep_once", _fake_gate)
+
+    app = live_app()
+    comp = app.state.composition
+    comp.broker._inner.positions = lambda: _async([])
+    comp.broker._inner.working_orders = lambda: _async([])
+    comp.broker._inner.server_time = lambda: _async(datetime.now(timezone.utc))
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        pass
+
+    assert calls, ("live_app's health tick (_probe_once) must run the EOD-03 "
+                   "sweep gate — EndOfDaySweep is otherwise constructed nowhere")
+
+
+def test_eod_sweep_waits_for_session_close_then_sweeps_once_per_day(monkeypatch, tmp_path):
+    """EOD-03 via the REAL gate: before the session close it does nothing;
+    at/after the close it cancels the bot's own working orders, CONFIRMS they
+    are gone, and journals `EodSweepCompleted` exactly once (idempotent —
+    across ticks and, because the gate reads the journal, across restarts)."""
+    import asyncio
+    from datetime import datetime
+
+    from meic.adapters.api.server import _maybe_eod_sweep_once
+    from meic.domain.events import EodSweepCompleted, StopPlaced
+
+    day = "2026-07-10"
+    broker = _EodSweepBroker(working=["S1"])
+    comp = _eod_comp(day, broker=broker,
+                     events=[StopPlaced(entry_id=f"{day}#1", side="PUT",
+                                        trigger=Decimal("4.00"), broker_order_id="S1")])
+
+    from tests.harness.fake_clock import ET as _ET
+
+    before = lambda: datetime(2026, 7, 10, 15, 59, tzinfo=_ET)   # noqa: E731
+    after = lambda: datetime(2026, 7, 10, 16, 1, tzinfo=_ET)     # noqa: E731
+
+    asyncio.run(_maybe_eod_sweep_once(comp, before))
+    assert broker.cancelled == [] and not any(
+        isinstance(e, EodSweepCompleted) for e in comp.events)
+
+    asyncio.run(_maybe_eod_sweep_once(comp, after))
+    assert broker.cancelled == ["S1"]
+    done = [e for e in comp.events if isinstance(e, EodSweepCompleted)]
+    assert len(done) == 1 and done[0].date == day and done[0].cancelled == 1
+
+    asyncio.run(_maybe_eod_sweep_once(comp, after))   # second tick: no re-sweep
+    assert broker.cancelled == ["S1"]
+    assert sum(isinstance(e, EodSweepCompleted) for e in comp.events) == 1
+
+
+def test_eod_sweep_uses_the_calendar_session_close_on_half_days(monkeypatch, tmp_path):
+    """DAY-02/DAY-01a: a 13:00 half-day close means the sweep runs at 13:01 —
+    and does NOT run at 13:01 on an ordinary 16:00 day."""
+    import asyncio
+    from datetime import date, datetime
+
+    from meic.adapters.api.server import _maybe_eod_sweep_once
+    from meic.domain.events import EodSweepCompleted, StopPlaced
+
+    from tests.harness.fake_clock import ET as _ET
+
+    day = "2026-07-10"
+    at_1301 = lambda: datetime(2026, 7, 10, 13, 1, tzinfo=_ET)   # noqa: E731
+
+    def _fresh():
+        broker = _EodSweepBroker(working=["S1"])
+        comp = _eod_comp(day, broker=broker,
+                         events=[StopPlaced(entry_id=f"{day}#1", side="PUT",
+                                            trigger=Decimal("4.00"), broker_order_id="S1")])
+        return broker, comp
+
+    broker, comp = _fresh()
+    asyncio.run(_maybe_eod_sweep_once(comp, at_1301))            # full day: too early
+    assert broker.cancelled == [] and not any(
+        isinstance(e, EodSweepCompleted) for e in comp.events)
+
+    broker, comp = _fresh()
+    asyncio.run(_maybe_eod_sweep_once(comp, at_1301,
+                                      half_days=frozenset({date(2026, 7, 10)})))
+    assert broker.cancelled == ["S1"]
+    assert any(isinstance(e, EodSweepCompleted) for e in comp.events)
+
+
+def test_eod_sweep_flags_raced_fills_critically_and_touches_only_own_orders(monkeypatch, tmp_path):
+    """The two teeth the wiring must not lose: (1) OWN-03 — a foreign working
+    order (an id the bot never journaled placing) is never cancelled; (2) the
+    2026-07-11 raced-fill guard — a bot order that FILLED while being
+    cancelled raises EndOfDaySweep's distinct critical alert through
+    comp.alerts and is counted `raced_fills`, never reported as a clean
+    cancel."""
+    import asyncio
+    from datetime import datetime
+
+    from meic.adapters.api.server import _maybe_eod_sweep_once
+    from meic.domain.events import EodSweepCompleted, StopPlaced
+
+    from tests.harness.fake_clock import ET as _ET
+
+    day = "2026-07-10"
+    after = lambda: datetime(2026, 7, 10, 16, 1, tzinfo=_ET)     # noqa: E731
+    # S1 is the bot's own (journaled on StopPlaced); F9 is the operator's.
+    # S1's cancel races a fill: it leaves working_orders but shows in fills.
+    broker = _EodSweepBroker(working=["S1", "F9"],
+                             fills=[{"order_id": "S1", "partial": False}])
+    comp = _eod_comp(day, broker=broker,
+                     events=[StopPlaced(entry_id=f"{day}#1", side="PUT",
+                                        trigger=Decimal("4.00"), broker_order_id="S1")])
+
+    asyncio.run(_maybe_eod_sweep_once(comp, after))
+
+    assert broker.cancelled == ["S1"], "OWN-03: the foreign order F9 must never be touched"
+    done = [e for e in comp.events if isinstance(e, EodSweepCompleted)]
+    assert len(done) == 1 and done[0].raced_fills == 1 and done[0].cancelled == 0
+    assert any(level == "critical" and "S1" in msg and "FILLED while being cancelled" in msg
+               for level, msg in comp.alerts.records), (
+        "the raced-fill critical alert must reach comp.alerts")
+
+
+# --- CLS-03 working-entry cancel wiring capstones (2026-07-11) ------------------
+# The TENTH member of the "exists but unwired" class: `ManualClose` (incl. its
+# race-guarded `cancel_working`) existed and was unit-tested, but the panel's
+# close path only handled FILLED entries via CloseEntry — a WORKING (pre-fill)
+# entry had NO close path from the UI at all (PanelCommands.close_as fell into
+# `legs_unrecorded`). CLS-03/UC-14/TC-CLS-02: on a WORKING entry the action is
+# Cancel entry — cancel the entry order, no close orders for unfilled legs.
+
+class _CancelBroker:
+    def __init__(self, fills=()):
+        self.cancels = []
+        self.submits = 0
+        self._fills = [dict(f) for f in fills]
+
+    async def cancel(self, oid):
+        self.cancels.append(str(oid))
+        return {"result": "cancelled"}
+
+    async def fills_since(self, cursor):
+        return list(self._fills)
+
+    async def submit(self, order):
+        self.submits += 1
+        return "SHOULD-NEVER-HAPPEN"
+
+    async def working_orders(self):
+        return []
+
+
+def _pending_entry_app(monkeypatch, tmp_path, entry_id="2026-07-11#1"):
+    from meic.adapters.api.server import live_app
+    from meic.domain.events import CondorProposed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+    comp = app.state.composition
+    comp.events.append(CondorProposed(entry_id=entry_id, put_short=Decimal("7500"),
+                                      call_short=Decimal("7600")))
+    return app, comp
+
+
+def test_live_app_close_routes_a_working_entry_through_cls_03_cancel(monkeypatch, tmp_path):
+    """CLS-03/TC-CLS-02 on the object live_app() actually builds: the panel
+    close command on a WORKING entry cancels its entry order via
+    ManualClose.cancel_working (CLS-02: the one ratified path — no ad-hoc
+    broker calls, no close orders for unfilled legs) and raises the ladder's
+    stand-down flag so the reprice ladder cannot race the cancel."""
+    import asyncio
+
+    entry_id = "2026-07-11#1"
+    app, comp = _pending_entry_app(monkeypatch, tmp_path, entry_id)
+
+    registry = getattr(comp, "working_entries", None)
+    assert registry is not None, (
+        "CLS-03 needs the composition to carry the working-entry order registry")
+    registry.record(entry_id, "ENTRY-ORD-1")
+    broker = _CancelBroker()
+    comp.broker = broker
+
+    res = asyncio.run(app.state.commands.close(entry_id))
+
+    assert res["result"] == "cancelled" and res["initiator"] == "cancel_entry"
+    assert broker.cancels == ["ENTRY-ORD-1"]
+    assert broker.submits == 0, "CLS-03: no close orders are placed for unfilled legs"
+    assert registry.cancel_requested(entry_id), (
+        "the panel must raise the ladder stand-down flag BEFORE cancelling, or the "
+        "reprice ladder can replace (live: even resubmit) the order out from under it")
+
+
+def test_live_app_working_entry_cancel_race_alerts_critically_and_surfaces(monkeypatch, tmp_path):
+    """The REPRICE-RACE guard, on the real wiring: the entry FILLS in the
+    click→cancel window. The result surfaced to the API is `race_detected`
+    (never a clean `cancelled`), a critical alert reaches the panel alert
+    sink, and the ReconciliationMismatch lands on the durable log (RSK-03
+    blocks new entries until the operator reconciles)."""
+    import asyncio
+
+    from meic.domain.events import ReconciliationMismatch
+
+    entry_id = "2026-07-11#1"
+    app, comp = _pending_entry_app(monkeypatch, tmp_path, entry_id)
+    comp.working_entries.record(entry_id, "ENTRY-ORD-9")
+    comp.broker = _CancelBroker(fills=[{"order_id": "ENTRY-ORD-9", "partial": False}])
+
+    res = asyncio.run(app.state.commands.close(entry_id))
+
+    assert res["result"] == "race_detected" and res["initiator"] == "cancel_entry"
+    assert any(isinstance(e, ReconciliationMismatch) for e in comp.events)
+    assert any(a["level"] == "critical" and "ENTRY-ORD-9" in a["message"]
+               for a in app.state.alerts.recent()), (
+        "the race must alert critically through the panel sink, not just return")
+
+
+def test_live_app_close_of_a_pending_entry_with_no_working_order_says_so(monkeypatch, tmp_path):
+    """A PENDING entry whose ladder already ended (skipped/never worked) has
+    nothing to cancel: the close command reports `no_working_order` — it must
+    not fall into the FILLED path's `legs_unrecorded` (that result means a
+    fill whose legs the broker never reported, a different fault entirely)."""
+    import asyncio
+
+    entry_id = "2026-07-11#1"
+    app, comp = _pending_entry_app(monkeypatch, tmp_path, entry_id)
+    comp.broker = _CancelBroker()
+
+    res = asyncio.run(app.state.commands.close(entry_id))
+
+    assert res["result"] == "no_working_order"
+    assert comp.broker.cancels == [] and comp.broker.submits == 0
