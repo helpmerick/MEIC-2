@@ -1,6 +1,18 @@
 # HANDOFF — session state for a fresh start
 
-Last updated: 2026-07-11 (after the reprice-race pattern sweep).
+Last updated: 2026-07-11 late — CONSTRUCTION CLOSED at `0e5cac8` (spec
+v1.61 implemented; EOD-03 sweep + CLS-03 working-entry cancel wired,
+fail-first). Next phase: VERIFICATION MODE per the adviser's graduation
+criteria. Baselines now: backend 1214 / frontend 211 / lock 17 / trace
+218 rules-150 TCs, all three v1.61 TCs executing. Deployed: :8010 runs
+HEAD; panel index served no-cache (deploys visible on plain refresh);
+stale :8000 servers killed. Escalations awaiting adviser: UI-23a label
+("local" shipped vs master's city label), STP-08a defer-vs-LEX-05
+fallback on present-but-unusable quotes, "one LEX ladder ever" vs REC-03
+resume reading, /day/status seconds_to_next naive-wall-clock DST gap
+(one-line fix, needs ruling), LEX order-id journaling for EOD-03 sweep
+scope, RPT-16 ratification (text pasted 2026-07-11). Older sections
+below describe the mid-construction state and remain for context.
 Read this + `CLAUDE.md` + `spec/README.md` before starting any new slice.
 Per operator instruction, each new slice starts in a FRESH session off this
 file + the spec. (The original day-one kickoff prompt this file used to hold
