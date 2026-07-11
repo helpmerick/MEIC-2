@@ -84,6 +84,7 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
   targeting & slippage panels; day drill-down (entries, legs, fills, stops,
   probe logs, skip reasons, day report, RPT-12 timeline).
 
+- **RPT-09a One aggregation path (v1.61).** The heatmap's per-day wins/losses — and every per-day figure any view shows — derive from the single canonical aggregation used everywhere; no view recomputes its own. Imported/backfilled days render their imported values; absent data renders "no data", never a fabricated 0–0.
 - **RPT-10 Determinism, export, API.** Replay-from-genesis reproduces every
   number byte-identically. Every table exports CSV (ET timestamps, mode, trust
   stamp). Read-only `/reports/*`; panel security unchanged.
