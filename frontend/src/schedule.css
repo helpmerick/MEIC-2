@@ -83,16 +83,15 @@ td.cell-wc {
   font-size: 13px; white-space: nowrap; text-align: right;
 }
 
-/* row counter (operator request 2026-07-12): a muted 1..N badge down the right
-   edge of the table. In the narrow card layout the "Entry N" heading numbers the
-   card instead, so this cell is hidden there (see the @container block). */
-th.rownum-head { width: 44px; color: var(--faint); }
+/* row counter (operator request 2026-07-12): a plain 1..N down the LEFT, no box,
+   centred and vertically lined up with the value boxes. In the narrow card
+   layout the "Entry N" heading numbers the card instead, so this cell is hidden
+   there (see the @container block). */
+th.rownum-head { width: 34px; color: var(--faint); }
 td.cell-rownum { text-align: center; }
-.rownum-badge {
-  display: inline-grid; place-items: center; width: 24px; height: 24px;
-  margin-top: calc((var(--field-h) - 24px) / 2);
-  border-radius: 50%; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
-  color: var(--muted); background: var(--surface); border: 1px solid var(--line);
+.rownum-n {
+  display: inline-block; line-height: var(--field-h);   /* centre on the box height */
+  font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted);
 }
 
 /* row actions */

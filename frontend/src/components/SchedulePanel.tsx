@@ -250,6 +250,8 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
         <table className="schedule">
           <thead>
             <tr>
+              {/* row counter (operator request 2026-07-12): 1..N down the left */}
+              <th className="num rownum-head" aria-label="row number">#</th>
               <th className="num">Time (ET)</th>
               <th className="num">Target $</th>
               <th className="num">Width</th>
@@ -258,8 +260,6 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
               <th className="num">Count</th>
               <th className="num">Worst case (est.)</th>
               <th aria-label="actions" />
-              {/* row counter (operator request 2026-07-12): 1..N down the right */}
-              <th className="num rownum-head" aria-label="row number">#</th>
             </tr>
           </thead>
           <tbody>
@@ -269,6 +269,11 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
               // cell shows its own label, each row becomes a bordered "Entry N"
               // card. Both attributes are inert in the wide table layout.
               <tr key={i} data-testid={`row-${i}`} data-entry={i + 1}>
+                {/* the row's number, 1..N. Hidden in the narrow card layout,
+                    where the "Entry N" heading numbers each card instead. */}
+                <td className="cell-rownum">
+                  <span className="rownum-n">{i + 1}</span>
+                </td>
                 <td className="cell-num" data-label="Time (ET)">
                   <input
                     aria-label={`time ${i + 1}`}
@@ -366,12 +371,6 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   >
                     ✕
                   </button>
-                </td>
-                {/* the row's number, 1..N (operator request 2026-07-12). In the
-                    narrow card layout the "Entry N" heading already numbers each
-                    card, so this cell is hidden there. */}
-                <td className="cell-rownum" data-label="Row">
-                  <span className="rownum-badge">{i + 1}</span>
                 </td>
               </tr>
             ))}
