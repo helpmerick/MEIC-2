@@ -5,6 +5,7 @@ import {
   contractDollarsValue,
   formatDollars,
   isValidStopRebateMarkup,
+  normalizeMoneyInput,
   stopRebateMarkupWorstCase,
 } from "./money";
 
@@ -133,6 +134,12 @@ describe("isValidStopRebateMarkup — range + step, reject never clamp", () => {
   it("rejects unparsable input", () => {
     expect(isValidStopRebateMarkup("abc")).toBe(false);
     expect(isValidStopRebateMarkup("0.05.05")).toBe(false);
+    expect(isValidStopRebateMarkup(".")).toBe(false);
+  });
+
+  it("accepts a bare leading dot — '.15' IS 0.15 (backend Decimal agrees)", () => {
+    expect(isValidStopRebateMarkup(".15")).toBe(true);
+    expect(isValidStopRebateMarkup(".13")).toBe(false); // still a bad step
   });
 
   it("rejects genuine sub-cent precision (the field's step is whole nickels)", () => {
@@ -159,5 +166,31 @@ describe("stopRebateMarkupWorstCase — mirrors domain/stop_policy.py's markup_w
 
   it("the high edge, several contracts, exact", () => {
     expect(stopRebateMarkupWorstCase("5.00", 4)).toBe("4000");
+  });
+});
+
+describe("normalizeMoneyInput — blur formatter, never a clamp", () => {
+  it("pads the missing leading zero", () => {
+    expect(normalizeMoneyInput(".15")).toBe("0.15");
+  });
+
+  it("pads bare integers and trailing dots to two decimals", () => {
+    expect(normalizeMoneyInput("5")).toBe("5.00");
+    expect(normalizeMoneyInput("5.")).toBe("5.00");
+    expect(normalizeMoneyInput("0.3")).toBe("0.30");
+  });
+
+  it("strips redundant leading zeros", () => {
+    expect(normalizeMoneyInput("00.30")).toBe("0.30");
+  });
+
+  it("keeps sub-cent digits so validation still sees them", () => {
+    expect(normalizeMoneyInput("0.301")).toBe("0.301");
+  });
+
+  it("returns non-decimal shapes and blanks unchanged", () => {
+    expect(normalizeMoneyInput("abc")).toBe("abc");
+    expect(normalizeMoneyInput("")).toBe("");
+    expect(normalizeMoneyInput(".")).toBe(".");
   });
 });

@@ -168,8 +168,9 @@ describe("server-side validation (UI-03)", () => {
     await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
     expect(screen.getByLabelText("contracts 1")).toHaveClass("invalid");
     expect(screen.getByLabelText("stop pct 2")).toHaveClass("invalid");
-    // the panel never decided this itself — it only rendered what the server said
-    expect(screen.getByText(/out_of_range/)).toBeInTheDocument();
+    // the panel never decided this itself — it rendered what the server said,
+    // in operator words (known codes map via REASON_TEXT, unknown pass verbatim)
+    expect(screen.getByText(/contracts — outside the allowed range/)).toBeInTheDocument();
   });
 
   it("renders a schedule-level error (index null) without blaming a row", async () => {
@@ -257,12 +258,43 @@ describe("STP-02b / UI-18 — long-recovery buffer ($ stop_rebate_markup)", () =
     expect(screen.getByTestId("markup-hint-0")).toHaveTextContent("+$120");
   });
 
-  it("discloses the UI-18 shortfall sentence alongside the dollar figure", async () => {
+  it("discloses the UI-18 shortfall sentence as a hover tooltip on the box AND the hint", async () => {
+    // Presentation ruled by the operator 2026-07-11 (the inline sentence
+    // widened the column); wording is the spec sentence verbatim. Escalated.
     await renderPanel();
     fireEvent.change(screen.getByLabelText("long recovery buffer 1"), { target: { value: "0.50" } });
-    expect(screen.getByTestId("markup-hint-0")).toHaveTextContent(
-      /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i,
+    const sentence = /if the long recovers less than \$0\.50, your net loss exceeds 95% by the shortfall/i;
+    expect(screen.getByTestId("markup-hint-0").getAttribute("title")).toMatch(sentence);
+    expect(screen.getByLabelText("long recovery buffer 1").getAttribute("title")).toMatch(sentence);
+  });
+
+  it("pads a bare '.15' to '0.15' on blur — and never outlines it red", async () => {
+    await renderPanel();
+    const input = screen.getByLabelText("long recovery buffer 1");
+    fireEvent.change(input, { target: { value: ".15" } });
+    expect(input).not.toHaveClass("invalid"); // Decimal(".15") is valid backend-side too
+    fireEvent.blur(input);
+    expect(input).toHaveValue("0.15");
+  });
+
+  it("blur never rewrites a genuinely wrong value (reject, never clamp)", async () => {
+    await renderPanel();
+    const input = screen.getByLabelText("long recovery buffer 1");
+    fireEvent.change(input, { target: { value: "0.13" } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue("0.13");
+    expect(input).toHaveClass("invalid");
+  });
+
+  it("maps not_strictly_increasing to operator words", async () => {
+    await renderPanel();
+    vi.spyOn(api, "saveSchedule").mockRejectedValue(
+      new ApiError(422, {
+        errors: [{ field: "time", reason: "not_strictly_increasing", index: 1 }],
+      }),
     );
+    fireEvent.click(screen.getByText("Save"));
+    expect(await screen.findByText(/Row 2: time — must be later than the row above/)).toBeTruthy();
   });
 
   it("shows nothing when the buffer is zero or blank (UI-18: only discloses when markup > 0)", async () => {

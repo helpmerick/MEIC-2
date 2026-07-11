@@ -19,7 +19,7 @@
 // Decimal string. Sub-cent precision in the source string (rare, but never
 // forbidden by the domain) survives the shift unrounded.
 
-const DECIMAL_RE = /^(-?)(\d+)(?:\.(\d+))?$/;
+const DECIMAL_RE = /^(-?)(\d*)(?:\.(\d+))?$/; // bare ".15" allowed — see _MONEY_RE
 
 /** Exact `value * factor` for a Decimal STRING and a positive integer
  * `factor`, computed with BigInt digit arithmetic — no float ever touches
@@ -29,7 +29,8 @@ function multiplyDecimalString(value: string, factor: number): string {
   const m = DECIMAL_RE.exec(value.trim());
   if (!m) return "0";
   const [, sign, intPart, fracPart = ""] = m;
-  const digits = intPart + fracPart;
+  if (!intPart && !fracPart) return "0";
+  const digits = (intPart || "0") + fracPart;
   const big = BigInt(digits) * BigInt(factor);
   const negative = sign === "-" && big !== 0n;
   if (fracPart.length === 0) {
@@ -97,7 +98,11 @@ export function formatDollars(n: number): string {
 // throughout — no float ever touches the range/step check (0.15 % 0.05 is
 // NOT exactly 0 in IEEE754, which would misclassify a perfectly valid value).
 
-const _MONEY_RE = /^(\d+)(?:\.(\d+))?$/;
+// A bare leading dot (".15") is fine — Python's Decimal(".15") is exactly
+// 0.15 and the backend accepts it, so rejecting it here was a frontend-only
+// false positive (operator report 2026-07-11). At least one digit somewhere
+// is still required ("." alone is nothing).
+const _MONEY_RE = /^(\d*)(?:\.(\d+))?$/;
 
 /** Parse a non-negative Decimal STRING to integer CENTS, or `null` if it is
  * not a plain non-negative decimal, OR carries any sub-cent precision (this
@@ -107,9 +112,25 @@ function _toCentsExact(value: string): bigint | null {
   const m = _MONEY_RE.exec(value.trim());
   if (!m) return null;
   const [, intPart, fracPart = ""] = m;
+  if (!intPart && !fracPart) return null;
   if (fracPart.length > 2 && /[1-9]/.test(fracPart.slice(2))) return null;
   const cents2 = (fracPart + "00").slice(0, 2);
-  return BigInt(intPart) * 100n + BigInt(cents2);
+  return BigInt(intPart || "0") * 100n + BigInt(cents2);
+}
+
+/** Canonical display form of an operator-typed money value, applied on blur:
+ * ".15" -> "0.15", "5" -> "5.00", "5." -> "5.00", "00.30" -> "0.30".
+ * Anything that is not a plain non-negative decimal shape (or is blank) is
+ * returned UNCHANGED — this is a formatter, never a clamp: a wrong VALUE like
+ * "0.13" keeps its digits (and stays flagged) rather than being rewritten,
+ * and extra decimals ("0.301") are preserved so validation still sees them. */
+export function normalizeMoneyInput(value: string): string {
+  const raw = value.trim();
+  const m = /^(\d*)\.?(\d*)$/.exec(raw);
+  if (!m || !(m[1] || m[2])) return value;
+  const intPart = m[1].replace(/^0+(?=\d)/, "") || "0";
+  const frac = m[2].length >= 2 ? m[2] : (m[2] + "00").slice(0, 2);
+  return `${intPart}.${frac}`;
 }
 
 /** STP-02b: is `value` a legal `stop_rebate_markup` — $0.00–$5.00, $0.05
