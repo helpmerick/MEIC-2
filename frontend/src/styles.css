@@ -227,6 +227,17 @@ body {
 /* report stats */
 .stat-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
 @media (max-width: 820px) { .stat-row { grid-template-columns: repeat(3, 1fr); } }
+
+/* The desktop grid gives the report card 4 of 12 columns (~450px on a
+   MacBook), where six tiles can't fit — and the viewport media query above
+   never fires there. Key the report's stat row off the card's own width:
+   below ~700px (six tiles need ~630px of content plus card padding) reflow
+   to 3×2. Scoped to the named container so the Results-page stat rows,
+   which live in full-width panels, keep their current behaviour. */
+.grid > .report { container: report / inline-size; }
+@container report (max-width: 700px) {
+  .stat-row { grid-template-columns: repeat(3, 1fr); }
+}
 .stat { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 10px; text-align: center; transition: border-color .2s; }
 .stat:hover { border-color: var(--line-strong); }
 .stat-label { display: block; font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
