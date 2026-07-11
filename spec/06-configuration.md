@@ -28,6 +28,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `min_validated_strikes` | 3–40 | 10 | next-entry | STK-10 v1.55 — baseline viability floor, per side: fewer validated reachable strikes at warm-up ⇒ alert + retry, never trade off a sliver |
 | `drill_outage_seconds` | 10–300 | 60 | immediate | UC-12 v1.56 — outage-drill disconnect duration |
 | `take_profit_target_pct` | {5..95 step 5} or off | off | next-entry (live-editable per entry, TPT-02) | TPT-01 — whole-entry take-profit target; distinct from the TPF floor |
+| `stop_fill_poll_seconds` | 5–120 | 15 | immediate | STP-08a — fallback fill-detection poll; authoritative while the order-event stream is down |
 | ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |

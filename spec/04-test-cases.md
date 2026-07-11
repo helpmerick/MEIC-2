@@ -1221,6 +1221,60 @@ Scenario: Decision moment - give up safely
 
 ---
 
+**TC-STP-20** — STP-08a live stop-fill reaction chain (v1.61)
+```gherkin
+Scenario: Wakes carry no data and one path decides
+  Given a push event and a poll tick arrive for the same fill
+  Then exactly one decision path reads broker truth and the journal and acts once
+  And the fill is processed exactly once regardless of wake source
+
+Scenario: A sold long is never re-sold
+  Given the journal shows the side's long already sold
+  When any wake detects the historical stop fill again
+  Then no order is placed and the wake is a no-op
+
+Scenario: Poll skips when busy, push waits
+  Given the decision path is mid-action
+  Then a poll tick SKIPS (its next tick catches up) and a push WAITS for the lock
+
+Scenario: Stream outage lifecycle
+  Given the order-event stream drops
+  Then reconnection backs off with a cap, exactly ONE alert fires for the outage
+  And the fallback poll is authoritative until resumption re-arms push
+
+Scenario: A decay buyback fill is never a stop-out
+  Given a side's fill is identified as the DCY buyback rather than the stop
+  Then the side classifies SIDE_CLOSED_DECAY and the long is left to expire
+  And no LEX ladder starts
+```
+
+**TC-UI-07** — UI-18a/UI-28/UI-26a/UI-23a/RPT-09a display rules (v1.61)
+```gherkin
+Scenario: Entry money renders as position dollars with one consistency
+  Given an entry with contracts = 2 and per-contract net credit 4.00
+  Then displays show 800 dollars and side displays sum exactly to the total
+  And aggregates sum per-entry dollars via the single aggregation path
+
+Scenario: Exemptions stay native
+  Then quoted prices, ticks, and trigger prices render per-share
+  And slippage renders in both ticks and position dollars
+  And no displayed cash number passes through binary float
+
+Scenario: Markup dial discloses per row
+  Given a schedule row sets stop_rebate_markup 0.50 with contracts 2
+  Then the row shows the shortfall sentence AND "worst case rises by $200" (0.50 x 100 x 2 x 2)
+  And out-of-grid values are rejected, never clamped
+
+Scenario: Heatmap honesty
+  Given an imported day and a day with no data
+  Then the imported day shows its imported values and the empty day shows "no data"
+  And a fabricated 0-0 never renders
+  And weekends render visually distinct from zero-P&L trading days
+
+Scenario: The local label is the browser's zone, not geolocation
+  Then the echo label names the Intl-resolved zone and no location lookup ever occurs
+```
+
 ## Results dashboard (doc 10)
 
 **TC-RPT-01** — RPT-01/02/UI-25
@@ -1412,7 +1466,8 @@ Scenario: Recovery order of operations
 | RSK-03 (genuine mismatch) | TC-OWN-11 | | STK-09 (foreign) | TC-OWN-11 |
 | NFR-01→06 | TC-NFR-01→06 | | SIM-01→06 | TC-SIM-01→05 |
 | RPT-01→15 / UI-25/26/27 | TC-RPT-01→09 | | RPT-15 (zero drift) | TC-RPT-09 |
-| TPT-01→07 | TC-TPT-01 | | | |
+| TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
+| UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
