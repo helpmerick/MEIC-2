@@ -534,6 +534,34 @@ Scenario: Manual entries baseline at press
   Then the validated universe is captured at press time under the same rules
 ```
 
+**TC-DAY-07** — DAY-01a/ENT-10(7)/UI-24a exchange calendar (v1.60, from the Saturday-countdown incident)
+```gherkin
+Scenario: Holiday observance quirks compute correctly
+  Then New Year's Day falling on Saturday is NOT observed (real vector: 2021-12-31 was a full trading day)
+  And Saturday holidays observe Friday, Sunday holidays observe Monday
+  And Good Friday derives from the Easter computus for any year
+  And July 3 (Mon-Thu), the day after Thanksgiving, and Christmas Eve (Mon-Thu) are 13:00 ET half-days
+  And the computed calendar matches published NYSE calendars pinned as vectors
+
+Scenario: No day task exists on a closed day
+  Given the bot is ARMED on a Saturday
+  Then the supervisor starts no day task and zero EntrySkipped events enter the journal
+  And the ENT-03 fire-time market-open gate remains in force unchanged
+
+Scenario: The countdown never promises a closed-day entry
+  Given a Saturday with the next trading day Monday and first entry 11:56 ET
+  Then the panel shows "Mon 11:56 ET" with a day-spanning countdown
+  And "no more entries today" appears only for an exhausted schedule on a trading day
+
+Scenario: An empty calendar is a construction error
+  Given live gates constructed with no holiday data
+  Then boot fails loudly rather than treating holidays as open days
+
+Scenario: The local echo is DST-correct across the switch
+  Given a next entry lying on the far side of a DST transition
+  Then the local echo converts the full instant, not today's offset
+```
+
 **TC-STP-01** — STP-01/STP-02
 ```gherkin
 Scenario: Stops placed immediately on fill (total_credit basis - THE DEFAULT, Ash's outcome contract)
@@ -1370,6 +1398,7 @@ Scenario: Recovery order of operations
 | ENT-08 | TC-ENT-06 | | ENT-01a | TC-ENT-07 |
 | ENT-09 / UI-22 | TC-ENT-08 | | ENT-01b | TC-ENT-07 |
 | ENT-10 / UI-24 | TC-ENT-10, TC-UI-06 | | DAY-06 / UI-23 | TC-DAY-06, TC-UI-05 |
+| DAY-01a / ENT-10(7) / UI-24a | TC-DAY-07 | | | |
 | ENT-09b (manual floors) | TC-ENT-09 | | | |
 | STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
