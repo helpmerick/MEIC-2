@@ -131,26 +131,25 @@ body {
     grid-template-columns: repeat(2, 1fr);
     gap: var(--sp-5);
     grid-template-areas:
-      "control control"
+      "control manual"
       "next    next"
       "sched   sched"
-      "manual  manual"
       "report  entries"
       "feed    feed";
   }
 }
 
-/* full desktop layout — a deliberate 12-column grid. The combined Control card
-   (status + commands) spans the top row, the countdown is a slim full-width
-   strip beneath it, Schedule spans 2/3 with Manual trade beside it at 1/3, and
+/* full desktop layout — a deliberate 12-column grid. The Control card and the
+   always-visible Manual trade card share the top row (half each), the countdown
+   is a slim full-width strip beneath them, Schedule spans the FULL width, and
    Report / Entries / Feed share a balanced three-up row. */
 @media (min-width: 1300px) {
   .grid {
     grid-template-columns: repeat(12, 1fr);
     grid-template-areas:
-      "control control control control control control control control control control control control"
+      "control control control control control control manual manual manual manual manual manual"
       "next   next   next   next   next   next   next   next   next   next   next   next"
-      "sched  sched  sched  sched  sched  sched  sched  sched  manual manual manual manual"
+      "sched  sched  sched  sched  sched  sched  sched  sched  sched  sched  sched  sched"
       "report report report report entries entries entries entries feed   feed   feed   feed";
   }
 }

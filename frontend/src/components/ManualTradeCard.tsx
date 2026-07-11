@@ -61,7 +61,6 @@ function floorFields(floors: FloorParams): Record<string, unknown> {
 }
 
 export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean }) {
-  const [open, setOpen] = useState(false);
   const [params, setParams] = useState<ManualParams>({ ...BLANK });
   const [floors, setFloors] = useState<FloorParams>({ ...BLANK_FLOORS });
   const [floorCandidates, setFloorCandidates] = useState<FloorCandidates | null>(null);
@@ -155,19 +154,9 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
 
   return (
     <section className="card manual-trade-card" data-testid="manual-trade">
-      <button
-        type="button"
-        className="card-head manual-trade-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <h2>
-          <span aria-hidden>{open ? "▾" : "▸"}</span> Fire manual trade
-        </h2>
-      </button>
-
-      {open && (
-        <div className="manual-trade-body">
+      {/* Always visible — no dropdown (operator request 2026-07-12). */}
+      <h2>Fire manual trade</h2>
+      <div className="manual-trade-body">
           <div className="manual-fields">
             <label className="field">
               <span>Target $</span>
@@ -318,8 +307,7 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
                 : `${fireResult.result}${fireResult.reason ? ` — ${fireResult.reason}` : ""}`}
             </p>
           )}
-        </div>
-      )}
+      </div>
 
       {confirmOpen && (
         <ManualFireDialog

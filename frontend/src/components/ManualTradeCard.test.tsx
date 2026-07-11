@@ -24,13 +24,11 @@ beforeEach(() => {
   vi.stubGlobal("crypto", { randomUUID: () => "uuid-1" });
 });
 
-describe("collapse / expand", () => {
-  it("is collapsed by default and expands on click", async () => {
+describe("always visible", () => {
+  it("shows the trade fields immediately — no dropdown (operator request 2026-07-12)", () => {
     render(<ManualTradeCard entriesEnabled />);
-    expect(screen.queryByLabelText("manual target premium")).toBeNull();
-
-    fireEvent.click(screen.getByText("Fire manual trade"));
-    expect(await screen.findByLabelText("manual target premium")).toBeInTheDocument();
+    expect(screen.getByText("Fire manual trade")).toBeInTheDocument();
+    expect(screen.getByLabelText("manual target premium")).toBeInTheDocument();
   });
 });
 

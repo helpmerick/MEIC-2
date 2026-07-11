@@ -199,14 +199,15 @@ export function App() {
       {onTrading ? (
         <main className="grid">
           <ControlPanel state={state} connected={connected} optimistic={optimistic} refresh={refresh} />
+          {/* ENT-11/UI-25: the ad-hoc lane sits beside Control (operator layout
+              2026-07-12) — fire NOW with explicit parameters, plus a read-only
+              Simulate. Follows the same entries-enabled gate. */}
+          <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
           {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
           <NextEntryCountdown />
           {/* UC-02 composition + ENT-09 fire. The fire button follows the three
               trade-enabling states, exactly as UI-22 requires. */}
           <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
-          {/* ENT-11/UI-25: the ad-hoc lane — fire NOW with explicit parameters,
-              plus a read-only Simulate. Follows the same entries-enabled gate. */}
-          <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
           <div className="report"><DayReportView report={report} entries={entries} /></div>
           <div className="entries-col">
             <EntryCards entries={entries} onClose={closeEntry}
