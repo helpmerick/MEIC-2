@@ -17,12 +17,14 @@
 /* --- the table ------------------------------------------------------------- */
 .sched-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 2px; }
 table.schedule { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 660px; }
+/* operator request 2026-07-11: headings CENTRED above their boxes, in
+   full-contrast text (var(--text), not the faint grey). */
 table.schedule thead th {
-  text-align: left; padding: 0 10px 9px;
+  text-align: center; padding: 0 10px 9px;
   font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
-  color: var(--faint); white-space: nowrap;
+  color: var(--text); white-space: nowrap;
 }
-table.schedule thead th.num { text-align: right; }
+table.schedule thead th.num { text-align: center; }
 table.schedule tbody tr { transition: background .15s ease; }
 table.schedule tbody tr:hover { background: var(--hover); }
 table.schedule tbody td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: middle; }
@@ -46,10 +48,15 @@ table.schedule tbody tr:first-child td { border-top: none; }
 }
 .schedule input::placeholder { color: var(--faint); }
 .schedule input[type="number"] { -moz-appearance: textfield; }
-/* numeric columns (time / target / width / count) AND the stop-% select all
-   line up flush right, so every column of values reads as a column. */
+/* operator request 2026-07-11: every value box BOLD, CENTRED, and the SAME
+   size (a fixed width instead of stretch-to-cell), under its centred heading. */
+.schedule td.cell-num { text-align: center; }
 .schedule .cell-num input,
-.schedule .cell-num select { text-align: right; }
+.schedule .cell-num select {
+  text-align: center; font-weight: 700;
+  width: 104px; min-width: 104px; max-width: 104px;
+  margin: 0 auto;
+}
 
 .schedule input.invalid,
 .schedule select.invalid { border-color: var(--bad); background: var(--bad-dim); }
@@ -72,8 +79,31 @@ td.cell-actions { white-space: nowrap; text-align: right; }
   transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
 .icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); transform: translateY(-1px); }
-.icon-btn.fire:hover:not(:disabled) { color: var(--good); border-color: rgba(52,211,153,0.35); background: var(--good-dim); }
-.icon-btn.del:hover:not(:disabled)  { color: var(--bad);  border-color: rgba(248,113,113,0.35); background: var(--bad-dim); }
+/* operator request 2026-07-11: fire is GREEN, cross is RED, both going
+   bolder/darker on hover (and the cross on click too). color-mix keeps the
+   darkening tied to the theme tokens instead of hardcoding shades. */
+.icon-btn.fire {
+  color: #fff; font-weight: 700;
+  background: var(--good); border-color: color-mix(in srgb, var(--good) 70%, black);
+}
+.icon-btn.fire:hover:not(:disabled) {
+  color: #fff; font-weight: 800;
+  background: color-mix(in srgb, var(--good) 78%, black);
+  border-color: color-mix(in srgb, var(--good) 55%, black);
+}
+.icon-btn.del {
+  color: #fff; font-weight: 700;
+  background: var(--bad); border-color: color-mix(in srgb, var(--bad) 70%, black);
+}
+.icon-btn.del:hover:not(:disabled) {
+  color: #fff; font-weight: 800;
+  background: color-mix(in srgb, var(--bad) 78%, black);
+  border-color: color-mix(in srgb, var(--bad) 55%, black);
+}
+.icon-btn.del:active:not(:disabled) {
+  font-weight: 800;
+  background: color-mix(in srgb, var(--bad) 60%, black);
+}
 .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* --- footer: add / ceiling / readout / save -------------------------------- */

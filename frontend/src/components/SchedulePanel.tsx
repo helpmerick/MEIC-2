@@ -34,7 +34,12 @@ import type {
 // the backend inherits its global (doc 06 section 37) — stop % is the one field
 // the backend echoes back resolved, so showing "default" here promised an
 // inheritance the round-trip never delivered.
-const BLANK: ScheduleRow = { time: "", contracts: "", target_premium: "", wing_width: "", stop_loss_pct: DEFAULT_STOP_PCT };
+// Operator-preferred prefills (2026-07-11): width 50 and a $0.30 long-recovery
+// buffer on every NEW row (explicit row values the backend validates as
+// overrides — doc 06's own config defaults are unchanged). Other cells stay
+// blank so the backend inherits its global (doc 06 section 37).
+const BLANK: ScheduleRow = { time: "", contracts: "", target_premium: "", wing_width: "50",
+                             stop_loss_pct: DEFAULT_STOP_PCT, stop_rebate_markup: "0.30" };
 
 // Server-side is authoritative; this only decides which cell to outline in red.
 function errorFor(errors: ScheduleError[], index: number, field: string): string | undefined {
