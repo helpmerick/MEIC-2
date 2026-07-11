@@ -276,6 +276,24 @@ class ShortStopped(Event):
 
 
 @dataclass(frozen=True)
+class DecayBuybackPlaced(Event):
+    """DCY-02 / STP-08a (v1.61): the decay watcher placed its limit buy-to-close
+    and this is the broker's own order id for it — journaled AT PLACEMENT so the
+    live stop-fill detection pass (application/stop_fill_watch.py) can recognise
+    the buyback's fill BY ORDER ID and classify the side SIDE_CLOSED_DECAY
+    (ShortStopped initiator="decay" + EntryClosed initiator="decay", the exact
+    shape decay_watcher.complete() journals) instead of misreading it as a
+    stop-out via the symbol fallback — "a fill that is in fact the DCY buyback
+    ... never as a stop-out" (STP-08a). Additive/replay-safe: an old log simply
+    contains none of these, and every field round-trips through the generic
+    to_dict/from_dict paths like `StopPlaced.broker_order_id` (v1.60)."""
+    entry_id: str
+    side: str
+    broker_order_id: str
+    price: Decimal  # the buyback limit (the decay trigger, DCY-01)
+
+
+@dataclass(frozen=True)
 class LongSold(Event):
     entry_id: str
     side: str

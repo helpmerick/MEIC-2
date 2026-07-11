@@ -181,6 +181,10 @@ def test_long_recovery_row_realized_vs_mark_and_buffer():
     assert row["shortfall"] == "-1.95"    # markup - realized
     assert row["nle_estimate"] is None    # NLE-06: never fabricated (see below)
     assert lr["mean"] == lr["p50"] == lr["p90"] == lr["max"] == "-0.10"
+    # UI-28 (v1.61): slippage in BOTH ticks and position dollars -- the diff
+    # aggregates carry mean_ticks, derived exactly as the stop-outs family
+    # derives its own (EC-STP-03 tick 0.05): -0.10 / 0.05 = -2 ticks.
+    assert lr["mean_ticks"] == "-2"
     assert lr["nle_estimate_captured"] is False
 
 
@@ -205,6 +209,7 @@ def test_long_recovery_pre_stamping_event_renders_honest_none_not_zero():
     assert row["markup"] is None
     assert row["shortfall"] is None
     assert body["slippage"]["long_recovery"]["mean"] is None  # no diffs to aggregate
+    assert body["slippage"]["long_recovery"]["mean_ticks"] is None  # honest None, never 0
 
 
 def test_long_recovery_no_long_sales_this_day_is_empty_not_null():
@@ -215,7 +220,7 @@ def test_long_recovery_no_long_sales_this_day_is_empty_not_null():
     body = client.get("/reports/day/2026-07-09").json()
     assert body["slippage"]["long_recovery"] == {
         "rows": [], "n": 0, "mean": None, "p50": None, "p90": None, "max": None,
-        "nle_estimate_captured": False,
+        "mean_ticks": None, "nle_estimate_captured": False,
     }
 
 
@@ -259,8 +264,8 @@ def test_csv_export_daily_table():
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
     lines = r.text.strip().splitlines()
-    assert lines[0] == "date,mode,net_pnl,trust,wins,losses"
-    assert lines[1] == "2026-07-09,paper,400.00,bot-computed,1,0"
+    assert lines[0] == "date,mode,net_pnl,trust,wins,losses,entries"
+    assert lines[1] == "2026-07-09,paper,400.00,bot-computed,1,0,1"
 
 
 def test_csv_export_daily_table_counts_wins_and_losses_per_day():
@@ -275,7 +280,7 @@ def test_csv_export_daily_table_counts_wins_and_losses_per_day():
     client, _, _ = _client(events)
     r = client.get("/reports/csv?table=daily&period=all")
     lines = r.text.strip().splitlines()
-    assert lines[1] == "2026-07-09,paper,-50.00,bot-computed,1,1"
+    assert lines[1] == "2026-07-09,paper,-50.00,bot-computed,1,1,2"
 
 
 def test_csv_export_daily_table_zero_fills_a_skip_only_day_honestly():
@@ -285,7 +290,7 @@ def test_csv_export_daily_table_zero_fills_a_skip_only_day_honestly():
     client, _, _ = _client(events)
     r = client.get("/reports/csv?table=daily&period=all")
     lines = r.text.strip().splitlines()
-    assert lines[1] == "2026-07-09,paper,0,bot-computed,0,0"
+    assert lines[1] == "2026-07-09,paper,0,bot-computed,0,0,0"
 
 
 def test_csv_export_daily_table_blanks_wins_losses_for_an_imported_only_day():
@@ -296,9 +301,9 @@ def test_csv_export_daily_table_blanks_wins_losses_for_an_imported_only_day():
     client, _, _ = _client(events)
     r = client.get("/reports/csv?table=daily&period=all")
     lines = r.text.strip().splitlines()
-    date, mode, net_pnl, trust, wins, losses = lines[1].split(",")
+    date, mode, net_pnl, trust, wins, losses, entries = lines[1].split(",")
     assert date == "2026-07-09"
-    assert wins == "" and losses == ""
+    assert wins == "" and losses == "" and entries == ""
 
 
 def test_csv_export_entries_table():

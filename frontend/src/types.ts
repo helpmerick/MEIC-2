@@ -401,6 +401,10 @@ export interface LongRecoveryFamily {
   p50: string | null;
   p90: string | null;
   max: string | null;
+  // UI-28 (v1.61): slippage renders in BOTH ticks and position dollars —
+  // derived server-side from the same EC-STP-03 tick (0.05) the stop-outs
+  // family uses; null when no row carries a diff (pre-stamping rows).
+  mean_ticks: string | null;
   nle_estimate_captured: false;
 }
 
@@ -460,6 +464,9 @@ export interface DayReportDetail {
 // own pnl>0/pnl<0 threshold, per day; both null on a broker-imported day
 // (RPT-16: no recorded entry-level outcome exists to count — never a
 // fabricated 0/0 for a day that plainly moved real broker cash).
+// `entries` (UI-26a v1.61) is the day's filled-entry count, from the SAME
+// single aggregation path the win/loss split comes from (RPT-09a) — null on
+// a broker-imported day for the same honesty reason.
 export interface DailyRow {
   date: string;
   mode: string;
@@ -467,4 +474,5 @@ export interface DailyRow {
   trust: string;
   wins: number | null;
   losses: number | null;
+  entries: number | null;
 }

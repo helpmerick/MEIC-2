@@ -6,7 +6,7 @@ import type { LongRecoveryFamily } from "../../types";
 
 const EMPTY_LONG_RECOVERY: LongRecoveryFamily = {
   rows: [], n: 0, mean: null, p50: null, p90: null, max: null,
-  nle_estimate_captured: false,
+  mean_ticks: null, nle_estimate_captured: false,
 };
 
 // Operator ruling 2026-07-11: stop-out slippage (EC-STP-03 fill − trigger,
@@ -77,7 +77,7 @@ describe("SlippagePanels — RPT-07 long recovery", () => {
               nle_estimate: null,
             }],
             n: 1, mean: "-0.10", p50: "-0.10", p90: "-0.10", max: "-0.10",
-            nle_estimate_captured: false,
+            mean_ticks: "-2", nle_estimate_captured: false,
           },
           closes: null,
           decay_buybacks: null,
@@ -87,6 +87,9 @@ describe("SlippagePanels — RPT-07 long recovery", () => {
     const summary = screen.getByTestId("long-recovery-summary");
     expect(within(summary).getByText("1")).toBeInTheDocument();
     expect(within(summary).getAllByText("-$10")).toHaveLength(4); // mean/p50/p90/max diff
+    // UI-28 (v1.61): slippage in BOTH ticks and position dollars — the ticks
+    // column stays in ticks (server-derived, EC-STP-03 tick 0.05).
+    expect(within(summary).getByText("-2")).toBeInTheDocument();
 
     const table = screen.getByTestId("long-recovery-table");
     expect(within(table).getByText("2026-07-11#1")).toBeInTheDocument();
@@ -111,7 +114,7 @@ describe("SlippagePanels — RPT-07 long recovery", () => {
               nle_estimate: null,
             }],
             n: 1, mean: null, p50: null, p90: null, max: null,
-            nle_estimate_captured: false,
+            mean_ticks: null, nle_estimate_captured: false,
           },
           closes: null,
           decay_buybacks: null,
@@ -123,7 +126,7 @@ describe("SlippagePanels — RPT-07 long recovery", () => {
     // mark mid, buffer, diff, shortfall (all null -> "—"), plus the NLE column
     expect(within(table).getAllByText("—")).toHaveLength(5);
     const summary = screen.getByTestId("long-recovery-summary");
-    expect(within(summary).getAllByText("—")).toHaveLength(4); // mean/p50/p90/max diff, all null
+    expect(within(summary).getAllByText("—")).toHaveLength(5); // mean/p50/p90/max diff + mean ticks, all null
   });
 
   it("no long recoveries this day stays the honest empty state, not a GapNote", () => {

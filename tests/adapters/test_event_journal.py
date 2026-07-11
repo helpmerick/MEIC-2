@@ -44,6 +44,10 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.ShortStopped: ev.ShortStopped(
             entry_id="2026-07-09#1", side="PUT", fill=D("3.80"), slippage=D("0.10"),
             fee=D("0.65"), initiator="watchdog_escalation"),
+        # STP-08a (v1.61): decay buyback order id journaled at placement.
+        ev.DecayBuybackPlaced: ev.DecayBuybackPlaced(
+            entry_id="2026-07-09#1", side="PUT", broker_order_id="482621999",
+            price=D("0.05")),
         ev.LongSold: ev.LongSold(entry_id="2026-07-09#1", side="PUT", recovery=D("0.50"),
                                   fee=D("0.65")),
         ev.SideClosed: ev.SideClosed(entry_id="2026-07-09#1", side="PUT"),

@@ -44,6 +44,9 @@ def test_buyback_cancel_race_against_live_shape_is_still_caught():
     assert outcome == "STOP_FILLED_RUN_LEX"
     buy_submits = [s for s in broker.submits if s[1] == "limit"]
     assert not buy_submits, f"a buyback was submitted on an already-stopped-out leg: {buy_submits}"
+    # STP-08a: no buyback was placed, so no buyback order id is journaled either.
+    from meic.domain.events import DecayBuybackPlaced
+    assert not any(isinstance(e, DecayBuybackPlaced) for e in events)
 
 
 def test_buyback_with_no_race_proceeds_normally():
@@ -66,6 +69,15 @@ def test_buyback_with_no_race_proceeds_normally():
     assert outcome != "STOP_FILLED_RUN_LEX"
     buy_submits = [s for s in broker.submits if s[1] == "limit"]
     assert len(buy_submits) == 1
+    # STP-08a (v1.61): the buyback's broker order id is journaled AT PLACEMENT
+    # so stop_fill_watch's detection can classify its fill SIDE_CLOSED_DECAY by
+    # id, never as a stop-out.
+    from meic.domain.events import DecayBuybackPlaced
+    placed = [e for e in events if isinstance(e, DecayBuybackPlaced)]
+    assert len(placed) == 1
+    assert placed[0].entry_id == "e2" and placed[0].side == "CALL"
+    assert placed[0].broker_order_id == str(outcome)
+    assert placed[0].price == D("0.05")
 
 
 def test_reinflation_guard_never_reprotects_a_leg_the_buyback_already_closed():

@@ -146,12 +146,16 @@ def entry_credit_dollars(entry: EntryProjection) -> Decimal:
     return entry.net_credit * CONTRACT_MULTIPLIER * contracts_of(entry)
 
 
-def entries_win_loss_by_day(events: list[Event]) -> dict[str, tuple[int, int]]:
-    """Per-day (wins, losses) entry counts, mirroring `core_results`'
+def entries_win_loss_by_day(events: list[Event]) -> dict[str, tuple[int, int, int]]:
+    """Per-day (wins, losses, entries) counts, mirroring `core_results`'
     `entry_win_rate` exactly: a filled entry (`net_credit != 0`) with
     `pnl > 0` is a win, `pnl < 0` a loss (an exact-zero `pnl` fill counts as
     neither -- same threshold `entry_win_rate` uses, never silently promoted
-    to a win). Feeds RPT-09's calendar-heatmap hover (wins/losses/day P&L).
+    to a win). `entries` (UI-26a v1.61: the hover box shows date, net $,
+    ENTRIES, wins/losses) is the day's FILLED entry count -- the same
+    `net_credit != 0` set the win/loss split is computed over, extended out
+    of this ONE fold (RPT-09a: one aggregation path), never re-derived per
+    view. Feeds RPT-09's calendar-heatmap hover.
 
     A day absent from this map had zero filled entries in `events` -- the
     caller (reports.py's CSV daily export) distinguishes that from a
@@ -159,10 +163,12 @@ def entries_win_loss_by_day(events: list[Event]) -> dict[str, tuple[int, int]]:
     "0 wins" would be a fabrication, not an honest count) by also checking
     `imported_fills_by_day`; this function itself only ever reports a REAL
     fold-derived count."""
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, tuple[int, int, int]] = {}
     for day, entries in entries_by_day(events).items():
         filled = [e for e in entries if e.net_credit != 0]
-        out[day] = (sum(1 for e in filled if e.pnl > 0), sum(1 for e in filled if e.pnl < 0))
+        out[day] = (sum(1 for e in filled if e.pnl > 0),
+                    sum(1 for e in filled if e.pnl < 0),
+                    len(filled))
     return out
 
 

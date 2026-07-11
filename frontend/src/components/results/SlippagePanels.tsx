@@ -76,6 +76,7 @@ export function SlippagePanels({ daySlippage }: { daySlippage?: DaySlippageFamil
                     <th>p50</th>
                     <th>p90</th>
                     <th>max</th>
+                    <th>mean ticks</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -85,6 +86,10 @@ export function SlippagePanels({ daySlippage }: { daySlippage?: DaySlippageFamil
                     <td>{slipDollars(daySlippage.long_recovery.p50)}</td>
                     <td>{slipDollars(daySlippage.long_recovery.p90)}</td>
                     <td>{slipDollars(daySlippage.long_recovery.max)}</td>
+                    {/* UI-28: slippage in BOTH ticks and position dollars —
+                        ticks derived server-side exactly as the stop-outs
+                        family derives its own (EC-STP-03 tick 0.05). */}
+                    <td>{daySlippage.long_recovery.mean_ticks ?? "—"}</td>
                   </tr>
                 </tbody>
               </table>

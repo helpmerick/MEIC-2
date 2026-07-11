@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalTime, etToZone, isMilitaryTime, withinMarketHours, zoneLabel } from "./time";
+import { canonicalTime, etToZone, instantToZone, isMilitaryTime, withinMarketHours, zoneLabel } from "./time";
 
 // ET entry times shown in the operator's local zone. We pass an explicit zone so
 // the assertion is deterministic regardless of the CI box's timezone; the DST
@@ -30,6 +30,28 @@ describe("etToZone — ET entry time in the operator's local zone", () => {
     expect(etToZone("11-53", "Europe/London")).toBeNull();
     expect(etToZone("25:00", "Europe/London")).toBeNull();
     expect(etToZone("", "Europe/London")).toBeNull();
+  });
+});
+
+// UI-24 rollover / TC-DAY-07 (DAY-01a era): /day/status's next_entry_at is a
+// FULL ISO instant, so an entry on the far side of a DST switch converts with
+// the instant's OWN offset — never today's.
+describe("instantToZone — full-instant conversion (DST-correct across the switch)", () => {
+  it("converts a January instant with the instant's own offset, not today's", () => {
+    // Mon 2027-01-04 11:56 ET is EST (-05:00) = 16:56 UTC — London is on GMT.
+    expect(instantToZone("2027-01-04T11:56:00-05:00", "Europe/London")).toBe("16:56");
+    // The same ET wall-clock in July (EDT, -04:00) is a DIFFERENT instant
+    // (15:56 UTC) — London is on BST, so the echo happens to read the same…
+    expect(instantToZone("2026-07-13T11:56:00-04:00", "Europe/London")).toBe("16:56");
+    // …but a zone that does NOT observe DST exposes the raw instants: the two
+    // "11:56 ET" entries land 60 minutes apart in Phoenix. Converting with
+    // "today's offset" could never produce both.
+    expect(instantToZone("2027-01-04T11:56:00-05:00", "America/Phoenix")).toBe("09:56");
+    expect(instantToZone("2026-07-13T11:56:00-04:00", "America/Phoenix")).toBe("08:56");
+  });
+
+  it("returns null for an unparsable instant (never a fabricated echo)", () => {
+    expect(instantToZone("not-a-date", "Europe/London")).toBeNull();
   });
 });
 

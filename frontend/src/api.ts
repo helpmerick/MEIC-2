@@ -178,11 +178,14 @@ export const api = {
     return rows
       .filter((line) => line.length > 0)
       .map((line) => {
-        const [date, mode, net_pnl, trust, wins, losses] = line.split(",");
+        const [date, mode, net_pnl, trust, wins, losses, entries] = line.split(",");
         return {
           date, mode, net_pnl, trust,
           wins: wins ? Number(wins) : null,
           losses: losses ? Number(losses) : null,
+          // UI-26a: the hover box's entries count — same blank-means-null
+          // honesty as wins/losses on a broker-imported day.
+          entries: entries ? Number(entries) : null,
         };
       });
   },

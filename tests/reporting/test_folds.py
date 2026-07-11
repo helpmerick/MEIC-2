@@ -81,7 +81,9 @@ def test_entries_win_loss_by_day_mirrors_entry_win_rates_pnl_threshold():
         CondorFilled(entry_id="2026-07-09#2", net_credit=D("4.00")),
         ShortStopped(entry_id="2026-07-09#2", side="PUT", fill=D("8.50"), slippage=D("0")),
     ]
-    assert entries_win_loss_by_day(events) == {"2026-07-09": (1, 1)}
+    # (wins, losses, entries) -- `entries` (UI-26a v1.61) is the filled count
+    # from the SAME fold, never re-derived per view (RPT-09a).
+    assert entries_win_loss_by_day(events) == {"2026-07-09": (1, 1, 2)}
 
 
 def test_entries_win_loss_by_day_omits_a_day_with_no_filled_entries():

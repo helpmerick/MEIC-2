@@ -343,10 +343,17 @@ def _long_recovery_family(scoped: list[Event]) -> dict[str, Any]:
     """
     rows = _long_recovery_rows(scoped)
     diffs = [Decimal(r["diff"]) for r in rows if r["diff"] is not None]
+    # UI-28 (v1.61): "slippage renders in both ticks and position dollars" --
+    # the diff aggregates carry a mean-ticks figure derived EXACTLY the way
+    # the stop-outs family derives its own (per-share diff / STOP_TICK, the
+    # EC-STP-03 SPX tick this module already pins at 0.05). None when no row
+    # carries a diff (pre-stamping rows) -- honest, never fabricated.
+    ticks = [d / STOP_TICK for d in diffs]
     return {
         "rows": rows, "n": len(rows),
         "mean": _s(slippage_mod.mean(diffs)), "p50": _s(slippage_mod.p50(diffs)),
         "p90": _s(slippage_mod.p90(diffs)), "max": _s(slippage_mod.maximum(diffs)),
+        "mean_ticks": _s(slippage_mod.mean(ticks)),
         "nle_estimate_captured": False,
     }
 
@@ -509,25 +516,28 @@ def build_reports_router(
             from meic.reporting.folds import daily_net, entries_win_loss_by_day
 
             writer = csv.writer(buf)
-            writer.writerow(["date", "mode", "net_pnl", "trust", "wins", "losses"])
+            # UI-26a (v1.61): `entries` -- the day's filled-entry count, from
+            # the SAME entries_win_loss_by_day fold the win/loss split comes
+            # from (RPT-09a: one aggregation path) -- feeds the heatmap hover.
+            writer.writerow(["date", "mode", "net_pnl", "trust", "wins", "losses", "entries"])
             daily = daily_net(scoped)
             win_loss = entries_win_loss_by_day(scoped)
             imported = imported_fills_by_day(scoped)
             for d in sorted(daily):
                 trust = trust_stamp(events, (d,))
                 if d in win_loss:
-                    wins, losses = win_loss[d]
+                    wins, losses, n_entries = win_loss[d]
                 elif d in imported:
                     # RPT-16: an imported-only day has no recorded entry-level
                     # outcome to count -- blank (not applicable), never a
                     # fabricated 0/0 for a day that plainly moved money.
-                    wins, losses = "", ""
+                    wins, losses, n_entries = "", "", ""
                 else:
                     # A real trading day with zero filled entries (e.g. every
                     # attempt was skipped) truthfully had zero wins/losses --
                     # not a fabrication, same convention as daily_net's $0.00.
-                    wins, losses = 0, 0
-                writer.writerow([d, m, str(daily[d]), trust.status, wins, losses])
+                    wins, losses, n_entries = 0, 0, 0
+                writer.writerow([d, m, str(daily[d]), trust.status, wins, losses, n_entries])
         elif table == "entries":
             writer = csv.writer(buf)
             writer.writerow(["entry_id", "mode", "status", "outcome", "net_credit", "pnl", "trust"])

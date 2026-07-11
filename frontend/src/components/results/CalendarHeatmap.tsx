@@ -35,8 +35,8 @@ interface Cell {
   weekend: boolean;
 }
 
-// The screen-reader label: wins/losses/total P&L for the day (null
-// wins/losses = a broker-imported day, RPT-16 — described honestly, never a
+// The screen-reader label: entries/wins/losses/total P&L for the day (null
+// counts = a broker-imported day, RPT-16 — described honestly, never a
 // fabricated 0-0). The visual hover box below renders the same facts.
 function cellLabel(row: DailyRow): string {
   const n = Number(row.net_pnl);
@@ -44,16 +44,18 @@ function cellLabel(row: DailyRow): string {
   if (row.wins === null || row.losses === null) {
     return `${row.date}: ${pnlText} (${row.trust}) — win/loss breakdown not applicable (broker-imported)`;
   }
-  return `${row.date}: ${row.wins}W / ${row.losses}L, ${pnlText} (${row.trust})`;
+  return `${row.date}: ${row.entries ?? 0} entries, ${row.wins}W / ${row.losses}L, ${pnlText} (${row.trust})`;
 }
 
-// The hover box's middle line (RPT-16 honesty: an imported day has no
-// entry-level outcome to count — say so, never render "0 wins · 0 losses").
+// The hover box's middle line — UI-26a (v1.61): date, net $, ENTRIES,
+// wins/losses. All three counts come from the backend's ONE aggregation path
+// (RPT-16 honesty: an imported day has no entry-level outcome to count — say
+// so, never render "0 entries · 0 wins · 0 losses").
 function winLossLine(row: DailyRow): string {
   if (row.wins === null || row.losses === null) {
     return "win/loss breakdown not applicable (broker-imported)";
   }
-  return `${row.wins} wins · ${row.losses} losses`;
+  return `${row.entries ?? 0} entries · ${row.wins} wins · ${row.losses} losses`;
 }
 
 interface TipState {

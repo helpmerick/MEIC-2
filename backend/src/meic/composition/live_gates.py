@@ -36,6 +36,28 @@ class LiveMarketGates:
     holidays: frozenset[date] = field(default_factory=frozenset)
     half_days: frozenset[date] = field(default_factory=frozenset)
 
+    @classmethod
+    def for_live(cls, **kw) -> "LiveMarketGates":
+        """The LIVE boot seam (DAY-01a, v1.60/v1.61): the live gates boot with a
+        COMPUTED exchange calendar loaded (nyse_holidays.py, ≥ a decade in the
+        live wiring), and an EMPTY calendar at boot is a CONSTRUCTION ERROR,
+        never an open market — the dataclass defaults (empty frozensets) once
+        made every market holiday look like an open day. server.py's live
+        wiring constructs through THIS classmethod; direct `LiveMarketGates(...)`
+        construction stays available to paper/test call-sites that legitimately
+        pass explicit sets for controlled scenarios."""
+        if not kw.get("holidays"):
+            raise ValueError(
+                "DAY-01a: live gates constructed with no holiday data — an empty "
+                "exchange calendar at boot is a construction error, not an open "
+                "market. Compute it (nyse_holidays.holidays_near), never hand-feed it.")
+        if not kw.get("half_days"):
+            raise ValueError(
+                "DAY-01a: live gates constructed with no half-day data — the exchange "
+                "calendar (including half days, DAY-01) must be computed and loaded "
+                "at boot (nyse_holidays.half_days_near).")
+        return cls(**kw)
+
     async def _safe(self, provider, *, default: bool) -> bool:
         """A provider that is absent or raises yields the SAFE answer — never the
         permissive one. A gate we cannot evaluate is a gate that blocks."""

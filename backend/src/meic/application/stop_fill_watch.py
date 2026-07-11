@@ -52,17 +52,20 @@ NOT wired into the live composition today, no code change here):
     that window would see the side pending and could start a LEX ladder while
     the buy-back is still working (the guards check the LONG's orders, never
     the short's buy-back).
-  * decay_watcher.py's buyback fill could be misread by `_resolve_by_symbol`
-    (it is a buy-to-close on the short's symbol) in the window between the
-    broker fill and `complete()`'s atomic ShortStopped+EntryClosed journaling,
-    if decay is ever wired live — the R3-F2 re-check narrows but does not
-    close that window for a fill the log hasn't seen at all.
+  * decay_watcher.py's buyback fill (RESOLVED, STP-08a v1.61): the buyback's
+    broker order id is now journaled AT PLACEMENT (`DecayBuybackPlaced`,
+    decay_watcher.buyback()), and this module's detection pass recognises a
+    fill matching that id — up-front per side AND inside the symbol fallback —
+    and classifies the side SIDE_CLOSED_DECAY (the exact ShortStopped
+    initiator="decay" + EntryClosed initiator="decay" shape `complete()`
+    journals; long left to expire, DCY-03) instead of misreading it as a
+    stop-out. See `build_tracked_shorts` / `detect_and_recover_stop_fills`.
 """
 from __future__ import annotations
 
 from decimal import Decimal
 
-from meic.domain.events import StopPlaced
+from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped, StopPlaced
 from meic.domain.projection import fold
 
 from .execute_entry import _fill_matches
@@ -84,6 +87,19 @@ def _stop_specs(events) -> dict[tuple[str, str], StopPlaced]:
     specs: dict[tuple[str, str], StopPlaced] = {}
     for e in events:
         if isinstance(e, StopPlaced):
+            specs[(e.entry_id, e.side)] = e
+    return specs
+
+
+def _decay_buyback_specs(events) -> dict[tuple[str, str], DecayBuybackPlaced]:
+    """STP-08a (v1.61): the latest journaled decay-buyback order per
+    (entry_id, side) — `DecayBuybackPlaced` is appended by DecayWatcher.buyback()
+    AT PLACEMENT, so by the time its fill can appear in the fills feed the id is
+    already on the log. A fill matching one of these ids is the DCY buyback,
+    NEVER a stop-out."""
+    specs: dict[tuple[str, str], DecayBuybackPlaced] = {}
+    for e in events:
+        if isinstance(e, DecayBuybackPlaced):
             specs[(e.entry_id, e.side)] = e
     return specs
 
@@ -162,7 +178,7 @@ async def _resolve_by_order_id(broker, order_id: str) -> tuple[bool, Decimal | N
     return False, None
 
 
-async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None]:
+async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None, str | None]:
     """Fallback path for a stop placed BEFORE `broker_order_id` existed --
     every stop on record up to and including the missed 2026-07-10 C7565
     fill. Matched by the short's own broker-reported symbol (ORD-09) among
@@ -179,6 +195,11 @@ async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None]
     future slice should route this decision through the existing OWN-09
     `external_close.py`/`classify_side` machinery (grace period + two-
     consecutive-reconcile confirmation) instead of a bare symbol match.
+
+    Returns (filled, price, matched_order_id): the matched fill's own order id
+    is surfaced so the caller can recognise a journaled DECAY BUYBACK (STP-08a:
+    a buy-to-close on the short's own symbol that is NOT a stop-out) before ever
+    treating the match as a stop fill.
     """
     for order in await broker.fills_since(None):
         for leg in _order_legs(order):
@@ -186,29 +207,60 @@ async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None]
                 oid = _order_id(order)
                 legs = await broker.fill_legs(oid)
                 price = next((l.price for l in legs if l.symbol == symbol and l.price is not None), None)
-                return True, price
-    return False, None
+                return True, price, (None if oid is None else str(oid))
+    return False, None, None
 
 
-async def build_tracked_shorts(broker, events) -> list[TrackedShort]:
+async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list[tuple[str, str, Decimal]]]:
     """The EC-STP-06 candidates for THIS tick: an open, stop-placed short
-    whose stop is no longer resting and DID fill. Reused directly by
-    `Reconcile.plan()` -- the SAME frame boot reconciliation drives."""
+    whose stop is no longer resting and DID fill. The first list is reused
+    directly by `Reconcile.plan()` -- the SAME frame boot reconciliation
+    drives.
+
+    The second list is STP-08a's decay classification (v1.61): sides whose
+    matched fill is, by journaled order id, the DCY BUYBACK -- (entry_id,
+    side, fill_price). These are NEVER TrackedShorts (never a stop-out, never
+    LEX); the caller journals them with decay_watcher.complete()'s exact
+    SIDE_CLOSED_DECAY shape. Two recognition points, both by order id against
+    `_decay_buyback_specs`:
+      * up-front per side: a journaled buyback for THIS side whose id shows
+        filled resolves the side as decay-closed before either stop-resolution
+        path runs (covers the order-id-era stop, whose own id would simply
+        read "not filled" after decay cancelled it);
+      * inside the symbol fallback: the matched fill's own order id equals ANY
+        journaled buyback id (the misread the docstring used to flag as a
+        latent hazard -- a decay buyback IS a buy-to-close on the short's own
+        symbol)."""
     tracked: list[TrackedShort] = []
+    decay_closed: list[tuple[str, str, Decimal]] = []
+    decay_specs = _decay_buyback_specs(events)
+    decay_ids = {spec.broker_order_id: spec for spec in decay_specs.values()}
     for entry_id, side, leg, spec in _open_short_legs(events):
         if await _still_resting(broker, leg.symbol):
-            continue
+            continue  # covers the resting stop AND a still-working decay buyback
+        dspec = decay_specs.get((entry_id, side))
+        if dspec is not None:
+            filled, price = await _resolve_by_order_id(broker, dspec.broker_order_id)
+            if filled:
+                decay_closed.append((entry_id, side,
+                                     price if price is not None else dspec.price))
+                continue  # SIDE_CLOSED_DECAY -- never a stop-out (STP-08a)
         if spec.broker_order_id:
             filled, price = await _resolve_by_order_id(broker, spec.broker_order_id)
         else:
-            filled, price = await _resolve_by_symbol(broker, leg.symbol)
+            filled, price, matched_oid = await _resolve_by_symbol(broker, leg.symbol)
+            if filled and matched_oid is not None and matched_oid in decay_ids:
+                bspec = decay_ids[matched_oid]
+                decay_closed.append((entry_id, side,
+                                     price if price is not None else bspec.price))
+                continue  # the "stop fill" was in fact the DCY buyback
         if not filled:
             continue  # neither resting nor fillable -- ambiguous; leave for boot
         tracked.append(TrackedShort(
             entry_id=entry_id, side=side, symbol=leg.symbol, stop_order_id=None,
             stop_filled=True, stop_fill_price=(price if price is not None else spec.trigger),
             stop_trigger=spec.trigger, contracts=leg.qty))
-    return tracked
+    return tracked, decay_closed
 
 
 async def _long_still_held(broker, long_symbol: str) -> bool:
@@ -403,8 +455,8 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
 
     # Phase 1 -- DETECTION: journal any stop fill the broker knows about that
     # the log doesn't (EC-STP-06 synthesis, via the ratified Reconcile frame).
-    tracked = await build_tracked_shorts(broker, events)
-    if tracked:
+    tracked, decay_closed = await build_tracked_shorts(broker, events)
+    if tracked or decay_closed:
         # R3-F2: build_tracked_shorts folded the log ONCE at its start, then
         # awaited the broker repeatedly -- a concurrent close for the same
         # side can complete in between (its SideClosed now journaled, and its
@@ -417,6 +469,19 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
         # top, before its first await).
         open_now = {(entry_id, side) for entry_id, side, _leg, _spec in _open_short_legs(events)}
         tracked = [t for t in tracked if (t.entry_id, t.side) in open_now]
+        decay_closed = [d for d in decay_closed if (d[0], d[1]) in open_now]
+    # STP-08a (v1.61): a fill identified (by journaled order id) as the DCY
+    # buyback classifies SIDE_CLOSED_DECAY -- journaled with the EXACT shape
+    # decay_watcher.complete() uses (ShortStopped initiator="decay" +
+    # EntryClosed initiator="decay", atomically), so the projection and the
+    # `_pending_lex_sides` decay exemption below keep working unchanged. The
+    # long is LEFT TO EXPIRE (DCY-03): the decay initiator excludes the side
+    # from the pending set, so no LEX ladder ever starts. Appended
+    # synchronously (no await between the R3-F2 re-check and these appends).
+    for entry_id, side, fill_price in decay_closed:
+        events.append(ShortStopped(entry_id=entry_id, side=side, fill=fill_price,
+                                   slippage=Decimal("0"), initiator="decay"))
+        events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
     if tracked:
         rec = Reconcile(broker, events)
         plan = rec.plan(tracked_shorts=tracked, broker_working_order_ids=set(),

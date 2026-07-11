@@ -14,6 +14,7 @@ from meic.application.recover_long import Quote
 from meic.application.stop_fill_watch import detect_and_recover_stop_fills
 from meic.domain.events import (
     CondorFilled,
+    DecayBuybackPlaced,
     EntryClosed,
     FilledLeg,
     LongSaleStarted,
@@ -440,6 +441,71 @@ def test_resting_stopped_side_on_a_decay_closed_entry_is_still_lex_driven():
     assert call["side"] == "CALL" and call["long_symbol"] == CALL_LONG
     assert not any(c["side"] == "PUT" for c in recover.calls), \
         "the decay PUT long is left to expire (DCY-03)"
+
+
+# --- STP-08a (v1.61): a DCY buyback fill is NEVER a stop-out --------------------
+
+def test_decay_buyback_fill_classifies_side_closed_decay_never_a_stop_out():
+    """STP-08a: DecayWatcher.buyback() journals its order id at placement
+    (DecayBuybackPlaced); a detected fill matching that id classifies the side
+    SIDE_CLOSED_DECAY -- journaled with decay_watcher.complete()'s exact shape
+    (ShortStopped initiator="decay" + EntryClosed initiator="decay") -- the
+    long is left to expire (DCY-03) and NO LEX ladder ever starts. Exercises
+    the symbol-fallback era (StopPlaced without broker_order_id): without the
+    id journal, `_resolve_by_symbol` would have misread this buy-to-close on
+    the short's own symbol as a stop-out (the docstring's old latent hazard)."""
+    events = list(_condor_filled_events())
+    events.append(StopPlaced(entry_id=ENTRY_ID, side="CALL", trigger=D("3.80")))
+    events.append(DecayBuybackPlaced(entry_id=ENTRY_ID, side="CALL",
+                                     broker_order_id="DCY-1", price=D("0.05")))
+    broker = _FakeBroker()
+    broker.fills = [{"order_id": "DCY-1", "legs": [{"symbol": CALL_SHORT, "action": "buy_to_close"}]}]
+    broker.fill_legs_by_order["DCY-1"] = (
+        FilledLeg(symbol=CALL_SHORT, right="C", role="short", qty=1, price=D("0.05")),)
+    broker.positions_ = [{"symbol": CALL_LONG, "signed_qty": 1}]  # long held, left to expire
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    _run(comp, alerts)
+
+    stopped = [e for e in events if isinstance(e, ShortStopped)]
+    assert len(stopped) == 1 and stopped[0].initiator == "decay", \
+        "the DCY buyback fill must classify as decay, never as a stop-out"
+    assert stopped[0].fill == D("0.05") and stopped[0].slippage == D("0")
+    closed = [e for e in events if isinstance(e, EntryClosed)]
+    assert len(closed) == 1 and closed[0].initiator == "decay"
+    assert recover.calls == [], "the decay long is left to expire -- no LEX ladder (DCY-03)"
+    assert not any(isinstance(e, LongSaleStarted) for e in events)
+
+    # idempotent: a second tick re-detects nothing and still starts no ladder
+    _run(comp, alerts)
+    assert len([e for e in events if isinstance(e, ShortStopped)]) == 1
+    assert recover.calls == []
+
+
+def test_decay_buyback_fill_beats_the_order_id_era_ambiguous_path():
+    """An order-id-era stop (broker_order_id recorded) that decay CANCELLED
+    resolves 'not filled' by its own id -- previously 'ambiguous; leave for
+    boot'. With the journaled buyback id, the up-front per-side check
+    classifies the side decay-closed instead of leaving it dangling."""
+    events = list(_condor_filled_events())
+    events.append(StopPlaced(entry_id=ENTRY_ID, side="CALL", trigger=D("3.80"),
+                             broker_order_id="STOP-7"))  # cancelled by decay, never filled
+    events.append(DecayBuybackPlaced(entry_id=ENTRY_ID, side="CALL",
+                                     broker_order_id="DCY-2", price=D("0.05")))
+    broker = _FakeBroker()
+    broker.fills = [{"order_id": "DCY-2", "legs": [{"symbol": CALL_SHORT, "action": "buy_to_close"}]}]
+    broker.positions_ = [{"symbol": CALL_LONG, "signed_qty": 1}]
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    _run(comp, alerts)
+
+    stopped = [e for e in events if isinstance(e, ShortStopped)]
+    assert len(stopped) == 1 and stopped[0].initiator == "decay"
+    assert stopped[0].fill == D("0.05"), \
+        "no per-leg allocation -> the journaled buyback limit, never a guess"
+    assert recover.calls == []
 
 
 # --- R3-F2: a close completing MID-BUILD must not synthesize a false stop -------

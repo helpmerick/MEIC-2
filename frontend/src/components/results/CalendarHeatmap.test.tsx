@@ -14,9 +14,9 @@ import { CalendarHeatmap } from "./CalendarHeatmap";
 // weekend (Sat/Sun); the 6th is the following Monday (Mon-first index 0).
 // August 2026: the 1st is a Saturday (Mon-first index 5); the 3rd is a Monday.
 const DAILY: DailyRow[] = [
-  { date: "2026-07-01", mode: "paper", net_pnl: "150.00", trust: "bot-computed", wins: 2, losses: 1 },
-  { date: "2026-07-06", mode: "paper", net_pnl: "-40.00", trust: "bot-computed", wins: 0, losses: 1 },
-  { date: "2026-08-03", mode: "paper", net_pnl: "75.00", trust: "broker-imported", wins: null, losses: null },
+  { date: "2026-07-01", mode: "paper", net_pnl: "150.00", trust: "bot-computed", wins: 2, losses: 1, entries: 3 },
+  { date: "2026-07-06", mode: "paper", net_pnl: "-40.00", trust: "bot-computed", wins: 0, losses: 1, entries: 1 },
+  { date: "2026-08-03", mode: "paper", net_pnl: "75.00", trust: "broker-imported", wins: null, losses: null, entries: null },
 ];
 
 function cellFor(date: string): HTMLElement {
@@ -68,14 +68,14 @@ describe("CalendarHeatmap (RPT-09)", () => {
     expect(screen.getByText("2026-08")).toBeInTheDocument();
   });
 
-  it("hovering a trading-day cell shows a styled box with date, wins/losses, and signed P&L", () => {
+  it("hovering a trading-day cell shows a styled box with date, entries, wins/losses, and signed P&L (UI-26a)", () => {
     render(<CalendarHeatmap daily={DAILY} />);
     expect(screen.queryByTestId("heatmap-tooltip")).not.toBeInTheDocument();
 
     fireEvent.mouseEnter(cellFor("2026-07-01"));
     const tip = screen.getByTestId("heatmap-tooltip");
     expect(tip).toHaveTextContent("2026-07-01");
-    expect(tip).toHaveTextContent("2 wins · 1 losses");
+    expect(tip).toHaveTextContent("3 entries · 2 wins · 1 losses");
     expect(tip).toHaveTextContent("+150.00");
     // Signed P&L is colored via the shared gain/loss sign classes.
     expect(tip.querySelector(".heatmap-tooltip-pnl")).toHaveClass("pos");
@@ -85,7 +85,7 @@ describe("CalendarHeatmap (RPT-09)", () => {
 
     fireEvent.mouseEnter(cellFor("2026-07-06"));
     const lossTip = screen.getByTestId("heatmap-tooltip");
-    expect(lossTip).toHaveTextContent("0 wins · 1 losses");
+    expect(lossTip).toHaveTextContent("1 entries · 0 wins · 1 losses");
     expect(lossTip).toHaveTextContent("-40.00");
     expect(lossTip.querySelector(".heatmap-tooltip-pnl")).toHaveClass("neg");
   });
@@ -98,6 +98,7 @@ describe("CalendarHeatmap (RPT-09)", () => {
     expect(tip).toHaveTextContent("win/loss breakdown not applicable (broker-imported)");
     expect(tip).toHaveTextContent("+75.00");
     expect(tip).not.toHaveTextContent(/0 wins/);
+    expect(tip).not.toHaveTextContent(/0 entries/);
     fireEvent.blur(cellFor("2026-08-03"));
     expect(screen.queryByTestId("heatmap-tooltip")).not.toBeInTheDocument();
   });
@@ -106,12 +107,30 @@ describe("CalendarHeatmap (RPT-09)", () => {
     render(<CalendarHeatmap daily={DAILY} />);
     expect(cellFor("2026-07-01")).toHaveAttribute(
       "aria-label",
-      "2026-07-01: 2W / 1L, +150.00 (bot-computed)",
+      "2026-07-01: 3 entries, 2W / 1L, +150.00 (bot-computed)",
     );
     expect(cellFor("2026-08-03")).toHaveAttribute(
       "aria-label",
       "2026-08-03: +75.00 (broker-imported) — win/loss breakdown not applicable (broker-imported)",
     );
+  });
+
+  it("a zero-P&L trading day renders as a flat trading cell, visually distinct from a weekend", () => {
+    // UI-26a: weekend cells are visually DISTINCT from zero-P&L trading days
+    // — a real flat day is data (clickable, "flat" class), a weekend is a
+    // decorative non-session cell ("weekend" class, inert).
+    const daily: DailyRow[] = [
+      ...DAILY,
+      { date: "2026-07-07", mode: "paper", net_pnl: "0", trust: "bot-computed", wins: 0, losses: 0, entries: 0 },
+    ];
+    render(<CalendarHeatmap daily={daily} />);
+    const flatDay = cellFor("2026-07-07");
+    expect(flatDay).toHaveClass("flat");
+    expect(flatDay).not.toHaveClass("weekend");
+    expect(flatDay.tagName).toBe("A"); // real data: still click-through to the drill-down
+    const weekend = screen.getByTitle("2026-07-04: weekend");
+    expect(weekend).toHaveClass("weekend");
+    expect(weekend).not.toHaveClass("flat");
   });
 
   it("a trading-day cell links to the existing day drill-down route", () => {

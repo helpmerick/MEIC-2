@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from meic.domain.events import EntryClosed, ShortStopped
+from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import OrderIntent, buy_to_close_leg, protective_stop, right_of
@@ -97,6 +97,14 @@ class DecayWatcher:
             idempotency_key=f"decay:{entry_id}:{side}",
             legs=(buy_to_close_leg(right=right_of(side), contracts=contracts, symbol=symbol),)))
         self._buyback_id = order_id
+        # STP-08a (v1.61): journal the buyback's broker order id AT PLACEMENT so
+        # the live detection pass (stop_fill_watch.py) can classify this order's
+        # fill as SIDE_CLOSED_DECAY by id — never as a stop-out via the symbol
+        # fallback (the latent hazard previously only flagged in that module's
+        # docstring). Additive event; nothing else changes shape.
+        self.events.append(DecayBuybackPlaced(
+            entry_id=entry_id, side=side, broker_order_id=str(order_id),
+            price=self.decay_buyback_trigger))
         return order_id
 
     async def complete(self, *, entry_id: str, side: str) -> None:

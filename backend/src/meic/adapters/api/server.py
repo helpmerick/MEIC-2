@@ -882,11 +882,13 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     # (an EMPTY set), so market holidays looked like open days. The rules are
     # exchange facts computed algorithmically (nyse_holidays.py), not operator
     # config; a decade out costs nothing and outlives any realistic uptime.
+    # DAY-01a (v1.61): construct through the guarded LIVE seam — an empty
+    # calendar at boot is a construction error, never an open market.
     _cal_anchor = datetime.now(timezone.utc).date()
-    gates = LiveMarketGates(clock=comp.clock, data_fresh=_data_fresh,
-                            session_valid=_session_valid, buying_power_ok=_buying_power_ok,
-                            holidays=holidays_near(_cal_anchor, years_ahead=10),
-                            half_days=half_days_near(_cal_anchor, years_ahead=10))
+    gates = LiveMarketGates.for_live(clock=comp.clock, data_fresh=_data_fresh,
+                                     session_valid=_session_valid, buying_power_ok=_buying_power_ok,
+                                     holidays=holidays_near(_cal_anchor, years_ahead=10),
+                                     half_days=half_days_near(_cal_anchor, years_ahead=10))
 
     lead_seconds = _warmup_lead_seconds(env)   # ENT-08 session_warmup_lead_seconds
 
