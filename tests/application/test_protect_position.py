@@ -95,6 +95,36 @@ def test_unprotected_escalation_after_retries_exhausted():
     assert flattened == [("e3", "unprotected")]
 
 
+def test_stop_placed_journals_the_markup_in_force():
+    """RPT-07 long recovery (2026-07-11, operator ruling): StopPlaced carries
+    the STP-02b markup used to compute THIS stop's trigger, so a later
+    realized long-sale recovery can be compared against it (NLE-06)."""
+    broker, events, alerts = FakeBroker(), [], RecordingAlerts()
+    p = _protect(broker, events, alerts)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000")]
+    asyncio.run(p.protect(entry_id="e9", basis=StopBasis.TOTAL_CREDIT, shorts=shorts,
+                          pct=D("95"), markup=D("0.10"), total_net_credit=D("4.00")))
+
+    placed = [e for e in events if isinstance(e, StopPlaced)]
+    assert len(placed) == 1
+    assert placed[0].markup == D("0.10")
+
+
+def test_stop_placed_markup_defaults_to_zero_not_none_when_unspecified():
+    """`protect()`'s own `markup` parameter already defaults to Decimal("0")
+    (unchanged) -- StopPlaced.markup carries that same zero, not None. None
+    is reserved for events recorded before this field existed at all (event-
+    store replay), never for "caller didn't pass one"."""
+    broker, events, alerts = FakeBroker(), [], RecordingAlerts()
+    p = _protect(broker, events, alerts)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000")]
+    asyncio.run(p.protect(entry_id="e10", basis=StopBasis.TOTAL_CREDIT, shorts=shorts,
+                          pct=D("95"), total_net_credit=D("4.00")))
+
+    placed = [e for e in events if isinstance(e, StopPlaced)]
+    assert placed[0].markup == D("0")
+
+
 def test_short_premium_basis_per_side_triggers():
     broker, events, alerts = FakeBroker(), [], RecordingAlerts()
     p = _protect(broker, events, alerts)

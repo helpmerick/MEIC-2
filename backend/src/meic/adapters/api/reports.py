@@ -38,9 +38,12 @@ from meic.domain.events import (
     EntryMarkSample,
     Event,
     ExternalFillImported,
+    LongSaleStarted,
+    LongSold,
     ReconciliationMismatch,
     ShortStopped,
     SideUnprotected,
+    StopPlaced,
     WatchdogEscalated,
 )
 from meic.domain.projection import fold
@@ -282,6 +285,72 @@ def _timeline(scoped: list[Event]) -> dict[str, Any]:
     }
 
 
+def _long_recovery_rows(scoped: list[Event]) -> list[dict[str, Any]]:
+    """RPT-07 long recovery, one row per `LongSold`, journaled events ONLY:
+
+    - `mark_mid`: the long's mid at ladder start, from the LAST `LongSaleStarted`
+      journaled for this (entry_id, side) before the sale -- None for a
+      pre-stamping event (mark_bid/mark_ask absent on decode).
+    - `realized`: `LongSold.recovery` -- always present, it IS the sale.
+    - `diff` = realized - mark_mid, None whenever mark_mid is None (never
+      fabricated from a missing mark).
+    - `markup`: the STP-02b buffer in force, from the LAST `StopPlaced`
+      journaled for this (entry_id, side) -- None for a pre-stamping event.
+    - `shortfall` = markup - realized, None unless both are known.
+    - `nle_estimate`: ALWAYS None here -- see the module note on
+      `_long_recovery_family` below (no production path journals one).
+    """
+    last_start: dict[tuple[str, str], LongSaleStarted] = {}
+    last_stop: dict[tuple[str, str], StopPlaced] = {}
+    rows: list[dict[str, Any]] = []
+    for e in scoped:
+        if isinstance(e, LongSaleStarted):
+            last_start[(e.entry_id, e.side)] = e
+        elif isinstance(e, StopPlaced):
+            last_stop[(e.entry_id, e.side)] = e
+        elif isinstance(e, LongSold):
+            key = (e.entry_id, e.side)
+            start = last_start.get(key)
+            stop = last_stop.get(key)
+            mark_mid = None
+            if start is not None and start.mark_bid is not None and start.mark_ask is not None:
+                mark_mid = (start.mark_bid + start.mark_ask) / 2
+            markup = stop.markup if stop is not None else None
+            diff = (e.recovery - mark_mid) if mark_mid is not None else None
+            shortfall = (markup - e.recovery) if markup is not None else None
+            rows.append({
+                "entry_id": e.entry_id, "side": e.side,
+                "mark_mid": _s(mark_mid), "realized": _s(e.recovery),
+                "diff": _s(diff), "markup": _s(markup), "shortfall": _s(shortfall),
+                "nle_estimate": None,
+            })
+    return rows
+
+
+def _long_recovery_family(scoped: list[Event]) -> dict[str, Any]:
+    """RPT-07's long-recovery family + aggregates over the per-row `diff`
+    (realized vs mark-at-stop), via the SAME mean/p50/p90/max helpers
+    `stop_outs` above uses (one aggregation path, doc 10 RPT-07).
+
+    doc 10 RPT-07 also asks for realized "vs NLE estimate" (NLE-06
+    calibration). NO production code path journals an NLE estimate at entry
+    time: `domain/nle_calibration.py`'s `CalibrationRecord`/`CalibrationView`
+    exist but nothing in `application/` or `composition/` ever constructs
+    one outside tests -- `application/nle_preview.py` only computes a live
+    UI preview (NLE-05), never journaled. `nle_estimate_captured: False`
+    flags this honestly rather than inventing a number; each row's
+    `nle_estimate` is always None for the same reason.
+    """
+    rows = _long_recovery_rows(scoped)
+    diffs = [Decimal(r["diff"]) for r in rows if r["diff"] is not None]
+    return {
+        "rows": rows, "n": len(rows),
+        "mean": _s(slippage_mod.mean(diffs)), "p50": _s(slippage_mod.p50(diffs)),
+        "p90": _s(slippage_mod.p90(diffs)), "max": _s(slippage_mod.maximum(diffs)),
+        "nle_estimate_captured": False,
+    }
+
+
 def _day_slippage_families(scoped: list[Event]) -> dict[str, Any]:
     stop_outs = [e.slippage for e in scoped if isinstance(e, ShortStopped)]
     ticks = [s / STOP_TICK for s in stop_outs]
@@ -291,10 +360,11 @@ def _day_slippage_families(scoped: list[Event]) -> dict[str, Any]:
             "p90": _s(slippage_mod.p90(stop_outs)), "max": _s(slippage_mod.maximum(stop_outs)),
             "mean_ticks": _s(slippage_mod.mean(ticks)), "n": len(stop_outs),
         },
-        # Long recovery / closes / decay-buyback families need per-fill
-        # mark-at-stop / target-price capture this slice's event schema does
-        # not yet record -- deferred (slice-2 handoff), never fabricated.
-        "long_recovery": None, "closes": None, "decay_buybacks": None,
+        "long_recovery": _long_recovery_family(scoped),
+        # Closes / decay-buyback families need per-fill target-price capture
+        # this slice's event schema does not yet record -- deferred (slice-2
+        # handoff), never fabricated.
+        "closes": None, "decay_buybacks": None,
     }
 
 

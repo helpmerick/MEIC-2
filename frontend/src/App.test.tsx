@@ -158,7 +158,11 @@ describe("App — Results routing (UI-27)", () => {
       trust: { status: "bot-computed", confirmed_days: 0, total_days: 1, label: "0/1 days broker-confirmed" },
       entries: [], skips: [],
       timeline: { marks: [], markers: [] },
-      slippage: { stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 }, long_recovery: null, closes: null, decay_buybacks: null },
+      slippage: {
+        stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 },
+        long_recovery: { rows: [], n: 0, mean: null, p50: null, p90: null, max: null, nle_estimate_captured: false },
+        closes: null, decay_buybacks: null,
+      },
       corrections: [],
     });
   });
@@ -190,7 +194,11 @@ describe("App — Results routing (UI-27)", () => {
       trust: { status: "broker-imported", confirmed_days: 0, total_days: 1, label: "broker-imported", imported_days: 1 },
       entries: [], skips: [],
       timeline: { marks: [], markers: [] },
-      slippage: { stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 }, long_recovery: null, closes: null, decay_buybacks: null },
+      slippage: {
+        stop_outs: { mean: null, p50: null, p90: null, max: null, mean_ticks: null, n: 0 },
+        long_recovery: { rows: [], n: 0, mean: null, p50: null, p90: null, max: null, nle_estimate_captured: false },
+        closes: null, decay_buybacks: null,
+      },
       corrections: [],
       imported_fills: [{
         order_id: "482214732", symbol: "SPXW  260709P05600000", action: "Sell to Open",

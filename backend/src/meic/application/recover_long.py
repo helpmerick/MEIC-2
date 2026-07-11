@@ -96,7 +96,14 @@ class RecoverLong:
         intrinsic: Decimal,
         qty: int = 1,
     ) -> LexResult:
-        self._events.append(LongSaleStarted(entry_id=entry_id, side=side))
+        # RPT-07 long recovery (2026-07-11, operator ruling): stamp the long's
+        # mark at ladder start -- the honest best-available mark-at-stop,
+        # whether this recover() call was reached via the push-detected path
+        # (~1s after the stop) or the fallback catch-up poll.
+        self._events.append(LongSaleStarted(
+            entry_id=entry_id, side=side,
+            mark_bid=quote.bid, mark_ask=quote.ask, intrinsic=intrinsic,
+        ))
         floor = lex_floor(quote.bid, intrinsic)  # LEX-04
 
         if not self._quote_usable(quote):

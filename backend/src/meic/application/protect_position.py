@@ -147,14 +147,15 @@ class ProtectPosition:
                 idempotency_key=f"stop:{entry_id}:{leg.side}",  # ORD-04
             )
             placed = await self._place_and_verify(
-                entry_id, leg.side, triggers[leg.side], intent, contracts)
+                entry_id, leg.side, triggers[leg.side], intent, contracts, markup)
             if placed is not True:
                 await self._go_unprotected(entry_id, leg.side, naked=placed or None)
                 return ProtectResult("UNPROTECTED_FLATTENED", triggers)
         return ProtectResult("PROTECTED", triggers)
 
     async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal,
-                                intent: OrderIntent, contracts: int) -> bool | int:
+                                intent: OrderIntent, contracts: int,
+                                markup: Decimal | None = None) -> bool | int:
         """STP-04: place, then confirm working; retry up to attempts.
 
         Returns True on confirmation, False if it never confirmed, or the NAKED
@@ -189,8 +190,11 @@ class ProtectPosition:
                     # broker_order_id (additive, v1.60): lets a later live
                     # catch-up pass match a fill to THIS stop precisely,
                     # instead of by symbol inference (see stop_fill_watch.py).
+                    # markup (RPT-07, 2026-07-11): the STP-02b buffer in force
+                    # for THIS stop's trigger, journaled so realized long-sale
+                    # recovery can later be compared against it (NLE-06).
                     self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger,
-                                                   broker_order_id=str(order_id)))
+                                                   broker_order_id=str(order_id), markup=markup))
                     self._events.append(StopConfirmed(entry_id=entry_id, side=side))
                     return True
                 if qty is not None:

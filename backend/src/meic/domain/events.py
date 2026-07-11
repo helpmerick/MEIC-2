@@ -217,6 +217,14 @@ class StopPlaced(Event):
     # (from_dict's generic "field absent -> default" path handles replay) and
     # for any caller that hasn't threaded the broker's id through yet.
     broker_order_id: str | None = None
+    # RPT-07 long recovery (2026-07-11, operator ruling): the STP-02b
+    # stop_rebate_markup buffer IN FORCE when this stop's trigger was computed
+    # -- journaled so a realized long-sale recovery can later be compared
+    # against it (NLE-06's "every calibration record stores the markup in
+    # force"). Optional/additive, None for every pre-stamping recorded event
+    # (event-store codec's runtime-value tagging handles absent-on-decode,
+    # same as `broker_order_id` above).
+    markup: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -297,6 +305,17 @@ class EntryClosed(Event):
 class LongSaleStarted(Event):
     entry_id: str
     side: str
+    # RPT-07 long recovery (2026-07-11, operator ruling): the long's market
+    # state at ladder start -- this IS the mark-at-stop for a push-detected
+    # fill (~1s after the stop) and the honest best-available for a
+    # fallback-detected one. mark_bid/mark_ask are the Quote
+    # RecoverLong.recover() already receives; intrinsic is LEX-04's own
+    # floor value for the same call. Optional/additive, None for every
+    # pre-stamping recorded event (event-store codec's runtime-value tagging
+    # handles absent-on-decode, same as StopPlaced.broker_order_id).
+    mark_bid: Decimal | None = None
+    mark_ask: Decimal | None = None
+    intrinsic: Decimal | None = None
 
 
 @dataclass(frozen=True)

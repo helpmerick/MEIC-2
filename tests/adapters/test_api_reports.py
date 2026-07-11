@@ -20,7 +20,10 @@ from meic.domain.events import (
     EntryMarkSample,
     EntrySkipped,
     ExternalFillImported,
+    LongSaleStarted,
+    LongSold,
     ShortStopped,
+    StopPlaced,
 )
 
 PANEL = "http://127.0.0.1"
@@ -150,6 +153,91 @@ def test_day_drilldown_404_for_a_day_with_no_data():
     client, _, _ = _client([])
     r = client.get("/reports/day/2026-07-01")
     assert r.status_code == 404
+
+
+def test_long_recovery_row_realized_vs_mark_and_buffer():
+    """RPT-07 long recovery (2026-07-11 operator ruling): one row per
+    LongSold, mark-at-stop from LongSaleStarted's stamp, buffer in force
+    from StopPlaced.markup -- diff/shortfall computed from journaled events
+    only."""
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#1", side="PUT", fill=D("3.90"), slippage=D("0.10")),
+        StopPlaced(entry_id="2026-07-09#1", side="PUT", trigger=D("3.80"), markup=D("0.10")),
+        LongSaleStarted(entry_id="2026-07-09#1", side="PUT",
+                        mark_bid=D("2.00"), mark_ask=D("2.30"), intrinsic=D("0")),
+        LongSold(entry_id="2026-07-09#1", side="PUT", recovery=D("2.05")),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-09").json()
+    lr = body["slippage"]["long_recovery"]
+    assert lr["n"] == 1
+    row = lr["rows"][0]
+    assert row["entry_id"] == "2026-07-09#1" and row["side"] == "PUT"
+    assert row["mark_mid"] == "2.15"      # (2.00 + 2.30) / 2
+    assert row["realized"] == "2.05"
+    assert row["diff"] == "-0.10"         # realized - mark_mid
+    assert row["markup"] == "0.10"
+    assert row["shortfall"] == "-1.95"    # markup - realized
+    assert row["nle_estimate"] is None    # NLE-06: never fabricated (see below)
+    assert lr["mean"] == lr["p50"] == lr["p90"] == lr["max"] == "-0.10"
+    assert lr["nle_estimate_captured"] is False
+
+
+def test_long_recovery_pre_stamping_event_renders_honest_none_not_zero():
+    """A LongSaleStarted/StopPlaced recorded before the 2026-07-11 stamping
+    shipped carries no mark/markup at all -- replayed as None (event-store
+    codec's absent-on-decode path), and every value derived from it (diff,
+    shortfall) must ALSO be None, never a fabricated 0."""
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#1", side="CALL", fill=D("3.90"), slippage=D("0.10")),
+        LongSaleStarted(entry_id="2026-07-09#1", side="CALL"),          # pre-stamping: no mark
+        StopPlaced(entry_id="2026-07-09#1", side="CALL", trigger=D("3.80")),  # pre-markup
+        LongSold(entry_id="2026-07-09#1", side="CALL", recovery=D("1.80")),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-09").json()
+    row = body["slippage"]["long_recovery"]["rows"][0]
+    assert row["realized"] == "1.80"      # always known -- it IS the sale
+    assert row["mark_mid"] is None
+    assert row["diff"] is None
+    assert row["markup"] is None
+    assert row["shortfall"] is None
+    assert body["slippage"]["long_recovery"]["mean"] is None  # no diffs to aggregate
+
+
+def test_long_recovery_no_long_sales_this_day_is_empty_not_null():
+    """No fabricated GapNote once the family HAS a real shape: an ordinary
+    day with no LEX activity is an honest empty family, not None."""
+    events = [CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"))]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-09").json()
+    assert body["slippage"]["long_recovery"] == {
+        "rows": [], "n": 0, "mean": None, "p50": None, "p90": None, "max": None,
+        "nle_estimate_captured": False,
+    }
+
+
+def test_long_recovery_keys_rows_by_entry_and_side_not_crossed():
+    """Whipsaw, both sides (mirrors TC-NLE-05's own scenario): each side's
+    row must use ITS OWN StopPlaced/LongSaleStarted, never the other side's."""
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        StopPlaced(entry_id="2026-07-09#1", side="PUT", trigger=D("3.80"), markup=D("0.10")),
+        LongSaleStarted(entry_id="2026-07-09#1", side="PUT",
+                        mark_bid=D("2.00"), mark_ask=D("2.20"), intrinsic=D("0")),
+        LongSold(entry_id="2026-07-09#1", side="PUT", recovery=D("2.05")),
+        StopPlaced(entry_id="2026-07-09#1", side="CALL", trigger=D("3.70"), markup=D("0.25")),
+        LongSaleStarted(entry_id="2026-07-09#1", side="CALL",
+                        mark_bid=D("1.00"), mark_ask=D("1.20"), intrinsic=D("0")),
+        LongSold(entry_id="2026-07-09#1", side="CALL", recovery=D("1.05")),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-09").json()
+    rows = {r["side"]: r for r in body["slippage"]["long_recovery"]["rows"]}
+    assert rows["PUT"]["markup"] == "0.10" and rows["CALL"]["markup"] == "0.25"
+    assert rows["PUT"]["mark_mid"] == "2.10" and rows["CALL"]["mark_mid"] == "1.10"
 
 
 def test_close_initiator_marks_appear_on_the_timeline():

@@ -377,12 +377,41 @@ export interface StopOutSlippage {
   n: number;
 }
 
-// RPT-07's four slippage-out families. Three are `null` in this slice — a
-// real API gap (event schema doesn't yet record mark-at-stop/target-price
-// capture for these) — rendered as honest "not yet captured" states, never 0.
+// RPT-07 long recovery: one row per LongSold, journaled events only.
+// `mark_mid`/`markup` are `null` for a pre-stamping event (event existed
+// before the 2026-07-11 mark-at-stop/markup stamping shipped) — never
+// fabricated. `diff`/`shortfall` are `null` whenever their inputs are.
+// `nle_estimate` is always `null` in this slice: no production code path
+// journals an NLE estimate at entry time (see reports.py's module note).
+export interface LongRecoveryRow {
+  entry_id: string;
+  side: string;
+  mark_mid: string | null;
+  realized: string;
+  diff: string | null;
+  markup: string | null;
+  shortfall: string | null;
+  nle_estimate: null;
+}
+
+export interface LongRecoveryFamily {
+  rows: LongRecoveryRow[];
+  n: number;
+  mean: string | null;
+  p50: string | null;
+  p90: string | null;
+  max: string | null;
+  nle_estimate_captured: false;
+}
+
+// RPT-07's four slippage-out families. `long_recovery` is populated from
+// journaled events (2026-07-11). `closes`/`decay_buybacks` stay `null` — a
+// real API gap (event schema doesn't yet record fill-vs-mark-at-initiation /
+// fill-vs-target capture for these) — rendered as honest "not yet captured"
+// states, never 0.
 export interface DaySlippageFamilies {
   stop_outs: StopOutSlippage;
-  long_recovery: null;
+  long_recovery: LongRecoveryFamily;
   closes: null;
   decay_buybacks: null;
 }
