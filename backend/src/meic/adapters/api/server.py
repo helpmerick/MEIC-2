@@ -81,7 +81,13 @@ def _serve_panel(app) -> None:
     @app.get("/", response_class=HTMLResponse)
     def index():
         if (dist / "index.html").exists():
-            return FileResponse(str(dist / "index.html"))
+            # no-cache (2026-07-11): without it browsers heuristically cache
+            # index.html and keep serving a STALE panel after a deploy — the
+            # operator repeatedly saw old UI until a hard refresh. no-cache
+            # forces revalidation each load (cheap: ETag/304); the hashed
+            # /assets bundles it references stay immutable-cacheable.
+            return FileResponse(str(dist / "index.html"),
+                                headers={"Cache-Control": "no-cache"})
         return HTMLResponse(demo.read_text(encoding="utf-8") if demo.exists() else "<h1>MEIC</h1>")
 
     @app.get("/demo", response_class=HTMLResponse)
