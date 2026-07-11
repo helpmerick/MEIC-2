@@ -19,7 +19,6 @@ import {
   RTH_CLOSE_LABEL,
   RTH_OPEN_LABEL,
   withinMarketHours,
-  zoneLabel,
 } from "../time";
 import type {
   FirePreview,
@@ -51,9 +50,11 @@ function timeInvalid(value?: string): boolean {
 
 // Under each ET time: the operator's LOCAL equivalent (DST-aware, read live from
 // the browser), or a precise reason the time is not yet valid. Times are ET; a
-// London operator entering 11:53 sees "≈ 16:53 London" and knows exactly when it
-// fires their time. Military-only + market-open (09:30-16:00 ET) are enforced here
-// for instant feedback and by the backend authoritatively.
+// UK operator entering 11:53 sees "≈ 16:53 local" and knows exactly when it
+// fires their time. Labelled "local" rather than the IANA zone's city name
+// (operator request 2026-07-11: "London" misleads a Manchester reader — the
+// whole UK shares Europe/London). Military-only + market-open (09:30-16:00 ET)
+// are enforced here for instant feedback and by the backend authoritatively.
 function TimeHint({ value }: { value?: string }) {
   const raw = (value ?? "").trim();
   if (!raw) return null;
@@ -73,7 +74,7 @@ function TimeHint({ value }: { value?: string }) {
   }
   return (
     <span className="time-hint" data-testid="time-hint">
-      ≈ {etToZone(raw)} {zoneLabel()}
+      ≈ {etToZone(raw)} local
     </span>
   );
 }

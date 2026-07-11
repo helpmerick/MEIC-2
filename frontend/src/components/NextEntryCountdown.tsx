@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { ET_ZONE, etDayLabel, etToZone, instantToZone, zoneLabel } from "../time";
+import { ET_ZONE, etDayLabel, etToZone, instantToZone } from "../time";
 import type { DayStatus } from "../types";
 
 // UI-24 — display-only (UI-03); the backend's seconds_to_next is authoritative,
@@ -70,7 +70,7 @@ export function NextEntryCountdown() {
 
   return (
     <div className="next-entry" data-testid="next-entry">
-      Next entry {day ? `${day} ` : ""}{hhmm} ET{local ? ` (≈ ${local} ${zoneLabel()})` : ""} — in {countdown}
+      Next entry {day ? `${day} ` : ""}{hhmm} ET{local ? ` (≈ ${local} local)` : ""} — in {countdown}
     </div>
   );
 }
