@@ -14,6 +14,12 @@
   white-space: nowrap;
 }
 
+/* The panel is a query CONTAINER (it sits in a page grid, so its own width —
+   not the viewport — is what decides whether the table fits). Below its
+   comfortable width the table reflows into per-entry cards instead of forcing
+   a horizontal scroll (operator request 2026-07-12). */
+.schedule-panel { container-type: inline-size; container-name: sched; }
+
 /* --- the table ------------------------------------------------------------- */
 .sched-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 2px; }
 table.schedule { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 660px; }
@@ -114,6 +120,51 @@ td.cell-actions { white-space: nowrap; text-align: right; }
   background: color-mix(in srgb, var(--bad) 60%, black);
 }
 .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* --- narrow width: reflow the table into per-entry cards (operator 2026-07-12)
+   At the panel's comfortable table width the layout above is unchanged. Below
+   it, the column headers hide, each row becomes a bordered "Entry N" card, and
+   its fields wrap onto two centred, aligned lines (four per line) — each with
+   its own label — so there's no horizontal scroll and trade 1 reads clearly
+   apart from trade 2. A tighter tier drops to two fields per line for phones. */
+@container sched (max-width: 1000px) {
+  .sched-scroll { overflow-x: visible; margin: 0; padding: 0; }
+  table.schedule { display: block; min-width: 0; width: 100%; }
+  .schedule thead { display: none; }
+  .schedule tbody { display: block; }
+  .schedule tbody tr {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 10px; align-items: start;
+    padding: 14px 14px 16px; margin: 0 0 14px;
+    border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2);
+  }
+  .schedule tbody tr:hover { background: var(--surface-2); }
+  /* the "Entry N" heading that separates one trade card from the next */
+  .schedule tbody tr::before {
+    content: "Entry " attr(data-entry); grid-column: 1 / -1;
+    font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text); padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  /* each cell: its own centred label above the box */
+  .schedule tbody td {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    border-top: none; padding: 0;
+  }
+  .schedule tbody td::before {
+    content: attr(data-label);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  /* boxes fill their grid cell (drop the fixed 104px) so the lines stay aligned */
+  .schedule .cell-num input,
+  .schedule .cell-num select { width: 100%; min-width: 0; max-width: none; }
+  .schedule td.cell-wc { text-align: center; line-height: normal; }
+  .schedule td.cell-actions { text-align: center; }
+  .schedule td.cell-actions .icon-btn { margin: 0 3px; }
+}
+@container sched (max-width: 520px) {
+  .schedule tbody tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* --- footer: add / ceiling / readout / save -------------------------------- */
 .sched-foot {

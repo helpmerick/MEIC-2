@@ -262,8 +262,12 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={i} data-testid={`row-${i}`}>
-                <td className="cell-num">
+              // data-entry + the per-cell data-labels drive the narrow-width
+              // card layout (schedule.css @container): the thead hides and each
+              // cell shows its own label, each row becomes a bordered "Entry N"
+              // card. Both attributes are inert in the wide table layout.
+              <tr key={i} data-testid={`row-${i}`} data-entry={i + 1}>
+                <td className="cell-num" data-label="Time (ET)">
                   <input
                     aria-label={`time ${i + 1}`}
                     value={row.time ?? ""}
@@ -276,7 +280,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   />
                   <TimeHint value={row.time} />
                 </td>
-                <td className="cell-num">
+                <td className="cell-num" data-label="Target $">
                   <input
                     aria-label={`target premium ${i + 1}`}
                     value={row.target_premium ?? ""}
@@ -286,7 +290,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     className={errorFor(rowErrors, i, "target_premium") ? "invalid" : ""}
                   />
                 </td>
-                <td className="cell-num">
+                <td className="cell-num" data-label="Width">
                   <input
                     aria-label={`wing width ${i + 1}`}
                     value={row.wing_width ?? ""}
@@ -295,7 +299,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     className={errorFor(rowErrors, i, "wing_width") ? "invalid" : ""}
                   />
                 </td>
-                <td className="cell-num">
+                <td className="cell-num" data-label="Stop %">
                   {/* The discrete set is the ONLY stop-% the backend accepts (STP-02) */}
                   <select
                     aria-label={`stop pct ${i + 1}`}
@@ -308,7 +312,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     ))}
                   </select>
                 </td>
-                <td className="cell-num">
+                <td className="cell-num" data-label="Buffer $">
                   {/* STP-02b / UI-18: pre-credits expected long recovery into the
                       stop trigger — an operator-set constant, never model-driven. */}
                   <input
@@ -326,7 +330,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   />
                   <MarkupHint row={row} index={i} />
                 </td>
-                <td className="cell-num">
+                <td className="cell-num" data-label="Count">
                   {/* ENT-04 (v1.44): each row trades its OWN size */}
                   <input
                     aria-label={`contracts ${i + 1}`}
@@ -339,10 +343,10 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                     className={errorFor(rowErrors, i, "contracts") ? "invalid" : ""}
                   />
                 </td>
-                <td className="cell-wc" data-testid={`wc-${i}`}>
+                <td className="cell-wc" data-testid={`wc-${i}`} data-label="Worst case">
                   {row.worst_case_estimate ? `$${row.worst_case_estimate}` : "—"}
                 </td>
-                <td className="cell-actions">
+                <td className="cell-actions" data-label="Actions">
                   <button
                     className="icon-btn fire"
                     aria-label={`fire entry ${i + 1}`}
