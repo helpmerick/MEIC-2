@@ -20,5 +20,7 @@ Feature: TC-UI-07
     And a fabricated 0-0 never renders
     And weekends render visually distinct from zero-P&L trading days
 
-  Scenario: The local label is the browser's zone, not geolocation
-    Then the echo label names the Intl-resolved zone and no location lookup ever occurs
+  Scenario: The local label reads "local", zone from the browser, no geolocation
+    Then the echo and countdown label converted times "local" and never a city name
+    And the zone derives from the browser Intl setting and no location lookup ever occurs
+    And the shortfall tooltip is styled, focus- and tap-capable, never a native title attribute
