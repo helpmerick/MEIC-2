@@ -427,9 +427,15 @@ export interface DayReportDetail {
 // RPT-10 CSV export's "daily" table — the only per-day net-P&L SERIES the
 // backend exposes in this slice (see api.ts's getDailySeries for why the
 // equity curve/heatmap parse this instead of a dedicated JSON array).
+// `wins`/`losses` (RPT-09 calendar-heatmap hover) mirror `entry_win_rate`'s
+// own pnl>0/pnl<0 threshold, per day; both null on a broker-imported day
+// (RPT-16: no recorded entry-level outcome exists to count — never a
+// fabricated 0/0 for a day that plainly moved real broker cash).
 export interface DailyRow {
   date: string;
   mode: string;
   net_pnl: string;
   trust: string;
+  wins: number | null;
+  losses: number | null;
 }

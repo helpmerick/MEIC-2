@@ -167,6 +167,9 @@ export const api = {
   // server's own Decimal string; a future slice should add a JSON
   // `daily: [...]` array to GET /reports/summary so this indirection isn't
   // needed.
+  // `wins`/`losses` (RPT-09 calendar-heatmap hover) are the 5th/6th CSV
+  // columns; blank on a broker-imported day (RPT-16) parses to null here —
+  // never coerced to a fabricated 0.
   getDailySeries: async (p: ReportPeriod = {}): Promise<DailyRow[]> => {
     const qs = reportsQueryString(p);
     const text = await getText(`/reports/csv?table=daily${qs ? `&${qs}` : ""}`);
@@ -175,8 +178,12 @@ export const api = {
     return rows
       .filter((line) => line.length > 0)
       .map((line) => {
-        const [date, mode, net_pnl, trust] = line.split(",");
-        return { date, mode, net_pnl, trust };
+        const [date, mode, net_pnl, trust, wins, losses] = line.split(",");
+        return {
+          date, mode, net_pnl, trust,
+          wins: wins ? Number(wins) : null,
+          losses: losses ? Number(losses) : null,
+        };
       });
   },
 };

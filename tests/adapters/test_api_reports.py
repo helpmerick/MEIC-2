@@ -171,8 +171,46 @@ def test_csv_export_daily_table():
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
     lines = r.text.strip().splitlines()
-    assert lines[0] == "date,mode,net_pnl,trust"
-    assert lines[1] == "2026-07-09,paper,400.00,bot-computed"
+    assert lines[0] == "date,mode,net_pnl,trust,wins,losses"
+    assert lines[1] == "2026-07-09,paper,400.00,bot-computed,1,0"
+
+
+def test_csv_export_daily_table_counts_wins_and_losses_per_day():
+    """RPT-09 calendar-heatmap hover: wins/losses mirror `entry_win_rate`'s
+    own pnl>0/pnl<0 threshold (a winner and a stopped-out loser same day)."""
+    events = [
+        DayArmed(date="2026-07-09", entry_count=2),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        CondorFilled(entry_id="2026-07-09#2", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#2", side="PUT", fill=D("8.50"), slippage=D("0")),
+    ]
+    client, _, _ = _client(events)
+    r = client.get("/reports/csv?table=daily&period=all")
+    lines = r.text.strip().splitlines()
+    assert lines[1] == "2026-07-09,paper,-50.00,bot-computed,1,1"
+
+
+def test_csv_export_daily_table_zero_fills_a_skip_only_day_honestly():
+    """A trading day where every attempt was skipped has zero filled entries
+    -- 0/0 is the honest count, not a fabrication (same as daily_net's $0.00)."""
+    events = [EntrySkipped(date="2026-07-09", entry_number=1, reason="not_armed")]
+    client, _, _ = _client(events)
+    r = client.get("/reports/csv?table=daily&period=all")
+    lines = r.text.strip().splitlines()
+    assert lines[1] == "2026-07-09,paper,0,bot-computed,0,0"
+
+
+def test_csv_export_daily_table_blanks_wins_losses_for_an_imported_only_day():
+    """RPT-16: an imported-only day carries no recorded entry-level outcome
+    -- wins/losses render blank (not applicable), never a fabricated 0/0 for
+    a day that plainly moved real broker cash."""
+    events = [_imported()]
+    client, _, _ = _client(events)
+    r = client.get("/reports/csv?table=daily&period=all")
+    lines = r.text.strip().splitlines()
+    date, mode, net_pnl, trust, wins, losses = lines[1].split(",")
+    assert date == "2026-07-09"
+    assert wins == "" and losses == ""
 
 
 def test_csv_export_entries_table():

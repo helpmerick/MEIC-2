@@ -146,6 +146,26 @@ def entry_credit_dollars(entry: EntryProjection) -> Decimal:
     return entry.net_credit * CONTRACT_MULTIPLIER * contracts_of(entry)
 
 
+def entries_win_loss_by_day(events: list[Event]) -> dict[str, tuple[int, int]]:
+    """Per-day (wins, losses) entry counts, mirroring `core_results`'
+    `entry_win_rate` exactly: a filled entry (`net_credit != 0`) with
+    `pnl > 0` is a win, `pnl < 0` a loss (an exact-zero `pnl` fill counts as
+    neither -- same threshold `entry_win_rate` uses, never silently promoted
+    to a win). Feeds RPT-09's calendar-heatmap hover (wins/losses/day P&L).
+
+    A day absent from this map had zero filled entries in `events` -- the
+    caller (reports.py's CSV daily export) distinguishes that from a
+    broker-imported day (RPT-16: no recorded entry-level intent at all, so
+    "0 wins" would be a fabrication, not an honest count) by also checking
+    `imported_fills_by_day`; this function itself only ever reports a REAL
+    fold-derived count."""
+    out: dict[str, tuple[int, int]] = {}
+    for day, entries in entries_by_day(events).items():
+        filled = [e for e in entries if e.net_credit != 0]
+        out[day] = (sum(1 for e in filled if e.pnl > 0), sum(1 for e in filled if e.pnl < 0))
+    return out
+
+
 def daily_net(events: list[Event]) -> dict[str, Decimal]:
     """Real-dollar net P&L per trading day (RPT-02/04 basis). Every qualifying
     trading day appears, even one with zero fills (0.00) — a day is never

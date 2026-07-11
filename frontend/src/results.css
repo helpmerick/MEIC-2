@@ -68,16 +68,41 @@
 .marker { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; cursor: default; }
 
 /* --- calendar heatmap ---------------------------------------------------------- */
-.heatmap { display: flex; flex-direction: column; gap: 16px; }
+/* Widened across the page (not hugging the left at a fixed small width);
+   months lay out side by side, oldest -> newest, inside their own
+   horizontally scrollable strip so the PAGE itself never scrolls sideways. */
+.heatmap { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.heatmap-strip { display: flex; gap: 24px; overflow-x: auto; width: 100%; padding-bottom: 8px; }
+.heatmap-month { flex: 1 1 340px; min-width: 340px; max-width: 520px; }
 .heatmap-month-label { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
-.heatmap-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; max-width: 280px; }
+.heatmap-weekday-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+.heatmap-weekday { font-size: 10px; font-weight: 700; color: var(--faint); text-align: center; text-transform: uppercase; }
+.heatmap-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; width: 100%; }
 .heatmap-cell { display: block; width: 100%; aspect-ratio: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); }
 .heatmap-cell.filler { visibility: hidden; border: none; background: transparent; }
 .heatmap-cell.gain { background: var(--good); border-color: transparent; }
 .heatmap-cell.loss { background: var(--bad); border-color: transparent; }
 .heatmap-cell.flat { background: var(--faint); border-color: transparent; }
 .heatmap-cell.idle { background: var(--surface-2); }
-.heatmap-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+/* Distinct from .idle — a weekend never had a session at all, it is not a
+   disarmed trading day (see the legend's separate "weekend" swatch). */
+.heatmap-cell.weekend { background: var(--surface-2); opacity: 0.45; border-style: dashed; cursor: default; }
+.heatmap-cell-link { cursor: pointer; text-decoration: none; }
+.heatmap-cell-link:hover, .heatmap-cell-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Hover box for trading-day cells (date / wins·losses / signed P&L).
+   position:fixed in viewport coordinates so it escapes .heatmap-strip's
+   overflow-x:auto clipping — anchored above the hovered cell, and
+   pointer-events:none so it never intercepts hover/click on the cell. */
+.heatmap-tooltip {
+  position: fixed; z-index: 40; transform: translate(-50%, calc(-100% - 8px));
+  background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 9px;
+  box-shadow: var(--shadow); padding: 8px 12px; pointer-events: none;
+  font-size: 12px; line-height: 1.5; white-space: nowrap; text-align: left;
+}
+.heatmap-tooltip-date { font-weight: 700; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.heatmap-tooltip-wl { color: var(--text); }
+.heatmap-tooltip-pnl { font-weight: 700; font-variant-numeric: tabular-nums; }
+.heatmap-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
 .heatmap-legend .heatmap-cell { width: 12px; height: 12px; margin-left: 10px; }
 .heatmap-legend .heatmap-cell:first-child { margin-left: 0; }
 

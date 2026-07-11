@@ -436,14 +436,28 @@ def build_reports_router(
         m = mode()
 
         if table == "daily":
-            from meic.reporting.folds import daily_net
+            from meic.reporting.folds import daily_net, entries_win_loss_by_day
 
             writer = csv.writer(buf)
-            writer.writerow(["date", "mode", "net_pnl", "trust"])
+            writer.writerow(["date", "mode", "net_pnl", "trust", "wins", "losses"])
             daily = daily_net(scoped)
+            win_loss = entries_win_loss_by_day(scoped)
+            imported = imported_fills_by_day(scoped)
             for d in sorted(daily):
                 trust = trust_stamp(events, (d,))
-                writer.writerow([d, m, str(daily[d]), trust.status])
+                if d in win_loss:
+                    wins, losses = win_loss[d]
+                elif d in imported:
+                    # RPT-16: an imported-only day has no recorded entry-level
+                    # outcome to count -- blank (not applicable), never a
+                    # fabricated 0/0 for a day that plainly moved money.
+                    wins, losses = "", ""
+                else:
+                    # A real trading day with zero filled entries (e.g. every
+                    # attempt was skipped) truthfully had zero wins/losses --
+                    # not a fabrication, same convention as daily_net's $0.00.
+                    wins, losses = 0, 0
+                writer.writerow([d, m, str(daily[d]), trust.status, wins, losses])
         elif table == "entries":
             writer = csv.writer(buf)
             writer.writerow(["entry_id", "mode", "status", "outcome", "net_credit", "pnl", "trust"])

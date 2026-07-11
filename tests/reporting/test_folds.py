@@ -16,6 +16,7 @@ from meic.reporting.folds import (
     daily_net,
     day_snapshot,
     entries_by_day,
+    entries_win_loss_by_day,
     entry_credit_dollars,
     entry_day,
     entry_dollars,
@@ -71,6 +72,21 @@ def test_entry_dollars_applies_the_contract_multiplier():
     # pnl = 4.00 - 3.80 = 0.20/share; dollars = 0.20 * 100 * 2 contracts = 40.00
     assert entry_dollars(entry) == D("40.00")
     assert entry_credit_dollars(entry) == D("800.00")  # 4.00 * 100 * 2
+
+
+def test_entries_win_loss_by_day_mirrors_entry_win_rates_pnl_threshold():
+    events = [
+        DayArmed(date="2026-07-09", entry_count=2),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        CondorFilled(entry_id="2026-07-09#2", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#2", side="PUT", fill=D("8.50"), slippage=D("0")),
+    ]
+    assert entries_win_loss_by_day(events) == {"2026-07-09": (1, 1)}
+
+
+def test_entries_win_loss_by_day_omits_a_day_with_no_filled_entries():
+    events = [EntrySkipped(date="2026-07-09", entry_number=1, reason="not_armed")]
+    assert entries_win_loss_by_day(events) == {}
 
 
 def test_daily_net_zero_fills_a_qualifying_day_with_no_fills():
