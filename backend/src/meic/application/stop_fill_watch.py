@@ -63,6 +63,8 @@ NOT wired into the live composition today, no code change here):
 """
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from decimal import Decimal
 
 from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped, StopPlaced
@@ -74,9 +76,34 @@ from .reconcile_boot import _order_id, _symbol_and_signed_qty
 
 # R3-F3: after this many CONSECUTIVE quote-guard deferrals for one side, raise
 # a one-time critical alert (at the 60s health cadence, 5 ticks ~= 5 minutes
-# of an orphaned long we cannot price a sale for). The side keeps deferring —
-# a price is never guessed — the alert IS the fix.
+# of an orphaned long we cannot price a sale for). Reached only by the NO-BID
+# case since v1.62 (a side with a bid falls back to LEX-05 at the bounded
+# window instead — see `_try_recover`); a bid-less side keeps deferring — a
+# price is never guessed — and the alert IS the fix.
 QUOTE_DEFERRAL_ALERT_TICKS = 5
+
+# LEX-02 (v1.62 STP-08a reconciliation): "Invalid quote ⇒ skip to LEX-05
+# fallback after `config.lex_quote_wait_seconds`" — doc 06 default 5 (range
+# 1–30). The bounded deferral window for a side whose quote is stale-invalid
+# but still carries a BID.
+LEX_QUOTE_WAIT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class StaleQuote:
+    """STP-08a (v1.62) invalid-quote routing: the long HAS a bid on record,
+    but the snapshot is too old to price a ladder (DAT-02 staleness = LEX-02's
+    age criterion). Distinct from `None` (NO bid at all): once the bounded
+    `lex_quote_wait_seconds` deferral window lapses, a StaleQuote can still
+    price the LEX-05 marketable-at-bid fallback — "a naked-side recovery never
+    waits indefinitely" — while a None cannot price ANY order and keeps
+    deferring with the critical alert standing (a price is never invented).
+
+    `quote` is a recover_long.Quote; `intrinsic` the LEX-04 floor input
+    computed off the same (stale) snapshot — the honest best available."""
+
+    quote: object
+    intrinsic: Decimal
 
 
 def _stop_specs(events) -> dict[tuple[str, str], StopPlaced]:
@@ -345,6 +372,18 @@ def _pending_lex_sides(events) -> list[tuple[str, str]]:
     return out
 
 
+def _now_epoch(comp) -> float:
+    """Epoch seconds for the bounded deferral window (STP-08a v1.62). The
+    composition's own clock when it has one (live/paper both do -- and the
+    FakeClock in tests), so the window honours simulated time; wall clock
+    otherwise. Epoch (`.timestamp()`), never wall-clock arithmetic -- the
+    same instant discipline UI-24 v1.62 ratified."""
+    clock = getattr(comp, "clock", None)
+    if clock is not None:
+        return clock.now().timestamp()
+    return time.time()
+
+
 def _alert_once(comp, alerts, key: tuple, level: str, message: str, **ctx) -> None:
     """Alert once per (entry_id, side, reason), not once per 60s tick: an
     unresolvable side re-enters the pending set every tick, and re-alerting
@@ -360,7 +399,8 @@ def _alert_once(comp, alerts, key: tuple, level: str, message: str, **ctx) -> No
     alerts.alert(level, message, **ctx)
 
 
-async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str) -> None:
+async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
+                       *, lex_quote_wait_seconds: float = LEX_QUOTE_WAIT_SECONDS) -> None:
     """Drive ONE pending side's LEX hand-off through the shared guards --
     fresh catch-ups and deferred retries take the IDENTICAL path, in order:
 
@@ -372,8 +412,25 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str) -
       3. OWN standdown (operator ruling 2026-07-10): the long is no longer
          held at the broker -> the operator disposed of it directly; no LEX
          order, info alert (once).
-      4. Quote guard: no usable market data this tick -> retried next tick
-         via the `_pending_lex_sides` resume set, never guessed.
+      4. Quote guard, BOUNDED (STP-08a v1.62 -- "on invalid quotes LEX
+         follows its own ratified path: deferral only within the retry
+         cadence, then the marketable-at-bid fallback; a naked-side recovery
+         never waits indefinitely"). Two distinct cases:
+           * `StaleQuote` (a bid EXISTS but is stale-invalid, LEX-02's age
+             criterion): defer while the total elapsed since this side's
+             FIRST deferral is under `lex_quote_wait_seconds`; at/past the
+             window, stop deferring and start LEX via the LEX-05 fallback
+             (`RecoverLong.recover(quote_stale=True)` -- marketable limit at
+             that bid, never a ladder off stale prices).
+           * `None` (NO bid at all -- snapshot absent, or the strike simply
+             unmarked): a marketable order cannot be priced, so the side
+             keeps deferring, forever if need be, with the R3-F3 one-time
+             critical alert standing. A price is never invented. (The
+             ratified text presumes a quote that is merely INVALID; with no
+             bid whatsoever the "never waits indefinitely" promise is
+             unsatisfiable without guessing -- flagged, not improvised.)
+         A USABLE quote arriving at any point -- including mid-window --
+         clears the deferral state and starts the normal ladder.
 
     `RecoverLong.recover()` itself appends `LongSaleStarted` when -- and only
     when -- a ladder genuinely (re)starts past all four guards, so a retry
@@ -402,19 +459,44 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str) -
                     entry_id=entry_id, side=side, symbol=long_leg.symbol)
         return
     got = await quote_provider(long_leg.symbol, side)
-    if got is None:
+    key = (entry_id, side)
+    if got is None or isinstance(got, StaleQuote):
+        # Deferral bookkeeping, shared by both invalid-quote flavours: the
+        # R3-F3 consecutive-tick count (alert threshold) and, since v1.62,
+        # the epoch instant of this side's FIRST deferral (the bounded
+        # `lex_quote_wait_seconds` window -- STP-08a/LEX-02). Elapsed is
+        # measured across REAL INSTANTS (`.timestamp()`), the same epoch
+        # discipline UI-24 v1.62 ratified for the countdown.
+        deferrals = getattr(comp, "_stop_fill_quote_deferrals", None)
+        if deferrals is None:
+            deferrals = {}
+            comp._stop_fill_quote_deferrals = deferrals
+        since = getattr(comp, "_stop_fill_quote_deferred_since", None)
+        if since is None:
+            since = {}
+            comp._stop_fill_quote_deferred_since = since
+        now = _now_epoch(comp)
+        first = since.setdefault(key, now)
+        deferrals[key] = deferrals.get(key, 0) + 1
+        if isinstance(got, StaleQuote) and (now - first) >= lex_quote_wait_seconds:
+            # STP-08a (v1.62): the bounded window has lapsed and a BID exists
+            # -- stop deferring; LEX starts via its LEX-05 fallback (recover()
+            # routes quote_stale=True straight to the marketable limit at this
+            # bid, never a ladder priced off stale marks). "A naked-side
+            # recovery never waits indefinitely."
+            deferrals.pop(key, None)
+            since.pop(key, None)
+            await comp.recover.recover(entry_id=entry_id, side=side,
+                                       long_symbol=long_leg.symbol, quote=got.quote,
+                                       intrinsic=got.intrinsic, qty=long_leg.qty,
+                                       quote_stale=True)
+            return
         # R3-F3: deferral is correct (never guess a price), but UNBOUNDED
         # SILENT deferral is not -- a long whose strike never gets marked
         # would defer every tick to expiry with no operator signal and never
         # reach any LEX-05 fallback. Count consecutive deferrals per side and
         # say so, loudly, once, past the threshold. Still defers after the
-        # alert -- the alert IS the fix.
-        deferrals = getattr(comp, "_stop_fill_quote_deferrals", None)
-        if deferrals is None:
-            deferrals = {}
-            comp._stop_fill_quote_deferrals = deferrals
-        key = (entry_id, side)
-        deferrals[key] = deferrals.get(key, 0) + 1
+        # alert -- with NO bid at all there is honestly nothing else to do.
         if deferrals[key] >= QUOTE_DEFERRAL_ALERT_TICKS:
             _alert_once(comp, alerts, (entry_id, side, "quote_deferred"), "critical",
                         f"EC-STP-06 catch-up: cannot start LEX -- no usable quote for "
@@ -422,14 +504,16 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str) -
                         "deferring (a price is never guessed); operator attention needed.",
                         entry_id=entry_id, side=side, symbol=long_leg.symbol)
         return
-    # a usable quote resets the consecutive-deferral count for this side
-    getattr(comp, "_stop_fill_quote_deferrals", {}).pop((entry_id, side), None)
+    # a usable quote resets the deferral state for this side (count + window)
+    getattr(comp, "_stop_fill_quote_deferrals", {}).pop(key, None)
+    getattr(comp, "_stop_fill_quote_deferred_since", {}).pop(key, None)
     quote, intrinsic = got
     await comp.recover.recover(entry_id=entry_id, side=side, long_symbol=long_leg.symbol,
                                quote=quote, intrinsic=intrinsic, qty=long_leg.qty)
 
 
-async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
+async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
+                                        lex_quote_wait_seconds: float = LEX_QUOTE_WAIT_SECONDS) -> None:
     """One health-tick pass (60s cadence -- the honest poll `live_app`'s
     `MEIC_HEALTH_INTERVAL_S` already runs everything else on; no new
     streaming infrastructure). Idempotent: a side already resolved
@@ -446,10 +530,14 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
     caught the first time this runs after it ships, exactly like a fill that
     happens between two ticks going forward.
 
-    `quote_provider(long_symbol, side) -> (Quote, intrinsic) | None` supplies
-    the live market data LEX needs to start its ladder; injected so this
-    module stays I/O-light and unit-testable. `None` means "no usable market
-    data this tick" -- retried next tick, never guessed.
+    `quote_provider(long_symbol, side) -> (Quote, intrinsic) | StaleQuote |
+    None` supplies the live market data LEX needs to start its ladder;
+    injected so this module stays I/O-light and unit-testable. A tuple is a
+    fresh, priceable quote; `StaleQuote` (v1.62) means "a bid exists but is
+    stale-invalid (LEX-02 age)" -- deferred within the bounded
+    `lex_quote_wait_seconds` window, then routed to the LEX-05 fallback;
+    `None` means "NO bid at all this tick" -- retried next tick, never
+    guessed.
     """
     broker, events = comp.broker, comp.events
 
@@ -499,4 +587,5 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider) -> None:
     # tick, synthesized at boot, or stopped by the watchdog. One set, one
     # guard path -- no fresh/resume split to drift apart.
     for entry_id, side in _pending_lex_sides(events):
-        await _try_recover(comp, alerts, quote_provider, entry_id, side)
+        await _try_recover(comp, alerts, quote_provider, entry_id, side,
+                           lex_quote_wait_seconds=lex_quote_wait_seconds)

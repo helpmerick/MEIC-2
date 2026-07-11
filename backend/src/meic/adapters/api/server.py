@@ -361,7 +361,13 @@ def _day_status_extras(rows, now):
     nxt = min(remaining, key=lambda r: r.when)
     return {
         "next_entry_at": nxt.when.isoformat(),
-        "seconds_to_next": int((nxt.when - now).total_seconds()),
+        # UI-24 (v1.62): the difference of REAL INSTANTS (epoch), never
+        # wall-clock arithmetic. Same-tzinfo aware subtraction is defined by
+        # the stdlib as the NAIVE wall-clock difference, which drops the DST
+        # fall-back hour on a span crossing the switch (one hour short —
+        # 172560s instead of the true 176160s in TC-DAY-07 scenario 5, which
+        # pins the corrected value). `.timestamp()` compares the UTC instants.
+        "seconds_to_next": int(nxt.when.timestamp() - now.timestamp()),
         "entries_remaining": len(remaining),
     }
 
@@ -540,18 +546,22 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
 
 def _journaled_own_order_ids(events) -> set[str]:
     """OWN-03: every broker order id the bot itself journaled placing — today
-    `StopPlaced.broker_order_id` (v1.60) and `DecayBuybackPlaced.
-    broker_order_id` (v1.61), read generically off any event carrying the
-    field. The EOD-03 sweep cancels ONLY these: on a shared account
-    (single-account operation is first-class, v1.49) the operator's own
-    working orders are never touched and never flagged uncancellable.
+    `StopPlaced.broker_order_id` (v1.60), `DecayBuybackPlaced.broker_order_id`
+    (v1.61) and `LexOrderPlaced.broker_order_id` (v1.62), read generically off
+    any event carrying the field. The EOD-03 sweep cancels ONLY these: on a
+    shared account (single-account operation is first-class, v1.49) the
+    operator's own working orders are never touched and never flagged
+    uncancellable.
 
-    KNOWN LIMIT (flagged, not improvised around): LEX-ladder and entry-ladder
-    orders journal no broker order ids. An in-flight LEX order at the bell is
-    EOD-04's own case ("keep working until close; whatever remains expires"),
-    and a live entry ladder's current id is merged in by the caller from the
-    working-entry registry — so the practical gap is a LEX order only, which
-    EOD-04 says to leave alone anyway."""
+    RESOLVED (v1.62, operator-ratified — the LEX-01 order-id journaling
+    sub-bullet): the previously flagged known limit ("LEX-ladder orders
+    journal no broker order ids") is closed. RecoverLong journals
+    `LexOrderPlaced` at every placement — initial rung submit, every replace
+    (each mints a new id), and the LEX-05 fallback — so LEX orders are now
+    INCLUDED in the EOD-03 day-end order audit ("EOD-04's 'whatever remains
+    expires' is unchanged for positions; this covers the ORDERS"). The one
+    remaining non-journaled id is a live entry ladder's CURRENT working id,
+    which the caller still merges in from the working-entry registry."""
     ids: set[str] = set()
     for e in events:
         oid = getattr(e, "broker_order_id", None)
@@ -1039,12 +1049,18 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         """EC-STP-06 catch-up (v1.60): the live market data RecoverLong's
         ladder needs to start, off the SAME chain snapshot FEATURE 3 already
         holds (`snaps.last`) — no new subscription. `None` (no snapshot yet,
-        stale, or the long's strike unmarked/spot absent) means "no usable
-        quote this tick" — the caller retries next tick, never guesses."""
+        or the long's strike unmarked/spot absent — NO bid at all) means
+        "nothing can be priced this tick" — the caller retries next tick,
+        never guesses. A STALE snapshot whose mark exists returns a
+        `StaleQuote` (STP-08a v1.62): the bid is too old to price a ladder
+        (LEX-02's age criterion), but after the bounded
+        `lex_quote_wait_seconds` deferral it can still price the LEX-05
+        marketable-at-bid fallback — the freshest bid the system has."""
+        from meic.application.stop_fill_watch import StaleQuote
         from meic.domain.ladder import intrinsic_call, intrinsic_put
 
         snap = snaps.last
-        if snap is None or snap.stale:
+        if snap is None:
             return None
         # Decimal, NOT the raw string `_strike_from_symbol` returns:
         # `ChainSide.marks` is keyed by Decimal (see the identical wrap at
@@ -1063,7 +1079,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         intrinsic = intrinsic_put(strike, spot) if side == "PUT" else intrinsic_call(strike, spot)
         from meic.application.recover_long import Quote
 
-        return Quote(bid=mark.bid, ask=mark.ask), intrinsic
+        quote = Quote(bid=mark.bid, ask=mark.ask)
+        if snap.stale:
+            return StaleQuote(quote=quote, intrinsic=intrinsic)
+        return quote, intrinsic
 
     async def _detect_stop_fills() -> None:
         """EC-STP-06 (v1.60): catch up any stop fill this process missed

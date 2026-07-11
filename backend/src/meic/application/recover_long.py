@@ -7,6 +7,12 @@ never below max(current bid, intrinsic) (LEX-04). Ladder exhausted or quote
 unusable (LEX-02) ⇒ marketable-limit fallback at the current bid (LEX-05),
 never a raw market order.
 
+ORDER-ID JOURNALING (LEX-01, v1.62): every order this ladder creates — the
+initial rung submit, every cancel/replace (each mints a NEW broker id), and
+the LEX-05 fallback — appends `LexOrderPlaced` with the broker's own order id
+AT PLACEMENT (ORD-09 philosophy; DecayBuybackPlaced precedent), so LEX orders
+are auditable and INCLUDED in the EOD-03 day-end order sweep.
+
 MECHANICS FIX (2026-07-10, incident #2's own class, now on the LEX side): this
 ladder used to replace blindly, with no clock and no real wait between rungs,
 and its own hand-rolled `_filled()` did raw `dict.get(...)` on a fill record —
@@ -29,7 +35,13 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from meic.domain.events import LongSaleRepriced, LongSaleStarted, LongSold, SideClosed
+from meic.domain.events import (
+    LexOrderPlaced,
+    LongSaleRepriced,
+    LongSaleStarted,
+    LongSold,
+    SideClosed,
+)
 from meic.domain.ladder import RepriceLadder, lex_floor
 from meic.domain.ticks import TickTable
 
@@ -95,6 +107,7 @@ class RecoverLong:
         quote: Quote,
         intrinsic: Decimal,
         qty: int = 1,
+        quote_stale: bool = False,
     ) -> LexResult:
         # RPT-07 long recovery (2026-07-11, operator ruling): stamp the long's
         # mark at ladder start -- the honest best-available mark-at-stop,
@@ -106,7 +119,13 @@ class RecoverLong:
         ))
         floor = lex_floor(quote.bid, intrinsic)  # LEX-04
 
-        if not self._quote_usable(quote):
+        # LEX-02: crossed/wide judged here; the AGE criterion (no older than
+        # max_quote_age_ms) is judged upstream where the snapshot's timestamps
+        # live (DAT-02) and arrives as `quote_stale=True` — a stale quote must
+        # never price a LADDER, but its bid can still price the LEX-05
+        # marketable fallback ("quotes were unusable at LEX-02 ⇒ marketable
+        # limit at the current bid" — the freshest bid the system has).
+        if quote_stale or not self._quote_usable(quote):
             await self._fallback(entry_id, side, long_symbol, quote.bid, qty)
             return LexResult("FALLBACK_WORKING", ())
 
@@ -144,6 +163,14 @@ class RecoverLong:
                     if await self._filled(working_id):
                         return self._sold(entry_id, side, working_price, tried)
                     raise
+            # LEX-01 order-id journaling (v1.62): every LEX order journals its
+            # broker order id AT PLACEMENT — the initial submit AND every
+            # replace (a replace mints a NEW id), mirroring DecayBuybackPlaced
+            # (v1.61). By the time this order's fill can appear anywhere, its
+            # id is already on the log, and the EOD-03 sweep audits it.
+            self._events.append(LexOrderPlaced(
+                entry_id=entry_id, side=side, broker_order_id=str(working_id),
+                price=rung.price, kind="ladder"))
             working_price = rung.price
             self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt, price=rung.price))
 
@@ -182,11 +209,16 @@ class RecoverLong:
             await self._clock.wait_until(nxt)
 
     async def _fallback(self, entry_id, side, long_symbol, bid, qty) -> None:
-        await self._broker.submit(OrderIntent(
+        order_id = await self._broker.submit(OrderIntent(
             order_type="marketable_limit", tif="Day", kind="lex", entry_id=entry_id,
             contracts=qty, price=bid, idempotency_key=f"lex-fallback:{entry_id}:{side}",
             legs=(OrderLeg(right=right_of(side), action="sell_to_close",
                            qty=qty, symbol=long_symbol),)))
+        # LEX-01 order-id journaling (v1.62): the LEX-05 fallback is a LEX
+        # order like any rung — its broker id is journaled at placement too.
+        self._events.append(LexOrderPlaced(
+            entry_id=entry_id, side=side, broker_order_id=str(order_id),
+            price=bid, kind="fallback"))
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):

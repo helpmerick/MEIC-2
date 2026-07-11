@@ -278,15 +278,14 @@ def _(world, vitest_result):
     parsed = datetime.fromisoformat(extras["next_entry_at"])
     assert parsed.astimezone(timezone.utc) == datetime(2026, 11, 2, 16, 56,
                                                        tzinfo=timezone.utc)
-    # FLAGGED (2026-07-11, this TC's implementation): `seconds_to_next` across
-    # the switch is computed by Python's SAME-tzinfo datetime subtraction,
-    # which the stdlib defines as the NAIVE wall-clock difference — here
-    # 172560s (1d 23:56) instead of the true 176160s elapsed (the fall-back
-    # hour is dropped). The instant-carrying field above is what the local
-    # echo converts and it is exact; the countdown drift (one hour, only on a
-    # span crossing the switch) is escalated in the implementation report,
-    # NOT pinned here as correct.
-    assert extras["seconds_to_next"] is not None
+    # RESOLVED (v1.62, operator-ratified): `seconds_to_next` is the difference
+    # of REAL INSTANTS (epoch), never wall-clock arithmetic (UI-24). The old
+    # same-tzinfo datetime subtraction was the stdlib's NAIVE wall-clock
+    # difference — 172560s (1d 23:56), one hour short across the fall-back
+    # switch. PINNED: Sat 2026-10-31 12:00 EDT (16:00 UTC) -> Mon 2026-11-02
+    # 11:56 EST (16:56 UTC) is truly 2d 0:56 elapsed = 176160s, the extra
+    # fall-back hour included.
+    assert extras["seconds_to_next"] == 176160, extras["seconds_to_next"]
 
     # Frontend half: time.ts's `instantToZone` converts the FULL instant
     # (the instant carries its own date/offset — no "today" assumption), so

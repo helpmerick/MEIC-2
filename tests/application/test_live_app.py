@@ -1074,6 +1074,40 @@ def test_eod_sweep_flags_raced_fills_critically_and_touches_only_own_orders(monk
         "the raced-fill critical alert must reach comp.alerts")
 
 
+def test_eod_sweep_includes_journaled_lex_order_ids(monkeypatch, tmp_path):
+    """LEX-01 order-id journaling (v1.62, operator-ratified): LEX orders are
+    INCLUDED in the EOD-03 day-end order audit. A `LexOrderPlaced` id (here a
+    still-working LEX-05 fallback at the bell) is the bot's OWN order — the
+    sweep cancels it; the operator's F9 is still never touched. This was the
+    docstring's flagged known-limit, now RESOLVED: before v1.62 the sweep
+    would have flagged L7 as a foreign order and left it."""
+    import asyncio
+    from datetime import datetime
+
+    from meic.adapters.api.server import _journaled_own_order_ids, _maybe_eod_sweep_once
+    from meic.domain.events import EodSweepCompleted, LexOrderPlaced
+
+    from tests.harness.fake_clock import ET as _ET
+
+    day = "2026-07-10"
+    after = lambda: datetime(2026, 7, 10, 16, 1, tzinfo=_ET)     # noqa: E731
+    broker = _EodSweepBroker(working=["L7", "F9"])
+    comp = _eod_comp(day, broker=broker,
+                     events=[LexOrderPlaced(entry_id=f"{day}#1", side="PUT",
+                                            broker_order_id="L7", price=Decimal("0.45"),
+                                            kind="fallback")])
+
+    assert "L7" in _journaled_own_order_ids(comp.events), \
+        "LexOrderPlaced.broker_order_id must count as the bot's own order"
+
+    asyncio.run(_maybe_eod_sweep_once(comp, after))
+
+    assert broker.cancelled == ["L7"], \
+        "the journaled LEX order is swept; the foreign F9 is never touched"
+    done = [e for e in comp.events if isinstance(e, EodSweepCompleted)]
+    assert len(done) == 1 and done[0].cancelled == 1 and done[0].uncancellable == 0
+
+
 # --- CLS-03 working-entry cancel wiring capstones (2026-07-11) ------------------
 # The TENTH member of the "exists but unwired" class: `ManualClose` (incl. its
 # race-guarded `cancel_working`) existed and was unit-tested, but the panel's

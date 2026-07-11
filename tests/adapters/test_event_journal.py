@@ -56,6 +56,11 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.LongSaleStarted: ev.LongSaleStarted(entry_id="2026-07-09#1", side="PUT"),
         ev.LongSaleRepriced: ev.LongSaleRepriced(entry_id="2026-07-09#1", side="PUT",
                                                   step=2, price=D("0.45")),
+        # LEX-01 (v1.62): LEX order ids journaled at placement — submit,
+        # every replace, and the LEX-05 fallback.
+        ev.LexOrderPlaced: ev.LexOrderPlaced(
+            entry_id="2026-07-09#1", side="PUT", broker_order_id="482622101",
+            price=D("0.45"), kind="ladder"),
         ev.ForeignDetected: ev.ForeignDetected(symbol="AAPL"),
         ev.ForeignReduction: ev.ForeignReduction(symbol="SPXW  260709P05600000",
                                                   from_qty=2, to_qty=1),

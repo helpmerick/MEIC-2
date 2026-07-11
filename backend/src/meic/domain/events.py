@@ -345,6 +345,27 @@ class LongSaleRepriced(Event):
 
 
 @dataclass(frozen=True)
+class LexOrderPlaced(Event):
+    """LEX-01 order-id journaling (v1.62, operator-ratified from the EOD-03
+    wiring flag): every LEX ladder order journals its broker order id AT
+    PLACEMENT, like all other orders (ORD-09 philosophy — an unjournaled
+    order is unauditable). Follows the `DecayBuybackPlaced` (v1.61)
+    precedent. Appended by RecoverLong on the initial rung submit, on EVERY
+    cancel/replace (a replace mints a NEW broker id — each one is journaled),
+    and on the LEX-05 marketable fallback submit — so the journal always
+    names every broker id a LEX order ever carried, and the EOD-03 day-end
+    sweep audits them via `_journaled_own_order_ids` (server.py), which reads
+    `broker_order_id` generically off any event carrying the field.
+    Additive/replay-safe: an old log simply contains none of these, and
+    every field round-trips through the generic to_dict/from_dict paths."""
+    entry_id: str
+    side: str
+    broker_order_id: str
+    price: Decimal
+    kind: str  # "ladder" (LEX-03 rung: initial submit or replace) | "fallback" (LEX-05)
+
+
+@dataclass(frozen=True)
 class ForeignDetected(Event):
     symbol: str  # OWN-03: FOREIGN quarantine, alert-only
 

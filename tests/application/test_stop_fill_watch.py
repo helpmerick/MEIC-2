@@ -579,3 +579,142 @@ def test_persistent_quote_deferral_alerts_critical_once_after_threshold():
     criticals = [a for a in alerts.calls if a[0] == "critical" and "no usable quote" in a[1]]
     assert len(criticals) == 1, "critical alert exactly once, then keep deferring"
     assert recover.calls == [], "still never guesses a price"
+
+
+# --- STP-08a (v1.62): BOUNDED deferral, then the LEX-05 fallback -----------------
+# "on invalid quotes LEX follows its own ratified path — deferral only within
+# the retry cadence, then the marketable-at-bid fallback: a naked-side
+# recovery never waits indefinitely" (STP-08a); "Invalid quote ⇒ skip to
+# LEX-05 fallback after config.lex_quote_wait_seconds" (LEX-02). The bound is
+# read as TOTAL ELAPSED since the side's first deferral (epoch instants off
+# comp.clock), not a tick count — at the ~60s live cadence one full tick
+# interval already exceeds the doc-06 range (1–30s), so in live this means
+# "defer one tick, fall back on the next"; the tests pin the boundary exactly.
+
+class _TickClock:
+    def __init__(self, start):
+        self._t = start
+
+    def now(self):
+        return self._t
+
+    def advance(self, seconds):
+        from datetime import timedelta
+        self._t += timedelta(seconds=seconds)
+
+
+def _stopped_side_comp():
+    """A pending CALL side (ShortStopped, long still held) with a controllable
+    clock — the STP-08a bounded-deferral scenarios all start here."""
+    from datetime import datetime, timezone
+
+    events = list(_condor_filled_events())
+    events.append(ShortStopped(entry_id=ENTRY_ID, side="CALL", fill=D("3.85"),
+                               slippage=D("0.05"), initiator="resting_stop"))
+    broker = _FakeBroker()
+    broker.positions_ = [{"symbol": CALL_LONG, "signed_qty": 1}]
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+    comp.clock = _TickClock(datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
+    return comp, recover, alerts
+
+
+def test_stale_bid_defers_below_the_bound_and_falls_back_at_it():
+    """The bounded-deferral boundary: a STALE quote (bid EXISTS, too old to
+    ladder — LEX-02's age criterion) defers while total elapsed since the
+    side's first deferral is under lex_quote_wait_seconds, and at the bound
+    stops deferring: LEX starts via the LEX-05 fallback path
+    (recover(quote_stale=True) — marketable limit at that bid)."""
+    from meic.application.recover_long import Quote
+    from meic.application.stop_fill_watch import StaleQuote
+
+    comp, recover, alerts = _stopped_side_comp()
+    stale = StaleQuote(quote=Quote(bid=D("0.35"), ask=D("0.45")), intrinsic=D("0"))
+
+    async def _stale_quote(symbol, side):
+        return stale
+
+    def _tick():
+        asyncio.run(detect_and_recover_stop_fills(
+            comp, alerts, _stale_quote, lex_quote_wait_seconds=5.0))
+
+    _tick()                       # first deferral: the window opens
+    assert recover.calls == [], "never a fallback on the first invalid tick"
+    comp.clock.advance(4.9)
+    _tick()                       # 4.9s elapsed: still inside the window
+    assert recover.calls == [], "defers below the bound"
+    comp.clock.advance(0.1)
+    _tick()                       # 5.0s elapsed: the bound — fall back NOW
+    assert len(recover.calls) == 1, "falls back exactly at the bound"
+    call = recover.calls[0]
+    assert call["quote_stale"] is True and call["quote"] is stale.quote
+    assert call["entry_id"] == ENTRY_ID and call["side"] == "CALL" \
+        and call["long_symbol"] == CALL_LONG
+
+    # the deferral window RESET with the hand-off: the side (still pending —
+    # the spy journals nothing) re-defers on a fresh window rather than
+    # spamming a fallback every subsequent tick (in live, the double-ladder
+    # guard additionally skips while the fallback order rests).
+    _tick()
+    assert len(recover.calls) == 1
+    assert not any(a[0] == "critical" for a in alerts.calls), \
+        "an acted-on side never reached the R3-F3 alert threshold"
+
+
+def test_no_bid_at_all_keeps_deferring_forever_with_the_alert_standing():
+    """The honest edge the ratified text cannot reach: LEX-05 needs a BID, and
+    quote_provider returning None means there is NO bid on record at all — a
+    marketable order cannot be priced and a price is never invented. The side
+    keeps deferring past ANY window, however much real time passes, and the
+    R3-F3 one-time critical alert stands (no re-alert spam)."""
+    from meic.application.stop_fill_watch import QUOTE_DEFERRAL_ALERT_TICKS
+
+    comp, recover, alerts = _stopped_side_comp()
+
+    async def _no_quote(symbol, side):
+        return None
+
+    for _ in range(QUOTE_DEFERRAL_ALERT_TICKS + 3):
+        asyncio.run(detect_and_recover_stop_fills(
+            comp, alerts, _no_quote, lex_quote_wait_seconds=5.0))
+        comp.clock.advance(60)    # every tick is far past the window
+
+    assert recover.calls == [], \
+        "no bid ⇒ no fallback, ever — a price is never invented"
+    criticals = [a for a in alerts.calls if a[0] == "critical" and "no usable quote" in a[1]]
+    assert len(criticals) == 1, "the one-time critical alert stands (R3-F3 continuity)"
+
+
+def test_usable_quote_arriving_mid_window_starts_the_normal_ladder():
+    """A usable quote arriving before the window lapses clears the deferral
+    state and starts the NORMAL ladder — recover() without quote_stale, the
+    exact same call shape as an undeferred hand-off."""
+    from meic.application.recover_long import Quote
+    from meic.application.stop_fill_watch import StaleQuote
+
+    comp, recover, alerts = _stopped_side_comp()
+    stale = StaleQuote(quote=Quote(bid=D("0.35"), ask=D("0.45")), intrinsic=D("0"))
+    fresh = (Quote(bid=D("0.40"), ask=D("0.50")), D("0"))
+    feed = [stale, fresh, stale]
+
+    async def _sequenced(symbol, side):
+        return feed.pop(0)
+
+    def _tick():
+        asyncio.run(detect_and_recover_stop_fills(
+            comp, alerts, _sequenced, lex_quote_wait_seconds=5.0))
+
+    _tick()                       # stale: window opens, defer
+    assert recover.calls == []
+    comp.clock.advance(1)
+    _tick()                       # usable, mid-window: NORMAL ladder
+    assert len(recover.calls) == 1
+    call = recover.calls[0]
+    assert "quote_stale" not in call, "a usable quote starts the normal ladder"
+    assert call["quote"] == fresh[0]
+
+    # and the usable tick cleared the window: a later stale tick starts a
+    # FRESH window (defers again) instead of falling back off stale state.
+    comp.clock.advance(1)
+    _tick()
+    assert len(recover.calls) == 1, "a fresh window opens — no immediate fallback"
