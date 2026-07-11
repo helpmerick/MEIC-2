@@ -227,6 +227,22 @@ def _warmup_lead_seconds(env: dict[str, str]) -> float:
     return raw if 10 <= raw <= 300 else 60.0
 
 
+def _stop_fill_poll_seconds(env: dict[str, str]) -> float:
+    """ITEM 1 (operator ruling 2026-07-11) fallback-poll interval: range
+    5-120, default 15 -- how often the dedicated stop-fill poll loop
+    re-runs `detect_and_recover_stop_fills` (skip-if-busy against
+    `stop_fill_lock`, see order_event_watch.run_pass_if_idle) as a fallback
+    for whatever the order-event push consumer hasn't already caught. An
+    infra polling dial, same class as `MEIC_HEALTH_INTERVAL_S`, not a
+    doc-06 strategy config. Out-of-range falls back to the default (the
+    same reject-the-dial convention as `_warmup_lead_seconds` above)."""
+    try:
+        raw = float(env.get("MEIC_STOP_FILL_POLL_S", "15"))
+    except ValueError:
+        return 15.0
+    return raw if 5 <= raw <= 120 else 15.0
+
+
 def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
     """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
     "required for return metrics"). Operator-set only: account net-liq is
@@ -1151,10 +1167,13 @@ def live_app():
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
     app.state.exit_monitor = live["exit_monitor"]     # TPF-03/TPT-04 bot-side monitor
     app.state.stop_fill_detector = live["stop_fill_detector"]  # EC-STP-06 catch-up (v1.60)
-    # ITEM 1 (operator ruling 2026-07-11): shared single-flight lock so the
-    # order-event push consumer and the health tick's own call to
-    # stop_fill_detector (below, in _probe_once) never run the pass
-    # concurrently -- see application/order_event_watch.py.
+    # ITEM 1 (operator ruling 2026-07-11): shared lock between the two
+    # stop-fill-detector callers -- the order-event push consumer (BLOCKS via
+    # run_pass_locked so a fill event mid-pass is never dropped) and the
+    # dedicated fallback poll loop below (SKIPS via run_pass_if_idle instead
+    # of queuing) -- so the pass itself is always single-flighted no matter
+    # which caller reaches it. See application/order_event_watch.py for the
+    # asymmetry between the two helpers.
     app.state.stop_fill_lock = asyncio.Lock()
     # The held chain-snapshot holder itself (same object every enricher/monitor
     # reads) — exposed like exit_monitor above so the EC-STP-06 end-to-end test
@@ -1220,29 +1239,15 @@ def live_app():
                                        live["exit_monitor"], commands)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
-        try:
-            # EC-STP-06 (v1.60): catch up any stop fill this process missed
-            # while it was UP and running (the 2026-07-10 11:56 incident's
-            # exact gap — a stop CAN fill mid-day with the bot connected and
-            # nothing notices). Same ~60s cadence as everything else on this
-            # tick; an honest poll, not a new streaming subscription. Runs
-            # AFTER the data probe above (a fresh chain snapshot for the LEX
-            # quote it may need) and AFTER the TPF/TPT evaluation above — an
-            # active LEX ladder can legitimately run for tens of seconds
-            # (rungs x lex_reprice_seconds), and it must not delay the
-            # floor/target checks on every OTHER open entry by a whole tick.
-            # Deliberately awaited inline, never a background task: the
-            # double-ladder guard in stop_fill_watch reasons about broker
-            # working-order state, and a concurrently re-entering tick would
-            # race it. ITEM 1 (operator ruling 2026-07-11) added a SECOND
-            # caller of this same pass -- the order-event push consumer -- so
-            # this is now also funnelled through stop_fill_lock (single-
-            # flight, matching the guarantee this comment already relied on
-            # when this tick was the only caller).
-            async with app.state.stop_fill_lock:
-                await live["stop_fill_detector"]()
-        except Exception as exc:  # noqa: BLE001
-            app.state.broker_error = repr(exc)
+        # EC-STP-06 (v1.60) stop-fill catch-up MOVED OFF this tick (operator
+        # ruling 2026-07-11, ITEM 1's follow-up): it used to run here, inline,
+        # every ~60s. It now runs on its OWN dedicated poll loop
+        # (`_start_stop_fill_poll_loop` below, `MEIC_STOP_FILL_POLL_S`,
+        # default 15s), skip-if-busy against `stop_fill_lock` -- one owner
+        # per concern, and a shorter, independently-tunable cadence than the
+        # rest of this tick's duties need. See order_event_watch.py for the
+        # two callers (this loop and the order-event push consumer) that now
+        # share that lock.
         try:
             # RPT-15: once per tick, past EOD settlement, on a day with
             # activity, not yet reconciled -- see _maybe_eod_reconcile_once's
@@ -1320,6 +1325,49 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_order_event_consumer() -> None:
         task = getattr(app.state, "order_event_task", None)
+        if task:
+            task.cancel()
+
+    # ITEM 1 follow-up (operator ruling 2026-07-11): the stop-fill FALLBACK
+    # poll gets its OWN dedicated loop -- previously it rode the ~60s health
+    # loop above (see `_probe_once`, which no longer drives this pass: one
+    # owner per concern). Same shape as the health loop and the order-event
+    # consumer above (one supervised background task, created unconditionally
+    # at startup, cancelled on shutdown). Skip-if-busy against the SAME
+    # `stop_fill_lock` the push consumer uses: if a push-triggered pass or a
+    # still-running LEX ladder already holds the lock, this tick is SKIPPED
+    # outright -- it never queues behind the lock (`run_pass_if_idle`,
+    # deliberately asymmetric against the push path's own blocking
+    # `run_pass_locked` -- see order_event_watch.py for why: a fill event
+    # landing mid-pass must never be dropped, but a fallback tick with
+    # nothing specific to react to has nothing to gain by waiting). The pass
+    # itself (`detect_and_recover_stop_fills`) is journal-terminal-aware -- a
+    # side already sold/closed on the durable event log is never re-tried
+    # (pinned in tests/application/test_stop_fill_watch.py) -- so this
+    # fallback only ever steps in for work the push path has not already
+    # completed; a skipped or a spurious extra tick is equally harmless.
+    stop_fill_poll_interval_s = _stop_fill_poll_seconds(env)
+    # exposed for the wiring capstone (tests/application/test_live_app.py) --
+    # proves the loop's cadence actually comes from env, not a hardcoded value.
+    app.state.stop_fill_poll_interval_s = stop_fill_poll_interval_s
+
+    @app.on_event("startup")
+    async def _start_stop_fill_poll_loop() -> None:
+        from meic.application.order_event_watch import run_pass_if_idle
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(stop_fill_poll_interval_s)
+                if app.state.broker_connected:
+                    try:
+                        await run_pass_if_idle(app.state.stop_fill_lock, live["stop_fill_detector"])
+                    except Exception as exc:  # noqa: BLE001 -- must never crash the app
+                        app.state.broker_error = repr(exc)
+        app.state.stop_fill_poll_task = asyncio.create_task(_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_stop_fill_poll_loop() -> None:
+        task = getattr(app.state, "stop_fill_poll_task", None)
         if task:
             task.cancel()
 

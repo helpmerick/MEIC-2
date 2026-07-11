@@ -430,6 +430,22 @@ def test_chain_retry_seconds_is_read_from_config_not_hardcoded():
     assert _chain_retry_seconds({"MEIC_CHAIN_RETRY_SECONDS": "junk"}) == 5
 
 
+def test_stop_fill_poll_seconds_is_read_from_config_not_hardcoded():
+    """ITEM 1 follow-up (operator ruling 2026-07-11) `MEIC_STOP_FILL_POLL_S`
+    (range 5-120, default 15) — the dedicated stop-fill fallback poll loop's
+    cadence, same reject-the-dial convention as every other reader in this
+    file (e.g. `_entry_window_seconds`/`_chain_retry_seconds` above)."""
+    from meic.adapters.api.server import _stop_fill_poll_seconds
+
+    assert _stop_fill_poll_seconds({}) == 15.0                                       # default
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "20"}) == 20.0           # operator value
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "5"}) == 5.0             # low edge
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "120"}) == 120.0         # high edge
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "4.99"}) == 15.0         # < 5 -> default
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "121"}) == 15.0          # > 120 -> default
+    assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "junk"}) == 15.0
+
+
 # --- REC-01 / REC-07(8): the live event log must be DURABLE ---------------------
 
 def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_path):
@@ -701,6 +717,15 @@ def test_drill_outage_seconds_is_read_from_config_not_hardcoded(monkeypatch, tmp
 # ~60s health tick that _connect()'s own boot probe already exercises once.
 
 def test_live_app_wires_a_real_order_event_consumer_that_triggers_the_stop_fill_pass(monkeypatch, tmp_path):
+    """ITEM 1 follow-up (operator ruling 2026-07-11): the stop-fill catch-up
+    pass no longer rides `_probe_once` at all (it moved to its own dedicated
+    poll loop, see `test_stop_fill_poll_loop_drives_the_detector_on_its_own_env_interval`
+    below) -- so the boot health probe no longer contributes a call here.
+    This test's proof narrows to exactly what it is named for: a
+    terminal-filled order event on the REAL wired push consumer triggers the
+    pass, with nothing else in this short window able to produce a call
+    (the default ~60s health tick and the default 15s fallback poll are both
+    far outside the deadline below)."""
     import time as _time
 
     from fastapi.testclient import TestClient
@@ -746,17 +771,110 @@ def test_live_app_wires_a_real_order_event_consumer_that_triggers_the_stop_fill_
 
     with TestClient(app):
         # give the background consumer a beat to read the one fake event and
-        # react to it -- the boot health probe already ran _probe_once() ONCE
-        # synchronously inside the startup event above, so `calls` already
-        # holds exactly one entry from THAT tick before the push path can add
-        # a second. Only a REAL wired consumer produces a second call.
+        # react to it.
         deadline = _time.monotonic() + 3.0
-        while len(calls) < 2 and _time.monotonic() < deadline:
+        while not calls and _time.monotonic() < deadline:
             _time.sleep(0.02)
 
     assert consumed, ("live_app must wire a REAL consumer of the adapter's own "
                       "order_events() stream (STP-04/ORD-05/LEX-01) -- nothing read it")
-    assert len(calls) >= 2, (
+    assert len(calls) >= 1, (
         "a terminal-filled order event must trigger detect_and_recover_stop_fills "
-        "IMMEDIATELY (operator ruling 2026-07-11), not only via the ~60s health tick "
-        f"(saw {len(calls)} call(s): the boot tick alone accounts for only one)")
+        "IMMEDIATELY via the push consumer (operator ruling 2026-07-11) -- saw "
+        f"{len(calls)} call(s) in the window")
+
+
+# --- ITEM 1 follow-up (operator ruling 2026-07-11): dedicated fallback poll ----
+# The stop-fill FALLBACK poll moved off the ~60s health tick (`_probe_once`,
+# which no longer drives it at all) onto its own dedicated loop,
+# `MEIC_STOP_FILL_POLL_S` (default 15, range 5-120), skip-if-busy against
+# `stop_fill_lock`. These are the wiring capstones for that loop -- the
+# eighth "exists but unwired-the-right-way" class fix in this file.
+
+def test_live_app_wires_a_dedicated_stop_fill_poll_loop_with_env_interval(monkeypatch, tmp_path):
+    """Non-blocking capstone: the loop's cadence is read from
+    MEIC_STOP_FILL_POLL_S (not hardcoded), and the loop task is actually
+    created at startup (not merely a config value nobody reads)."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_STOP_FILL_POLL_S", "20")
+
+    app = live_app()
+    comp = app.state.composition
+
+    assert app.state.stop_fill_poll_interval_s == 20.0, (
+        "the loop's cadence must come from MEIC_STOP_FILL_POLL_S, not a hardcoded value")
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        task = getattr(app.state, "stop_fill_poll_task", None)
+        assert task is not None and not task.done(), (
+            "live_app must actually start the dedicated stop-fill poll loop at startup")
+
+
+def test_stop_fill_poll_loop_drives_the_detector_on_its_own_env_interval(monkeypatch, tmp_path):
+    """The loop must be a REAL supervised background task that calls the
+    SAME wired stop_fill_detector REPEATEDLY on its own env-configured
+    cadence -- not merely present-and-inert (the exact 'looks wired, does
+    nothing' class the 2026-07-10 review finding caught elsewhere in this
+    file). Set MEIC_STOP_FILL_POLL_S to the floor (5s) and require TWO
+    calls, deliberately: a lone boot-time call would also happen to pass
+    this test under the OLD wiring (`_probe_once`'s own single synchronous
+    call at startup, before this loop existed) -- only a genuinely
+    REPEATING loop on its own ~5s cadence can produce a second call inside
+    this window, since the ~60s health tick and the push consumer (no
+    events on this stream) cannot. The order-event stream is left
+    permanently open with no events so the push path can't be the source of
+    either call."""
+    import asyncio
+    import time as _time
+
+    from fastapi.testclient import TestClient
+
+    import meic.application.stop_fill_watch as sfw
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_STOP_FILL_POLL_S", "5")
+
+    calls: list[bool] = []
+
+    async def _fake_pass(comp, alerts, quote_provider):
+        calls.append(True)
+
+    monkeypatch.setattr(sfw, "detect_and_recover_stop_fills", _fake_pass)
+
+    app = live_app()
+    comp = app.state.composition
+
+    async def _never_order_events():
+        await asyncio.Event().wait()
+        yield {}  # pragma: no cover -- unreachable, keeps this an async generator
+
+    comp.broker._inner.order_events = _never_order_events
+    comp.broker._inner.positions = lambda: _async([])
+    comp.broker._inner.working_orders = lambda: _async([])
+    comp.broker._inner.server_time = lambda: _async(datetime.now(timezone.utc))
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        deadline = _time.monotonic() + 13.0   # >= two 5s ticks, with headroom
+        while len(calls) < 2 and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+
+    assert len(calls) >= 2, (
+        "the dedicated stop-fill poll loop must actually invoke "
+        "detect_and_recover_stop_fills REPEATEDLY on MEIC_STOP_FILL_POLL_S's own "
+        f"cadence, independent of the push consumer and the ~60s health tick "
+        f"(saw {len(calls)} call(s) in the window)")

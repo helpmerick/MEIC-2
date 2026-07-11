@@ -14,7 +14,11 @@ import contextlib
 
 import pytest
 
-from meic.application.order_event_watch import consume_order_events, run_pass_locked
+from meic.application.order_event_watch import (
+    consume_order_events,
+    run_pass_if_idle,
+    run_pass_locked,
+)
 from tests.harness.live_broker import _Leg, _Order
 
 
@@ -223,3 +227,83 @@ async def test_tick_and_push_never_run_the_pass_concurrently():
         await push_task
 
     assert max_active == 1, "push and tick must never run the pass concurrently"
+
+
+# --- run_pass_if_idle -- the fallback poll's skip-if-busy sibling helper -------
+# ITEM 1 follow-up (operator ruling 2026-07-11): the stop-fill FALLBACK poll
+# (server.py's dedicated loop, MEIC_STOP_FILL_POLL_S) must never queue behind
+# `stop_fill_lock` -- if a push-triggered pass or a still-running LEX ladder
+# already holds it, the fallback tick skips outright and the NEXT tick
+# re-checks. This is the deliberate asymmetry against the push path's own
+# `run_pass_locked` (which blocks/queues so a fill event is never dropped).
+
+
+@pytest.mark.asyncio
+async def test_run_pass_if_idle_runs_the_pass_when_the_lock_is_free():
+    calls: list[bool] = []
+
+    async def run_pass() -> None:
+        calls.append(True)
+
+    lock = asyncio.Lock()
+
+    ran = await run_pass_if_idle(lock, run_pass)
+
+    assert ran is True
+    assert calls == [True]
+    assert not lock.locked()   # released again after the pass completes
+
+
+@pytest.mark.asyncio
+async def test_run_pass_if_idle_skips_without_blocking_when_the_lock_is_held():
+    calls: list[bool] = []
+
+    async def run_pass() -> None:
+        calls.append(True)
+
+    lock = asyncio.Lock()
+    await lock.acquire()   # simulate a push-triggered pass (or a still-running LEX ladder) in flight
+    try:
+        ran = await asyncio.wait_for(run_pass_if_idle(lock, run_pass), timeout=0.2)
+    finally:
+        lock.release()
+
+    assert ran is False
+    assert calls == [], "a held lock must be skipped outright, never queued on"
+
+
+@pytest.mark.asyncio
+async def test_poll_tick_skips_while_push_holds_the_lock_and_resumes_next_tick():
+    """The real interaction the dedicated poll loop relies on: a slow
+    push-triggered pass (run_pass_locked) holds the lock; a poll tick that
+    lands mid-pass (run_pass_if_idle) must skip immediately rather than wait
+    -- and once the push pass releases the lock, the NEXT poll tick runs
+    normally. Simulates two loop ticks against the SAME shared lock."""
+    lock = asyncio.Lock()
+    push_calls: list[str] = []
+    entered = asyncio.Event()
+
+    async def slow_push_pass() -> None:
+        push_calls.append("push")
+        entered.set()
+        await asyncio.sleep(0.1)
+
+    push_task = asyncio.create_task(run_pass_locked(lock, slow_push_pass))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)   # push is now mid-pass, lock held
+
+    poll_calls: list[str] = []
+
+    async def poll_pass() -> None:
+        poll_calls.append("poll")
+
+    # "tick 1": lands while the push pass still holds the lock -> skipped
+    first_ran = await asyncio.wait_for(run_pass_if_idle(lock, poll_pass), timeout=0.2)
+    assert first_ran is False
+    assert poll_calls == []
+
+    await push_task   # let the push pass finish and release the lock
+
+    # "tick 2": the next tick re-checks and now runs normally
+    second_ran = await run_pass_if_idle(lock, poll_pass)
+    assert second_ran is True
+    assert poll_calls == ["poll"]
