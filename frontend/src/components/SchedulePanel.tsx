@@ -258,6 +258,8 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
               <th className="num">Count</th>
               <th className="num">Worst case (est.)</th>
               <th aria-label="actions" />
+              {/* row counter (operator request 2026-07-12): 1..N down the right */}
+              <th className="num rownum-head" aria-label="row number">#</th>
             </tr>
           </thead>
           <tbody>
@@ -364,6 +366,12 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                   >
                     ✕
                   </button>
+                </td>
+                {/* the row's number, 1..N (operator request 2026-07-12). In the
+                    narrow card layout the "Entry N" heading already numbers each
+                    card, so this cell is hidden there. */}
+                <td className="cell-rownum" data-label="Row">
+                  <span className="rownum-badge">{i + 1}</span>
                 </td>
               </tr>
             ))}
