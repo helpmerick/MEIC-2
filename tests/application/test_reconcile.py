@@ -3,7 +3,7 @@ import asyncio
 
 from meic.application.reconcile import Reconcile, TrackedShort
 from meic.domain.events import LongSaleStarted, ReconciliationMismatch, StopReplaced
-from tests.harness.fake_broker import FakeBroker
+from tests.harness.fake_broker import FakeBroker, Scripted
 from tests.harness.intents import condor_intent, stop_intent
 from decimal import Decimal as D
 
@@ -68,6 +68,42 @@ def test_tc_rec_04_3_genuinely_unprotected_replaces_stop():
     asyncio.run(rec.execute(plan))
     assert plan.place_stops == [("e1", "PUT")]
     assert any(isinstance(e, StopReplaced) for e in events)
+
+
+def test_boot_cancel_race_on_stale_entry_order_is_never_silently_discarded():
+    """REPRICE-RACE SWEEP (2026-07-11): a stale entry order fills in the window
+    between boot's positions() snapshot and this cancel — `cancel()` alone
+    cannot be trusted to say so (FakeBroker mirrors this: cancelling an
+    already-FILLED order returns {"result": "terminal", ...}, not an
+    exception). The fix must surface it as a genuine ReconciliationMismatch
+    (RSK-03 blocks new entries) rather than silently recording the entry as
+    cleanly cancelled while a real, unprotected position sits at the broker."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"price": "4.00"}))
+    order_id = asyncio.run(broker.submit(condor_intent(entry_id="e-race")))
+
+    rec = Reconcile(broker, events)
+    plan = rec.plan(tracked_shorts=[], broker_working_order_ids=set(),
+                    mid_lex_sides=[], stale_entry_order_ids=[order_id])
+    asyncio.run(rec.execute(plan))
+
+    mismatches = [e for e in events if isinstance(e, ReconciliationMismatch)]
+    assert len(mismatches) == 1, "a cancel racing a fill must be flagged, not discarded"
+    assert order_id in mismatches[0].detail
+
+
+def test_boot_cancel_with_no_race_never_raises_a_false_mismatch():
+    """Sanity check: a genuinely-cancelled stale entry order (the ordinary
+    case) must NOT trip the new race guard."""
+    broker, events = FakeBroker(), []
+    order_id = asyncio.run(broker.submit(condor_intent(entry_id="e-clean")))  # rests WORKING
+
+    rec = Reconcile(broker, events)
+    plan = rec.plan(tracked_shorts=[], broker_working_order_ids=set(),
+                    mid_lex_sides=[], stale_entry_order_ids=[order_id])
+    asyncio.run(rec.execute(plan))
+
+    assert not [e for e in events if isinstance(e, ReconciliationMismatch)]
 
 
 def test_rec_05_recovery_never_duplicates_a_stop():

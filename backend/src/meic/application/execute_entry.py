@@ -262,7 +262,22 @@ class ExecuteEntryAttempt:
                 if await self._filled(working_id):
                     return await self._record_fill(entry_id, working_id, condor, expiration,
                                                    working_price, initiator)
-                working_id = await self._broker.replace(working_id, intent)
+                try:
+                    working_id = await self._broker.replace(working_id, intent)
+                except Exception:
+                    # REPRICE-RACE SWEEP (2026-07-11): the pre-check above narrows
+                    # the window but does not close it — a live fill can still
+                    # land in the gap between that check and this replace() call
+                    # (the real broker's margin_check_failed on the duplicate, or
+                    # any other replace-after-fill rejection). Re-confirm before
+                    # ever propagating: if it turns out the order filled, this
+                    # was in fact a fill racing the replace, not a genuine
+                    # error — record it as the fill it is. A real, unrelated
+                    # replace failure (not a race) still propagates unchanged.
+                    if await self._filled(working_id):
+                        return await self._record_fill(entry_id, working_id, condor, expiration,
+                                                       working_price, initiator)
+                    raise
             working_price = step.price
 
             # Paper fills are synchronous, so this returns on the FIRST poll without
@@ -283,6 +298,20 @@ class ExecuteEntryAttempt:
                                                working_price, initiator,
                                                put_floor=put_floor, call_floor=call_floor)
             await self._broker.cancel(working_id)
+            # REPRICE-RACE SWEEP (2026-07-11): the pre-check above narrows the
+            # window but does not close it — a live fill can still land in the
+            # gap between that check and this cancel() call, and neither
+            # adapter's cancel() reliably reports "it was already filled"
+            # (SimulatedBroker: {"result": "terminal", ...}; TastytradeAdapter:
+            # {"result": "error", ...} for ANY cancel failure, fill-races
+            # included). Trusting the cancel blindly here would record a
+            # genuinely FILLED condor as `unfilled_at_floor` — naked, unprotected,
+            # and invisible (no CondorFilled, no stop, no alert). Re-confirm
+            # against the fills feed one more time, post-cancel, before giving up.
+            if await self._filled(working_id):
+                return await self._record_fill(entry_id, working_id, condor, expiration,
+                                               working_price, initiator,
+                                               put_floor=put_floor, call_floor=call_floor)
         return self._skip(day, n, "unfilled_at_floor")
 
     async def _await_fill(self, working_id, seconds: float) -> bool:

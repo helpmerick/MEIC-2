@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from meic.domain.events import ShortStopped, WatchdogEscalated
 
+from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import marketable_close, right_of
 
 
@@ -101,7 +102,23 @@ class StopWatchdog:
             price=ask, symbol=symbol, kind="escalation",
             idempotency_key=f"escalate:{entry_id}:{side}"))
         if resting_id is not None:
-            await self.broker.cancel(resting_id)  # cancel the sleeping stop
+            # REPRICE-RACE SWEEP (2026-07-11): NOT WIRED LIVE today, guarded
+            # preventatively. The pre-submit check above narrows the window but
+            # cannot close it: the resting stop can still fill in the gap
+            # between that check and the submit() just above — the broker
+            # cannot undo an already-submitted marketable buy, so the best this
+            # can do is recognize a genuine double-fill and say so loudly,
+            # rather than silently cancelling (a no-op, since the stop is
+            # already gone) and journaling a clean single escalation.
+            if any(_fill_matches(f, resting_id) for f in await self.broker.fills_since(None)):
+                self.alerts.alert(
+                    "critical",
+                    "watchdog escalation raced the resting stop to a fill — both may "
+                    "have executed; verify this leg's position by hand",
+                    entry_id=entry_id, side=side, resting_stop_id=resting_id,
+                    escalation_order_id=order_id)
+            else:
+                await self.broker.cancel(resting_id)  # cancel the sleeping stop
 
         fill_price = ask  # marketable-limit at the ask
         self.events.append(ShortStopped(
@@ -113,5 +130,13 @@ class StopWatchdog:
         self._reset(key)
 
     async def _resting_stop_filled(self, resting_id: str) -> bool:
+        """ORD-08 race pre-check. Matches BOTH shapes `working_orders()` can
+        return — our own SimOrder/FakeOrder (`.order_id`) and the live SDK's
+        `PlacedOrder` (`.id` only) — the same `.order_id`-vs-`.id` mismatch
+        `protect_position._confirmed_qty` was fixed for on 2026-07-09. Matching
+        only `.order_id` here made this ALWAYS report "filled" against a live
+        shape (found in the 2026-07-11 sweep), which would abort every live
+        escalation before it ever submitted."""
         working = await self.broker.working_orders()
-        return not any(getattr(o, "order_id", None) == resting_id for o in working)
+        ids = {str(getattr(o, "order_id", None) or getattr(o, "id", None)) for o in working}
+        return str(resting_id) not in ids

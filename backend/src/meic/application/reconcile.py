@@ -24,6 +24,7 @@ from meic.domain.events import (
     StopReplaced,
 )
 
+from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import protective_stop, right_of
 
 
@@ -134,6 +135,25 @@ class Reconcile:
 
         for order_id in plan.cancel_orders:
             await self._broker.cancel(order_id)
+            # REPRICE-RACE SWEEP (2026-07-11): a stale ENTRY order can fill in
+            # the narrow window between boot's broker.positions() snapshot and
+            # THIS cancel — neither adapter's cancel() reliably reports "it was
+            # already filled" (SimulatedBroker: {"result": "terminal", ...};
+            # TastytradeAdapter: {"result": "error", ...} for any cancel
+            # failure). Trusting the cancel blindly would leave a genuinely
+            # FILLED condor with no CondorFilled, no stop, no ProtectPosition —
+            # invisible. This module cannot reconstruct that entry (ORD-09: it
+            # does not know its strikes), so it never guesses; it surfaces the
+            # race loudly instead, exactly like any other genuine
+            # reconciliation mismatch (RSK-03 blocks new entries until the
+            # operator resolves it by hand).
+            for f in await self._broker.fills_since(None):
+                if _fill_matches(f, order_id):
+                    detail = (f"stale entry order {order_id} filled while boot was "
+                             "cancelling it (ORD-06/RSK-03 race) — position may be "
+                             "unprotected; operator must reconcile manually")
+                    self._events.append(ReconciliationMismatch(detail=detail))
+                    break
 
         placed_keys: set[str] = set()
         for entry_id, side in plan.place_stops:

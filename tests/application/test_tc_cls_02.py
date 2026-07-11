@@ -34,6 +34,9 @@ class RecordingBroker:
         self.cancels.append(id)
         return await self.submit(new)
 
+    async def fills_since(self, cursor):
+        return []  # this fixture never scripts a race-fill scenario
+
 
 def _svc(events, state):
     broker = RecordingBroker()
@@ -97,6 +100,31 @@ def test_tc_cls_02_working_entry_is_cancelled_not_closed():
     assert broker.cancels == ["entry-ord-2"] and broker.submits == 0  # no close orders
     assert not any(isinstance(e, EntryClosed) for e in events)
     assert state.tpf_floors == {}
+
+
+def test_cancel_working_racing_a_fill_is_flagged_not_reported_clean():
+    """REPRICE-RACE SWEEP (2026-07-11): the entry fills in the window between
+    the operator's Cancel click and the broker cancel — a bare `cancelled`
+    result would hide a genuinely live, unprotected condor. `ManualClose` is
+    not wired into the live composition today (the real Close button routes
+    straight through `panel_commands.PanelCommands.close_as` to `CloseEntry`),
+    but this guard exists so wiring it in later cannot resurrect the race."""
+    from meic.domain.events import ReconciliationMismatch
+
+    class RaceBroker(RecordingBroker):
+        async def fills_since(self, cursor):
+            return [{"order_id": "entry-ord-9", "partial": False}]
+
+    events: list = []
+    state = _state(**{"e9": "5.00"})
+    broker = RaceBroker()
+    svc = ManualClose(CloseEntry(broker, events), broker, state, events=events)
+
+    res = asyncio.run(svc.cancel_working("e9", order_id="entry-ord-9"))
+
+    assert res.result == "race_detected"
+    mismatches = [e for e in events if isinstance(e, ReconciliationMismatch)]
+    assert len(mismatches) == 1 and "entry-ord-9" in mismatches[0].detail
 
 
 def test_tc_cls_02_flatten_all_requires_typed_confirmation():

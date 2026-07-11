@@ -47,6 +47,9 @@ class _Broker:
         self.cancelled.append(oid)
         return {"result": "cancelled"}
 
+    async def fills_since(self, cursor):
+        return []  # this fixture never scripts a race-fill scenario
+
     async def submit(self, intent):
         raise AssertionError("reconcile must place NOTHING for a foreign book")
 

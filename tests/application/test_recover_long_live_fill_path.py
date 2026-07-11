@@ -58,6 +58,43 @@ def test_live_shaped_lex_fill_mid_rung_never_duplicates():
     assert sum(isinstance(e, SideClosed) for e in events) == 1
 
 
+def test_replace_race_mid_ladder_is_recorded_sold_not_raised():
+    """REPRICE-RACE SWEEP (2026-07-11): the pre-replace `_filled()` check
+    narrows the LEX reprice race but does not close it — a sell fill can
+    still land in the gap between that check and the replace() call itself
+    (margin_check_failed on the duplicate, the real broker's rejection).
+    Before this fix that exception propagated uncaught out of the ladder;
+    now it must be recognized as the race it is and recorded SOLD."""
+    clock = FakeClock(SCHEDULED)
+    broker = LiveShapedBroker(clock, fill_delay=10_000.0)  # never fills "naturally"
+    events: list = []
+    rec = RecoverLong(broker, clock, events, SPX, lex_reprice_seconds=2,
+                      lex_reprice_attempts=3, lex_fill_poll_seconds=0.5)
+
+    async def scenario():
+        task = asyncio.ensure_future(rec.recover(
+            entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
+            quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
+        for _ in range(500):
+            await asyncio.sleep(0)
+            if broker.submits:
+                break
+        assert broker.submits, "the ladder never reached the broker"
+        oid = broker.submits[0][0]
+        broker.race_fill_on_replace(oid)
+        for _ in range(200):
+            if task.done():
+                break
+            for _ in range(6):
+                await asyncio.sleep(0)
+            clock.advance(seconds=1)
+        return await task
+
+    outcome = asyncio.run(scenario())
+    assert outcome.outcome == "SOLD", outcome
+    assert sum(isinstance(e, LongSold) for e in events) == 1
+
+
 def test_harness_rejects_repricing_an_already_filled_lex_order():
     """Sanity check on the harness itself (mirrors test_live_fill_path.py's
     twin): replacing an already-filled LEX order raises margin_check_failed,

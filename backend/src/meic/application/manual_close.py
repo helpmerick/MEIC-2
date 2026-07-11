@@ -14,14 +14,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from meic.application.close_entry import CloseEntry, LiveLeg
+from meic.application.execute_entry import _fill_matches  # reused normalizer, never a new one
 from meic.application.persistent_state import PersistentState
+from meic.domain.events import ReconciliationMismatch
 
 FLATTEN_CONFIRMATION = "FLATTEN"
 
 
+class _NoOpAlerts:
+    def alert(self, level: str, message: str, **context) -> None:  # pragma: no cover - trivial
+        pass
+
+
 @dataclass(frozen=True)
 class CloseResult:
-    result: str      # "closed" | "cancelled" | "already_done"
+    result: str      # "closed" | "cancelled" | "already_done" | "race_detected"
     initiator: str   # "manual" | "cancel_entry"
 
 
@@ -31,6 +38,16 @@ class ManualClose:
     broker: object
     state: PersistentState
     _done: set = field(default_factory=set)
+    # REPRICE-RACE SWEEP (2026-07-11): `ManualClose` is not wired into the
+    # live/paper composition today (grep confirms no `ManualClose(` outside
+    # this module and its own unit test — the real Close button routes through
+    # `panel_commands.PanelCommands.close_as`, straight to `CloseEntry`, and
+    # nothing wires this class's `cancel_working` CLS-03 path at all). `alerts`
+    # and `events` are added here preventatively — a no-op alerts sink and an
+    # empty log by default — so wiring this class in later cannot resurrect
+    # the class of race this sweep exists to close.
+    alerts: object = field(default_factory=_NoOpAlerts)
+    events: list = field(default_factory=list)
 
     def requires_close_confirmation(self) -> bool:
         """UI-16 / Bug #16: Close never asks — it fires instantly, no dialog."""
@@ -56,6 +73,25 @@ class ManualClose:
             return CloseResult("already_done", "cancel_entry")
         self._done.add(entry_id)
         await self.broker.cancel(order_id)
+        # REPRICE-RACE SWEEP (2026-07-11): the entry can fill in the window
+        # between the operator's click and this cancel — neither adapter's
+        # cancel() reliably reports "it was already filled" (SimulatedBroker:
+        # {"result": "terminal", ...}; TastytradeAdapter: {"result": "error",
+        # ...} for any cancel failure). Trusting it blindly would report
+        # "cancelled" for a condor that is, in fact, live and unprotected — no
+        # CondorFilled, no stop, no alert. This module has no strike/leg
+        # information to reconstruct the entry (ORD-09), so it never guesses;
+        # it surfaces the race loudly, same as reconcile.py's own boot-cancel
+        # guard, and returns a distinct result so a caller never treats it as
+        # a clean cancel.
+        if any(_fill_matches(f, order_id) for f in await self.broker.fills_since(None)):
+            detail = (f"CLS-03 cancel of working entry {entry_id} (order {order_id}) "
+                     "raced a fill — position may be unprotected; operator must "
+                     "reconcile manually")
+            self.events.append(ReconciliationMismatch(detail=detail))
+            self.alerts.alert("critical", detail, entry_id=entry_id, order_id=order_id)
+            self._clear_tpf_floor(entry_id)
+            return CloseResult("race_detected", "cancel_entry")
         self._clear_tpf_floor(entry_id)
         return CloseResult("cancelled", "cancel_entry")
 

@@ -111,6 +111,124 @@ def test_harness_rejects_repricing_a_filled_order():
 
 # --- ENT-10(3): a cancel mid-LADDER must never orphan a working entry order -----
 
+def test_cancel_at_floor_racing_a_fill_is_recorded_filled_not_skipped():
+    """REPRICE-RACE SWEEP (2026-07-11): the ORD-03 cancel-at-floor guard
+    re-confirms not-filled BEFORE cancel() — but a live fill can still land IN
+    the cancel() round trip itself (neither adapter's cancel() reliably
+    reports "already filled" back to the caller). Arms LiveShapedBroker's
+    race hook so the entry fills exactly during that cancel() call and proves
+    the post-cancel re-check catches it: FILLED, not the naked, invisible
+    `unfilled_at_floor` skip a pre-check-only guard would silently produce."""
+    from dataclasses import replace as dc_replace
+
+    clock = FakeClock(SCHEDULED)
+    broker = LiveShapedBroker(clock, fill_delay=10_000.0)  # never fills "naturally"
+    events: list = []
+    condor = dc_replace(CONDOR, mid_credit=D("4.00"), min_total_credit=D("4.00"))  # exactly one rung
+    ex = ExecuteEntryAttempt(broker, clock, events, SPX,
+                             entry_reprice_seconds=2, entry_reprice_attempts=1)
+
+    async def scenario():
+        task = asyncio.ensure_future(ex.attempt(
+            day="2026-07-09", scheduled=SCHEDULED, condor=condor, gates=PASS))
+        for _ in range(500):
+            await asyncio.sleep(0)
+            if broker.submits:
+                break
+        assert broker.submits, "the attempt never reached the broker"
+        oid = broker.submits[0][0]
+        broker.race_fill_on_cancel(oid)  # the fill lands DURING the coming cancel()
+        for _ in range(200):
+            if task.done():
+                break
+            for _ in range(6):
+                await asyncio.sleep(0)
+            clock.advance(seconds=1)
+        return await task
+
+    outcome = asyncio.run(scenario())
+    assert outcome.status == "FILLED", outcome
+    assert sum(isinstance(e, CondorFilled) for e in events) == 1
+    entry_submits = [s for s in broker.submits if s[1] == "limit"]
+    assert len(entry_submits) == 1, f"entry order submitted {len(entry_submits)}x (duplicate!)"
+
+
+def test_stop_confirmation_miss_adopts_resting_stop_instead_of_resubmitting():
+    """REPRICE-RACE SWEEP (2026-07-11): a stop submit can succeed at the
+    broker even though ITS OWN confirmation read misses it (a slow/
+    eventually-consistent working_orders() read — the same shape as the
+    historical `.order_id`-vs-`.id` bug, 2026-07-09). tastytrade enforces no
+    server-side idempotency key, so a caller that blindly resubmits on the
+    next retry rests a genuine SECOND stop. `hide_from_working_orders` forces
+    exactly that miss on the first confirmation read; the fix (ProtectPosition
+    adopting a resting order before resubmitting) must still confirm PROTECTED
+    with only ONE stop ever submitted."""
+    clock = FakeClock(SCHEDULED)
+    broker = LiveShapedBroker(clock, fill_delay=10_000.0)
+    events: list = []
+    protect = ProtectPosition(broker, clock, _Alerts(), events, SPX, stop_retry_attempts=3)
+
+    shorts = [ShortLeg("PUT", D("1.50"), D("0"), symbol="SPXW_7525P")]
+
+    orig_submit = broker.submit
+
+    async def submit_and_hide(intent):
+        oid = await orig_submit(intent)
+        if intent.order_type == "stop_market":
+            broker.hide_from_working_orders(oid, times=1)  # miss the FIRST confirm read
+        return oid
+
+    broker.submit = submit_and_hide  # type: ignore[method-assign]
+
+    result = asyncio.run(protect.protect(
+        entry_id="e-adopt", basis=StopBasis.TOTAL_CREDIT, shorts=shorts,
+        pct=D("95"), total_net_credit=D("3.00"), contracts=1))
+
+    assert result.outcome == "PROTECTED", result
+    stop_submits = [s for s in broker.submits if s[1] == "stop_market"]
+    assert len(stop_submits) == 1, f"stop submitted {len(stop_submits)}x (duplicate!)"
+    assert sum(isinstance(e, StopPlaced) for e in events) == 1
+    assert sum(isinstance(e, StopConfirmed) for e in events) == 1
+
+
+def test_replace_race_mid_ladder_is_recorded_filled_not_raised():
+    """REPRICE-RACE SWEEP (2026-07-11): the pre-replace `_filled()` check
+    narrows the reprice race but does not close it — a fill can still land in
+    the gap between that check and the replace() call itself, which the real
+    broker rejects (margin_check_failed on the duplicate). Before this fix
+    that exception propagated uncaught out of the ladder; now it must be
+    recognized as the race it is and recorded as a fill."""
+    clock = FakeClock(SCHEDULED)
+    broker = LiveShapedBroker(clock, fill_delay=10_000.0)  # never fills "naturally"
+    events: list = []
+    ex = ExecuteEntryAttempt(broker, clock, events, SPX,
+                             entry_reprice_seconds=2, entry_reprice_attempts=3)
+
+    async def scenario():
+        task = asyncio.ensure_future(ex.attempt(
+            day="2026-07-09", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+        for _ in range(500):
+            await asyncio.sleep(0)
+            if broker.submits:
+                break
+        assert broker.submits, "the attempt never reached the broker"
+        oid = broker.submits[0][0]
+        # arm the race on the SECOND rung's replace() call, which the ladder
+        # is about to make once the first rung's poll window times out
+        broker.race_fill_on_replace(oid)
+        for _ in range(200):
+            if task.done():
+                break
+            for _ in range(6):
+                await asyncio.sleep(0)
+            clock.advance(seconds=1)
+        return await task
+
+    outcome = asyncio.run(scenario())
+    assert outcome.status == "FILLED", outcome
+    assert sum(isinstance(e, CondorFilled) for e in events) == 1
+
+
 def test_cancel_mid_ladder_never_orphans_a_working_entry_order():
     """Re-review finding (2026-07-09): a disarm cancel landing INSIDE the attempt
     — during the reprice ladder's submit/_await_fill polls — used to unwind with

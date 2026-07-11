@@ -11,6 +11,19 @@ Three live-only bugs shipped on 2026-07-09 because nothing tested the live shape
 This harness reproduces all three conditions: SDK object shapes (`.id`/`.status`/
 `.legs`), fill LATENCY (an entry limit fills `fill_delay` after submit, by the clock),
 and a REJECT when an already-filled order is repriced (the broker's real behaviour).
+
+REPRICE-RACE SWEEP (2026-07-11) additions — two more raced outcomes the class of
+incident #2 needs, beyond reject-on-replace-after-fill:
+  * cancel-after-fill: `cancel()` used to always report `{"result": "cancelled"}`
+    regardless of order state, which cannot exercise a guard that is supposed to
+    notice "the cancel raced a fill" (a cancel of an already-FILLED order is
+    modeled as the real TastytradeAdapter's ambiguous error shape — see
+    `adapter.py`'s own `_replace_fallback` docstring: cert's cancel-failure
+    payloads are unverified, so this is deliberately NOT a clean "cancelled").
+  * a confirmation read that misses a just-submitted, genuinely-resting order
+    (`hide_from_working_orders`) — the shape of bug #2 above (`.order_id` vs
+    `.id`), generalised: any live read of `working_orders()` can miss an order
+    that is, in fact, already resting at the broker.
 """
 from __future__ import annotations
 
@@ -76,6 +89,35 @@ class LiveShapedBroker:
         broker's view of the 2026-07-10 C7565 fill."""
         self._orders[str(order_id)]["stop_filled"] = True
 
+    def race_fill_on_cancel(self, order_id) -> None:
+        """REPRICE-RACE SWEEP (2026-07-11): arm `order_id` so the NEXT `cancel()`
+        call against it first flips it FILLED — simulating a fill that lands
+        exactly in the round trip of a `cancel()` call, the one gap a
+        pre-cancel `_filled()` check cannot close (neither adapter's `cancel()`
+        response reliably says "it was already filled" — see the `cancel()`
+        docstring above). Lets a test prove a caller re-checks AFTER the
+        cancel too, not only before it."""
+        self._orders[str(order_id)]["race_on_cancel"] = True
+
+    def race_fill_on_replace(self, order_id) -> None:
+        """REPRICE-RACE SWEEP (2026-07-11): arm `order_id` so the NEXT
+        `replace()` call against it first flips it FILLED — simulating a fill
+        that lands exactly in the round trip of a `replace()` call, mirroring
+        `race_fill_on_cancel` for the reprice-ladder path (`replace()` here
+        does not itself call `cancel()`, so the two hooks are independent)."""
+        self._orders[str(order_id)]["race_on_replace"] = True
+
+    def hide_from_working_orders(self, order_id, times: int = 1) -> None:
+        """REPRICE-RACE SWEEP (2026-07-11): simulate a `working_orders()` read
+        that misses a just-submitted, genuinely-resting order for the next
+        `times` calls — an eventually-consistent broker read, or the exact
+        `.order_id`-vs-`.id` shape mismatch that once made a live stop's own
+        confirmation miss it (2026-07-09). A caller that blindly resubmits on
+        a missed confirmation, rather than re-checking for an already-resting
+        order first, rests a genuine duplicate — tastytrade enforces no
+        server-side idempotency key."""
+        self._orders[str(order_id)]["hide_count"] = times
+
     def set_positions(self, positions: list[tuple[str, int, str]]) -> None:
         """Install broker-truth positions as SDK-shaped objects (attributes
         only, no `.get`): [(symbol, quantity, "Long"|"Short"), ...]. The live
@@ -94,6 +136,8 @@ class LiveShapedBroker:
 
     async def replace(self, oid, intent) -> str:
         rec = self._orders.get(str(oid))
+        if rec is not None and rec.pop("race_on_replace", False):
+            rec["stop_filled"] = True  # the fill lands exactly during this call
         if rec is not None and self._is_filled(rec):
             # the real broker rejects the duplicate: the fill already used the margin
             raise RuntimeError("margin_check_failed: cannot reprice an already-filled order")
@@ -103,6 +147,17 @@ class LiveShapedBroker:
 
     async def cancel(self, oid) -> dict:
         rec = self._orders.get(str(oid))
+        if rec is not None and rec.pop("race_on_cancel", False):
+            rec["stop_filled"] = True  # the fill lands exactly during this call
+        if rec is not None and self._is_filled(rec):
+            # REPRICE-RACE SWEEP (2026-07-11): cancel-after-fill. A real broker
+            # cannot cancel an order that has already executed; modeled as the
+            # same ambiguous "error" shape `TastytradeAdapter.cancel()` returns
+            # on any `delete_order` exception (assumption 5: cert's exact
+            # cancel-failure payload for "already filled" is unverified) —
+            # deliberately NEVER a clean "cancelled", which would tell a caller
+            # it removed protection that, in fact, already fired.
+            return {"result": "error", "error": "already filled — cannot cancel"}
         if rec is not None:
             rec["cancelled"] = True
         return {"result": "cancelled"}
@@ -129,6 +184,11 @@ class LiveShapedBroker:
         out = []
         for oid, r in self._orders.items():
             if r["cancelled"] or self._is_filled(r):
+                continue
+            if r.get("hide_count", 0) > 0:
+                # REPRICE-RACE SWEEP (2026-07-11): a confirmation read that
+                # misses a genuinely-resting order — see `hide_from_working_orders`.
+                r["hide_count"] -= 1
                 continue
             if r["kind"] in ("stop_market", "limit"):
                 out.append(_Order(oid, "Live", self._legs(r["intent"])))

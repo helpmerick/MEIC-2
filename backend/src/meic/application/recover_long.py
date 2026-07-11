@@ -125,7 +125,18 @@ class RecoverLong:
                 # Re-confirm not-filled immediately before every replace.
                 if await self._filled(working_id):
                     return self._sold(entry_id, side, working_price, tried)
-                working_id = await self._broker.replace(working_id, intent)
+                try:
+                    working_id = await self._broker.replace(working_id, intent)
+                except Exception:
+                    # REPRICE-RACE SWEEP (2026-07-11): the pre-check above narrows
+                    # the window but does not close it — a live fill can still
+                    # land in the gap between that check and this replace() call.
+                    # Re-confirm before propagating: if it turns out the sell
+                    # filled, this was the race, not a genuine error. A real,
+                    # unrelated replace failure still propagates unchanged.
+                    if await self._filled(working_id):
+                        return self._sold(entry_id, side, working_price, tried)
+                    raise
             working_price = rung.price
             self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt, price=rung.price))
 

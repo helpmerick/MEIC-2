@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
+
 
 def _order_id(order: Any) -> str:
     """Best-effort id extraction across broker order shapes (obj or dict)."""
@@ -27,6 +29,12 @@ def _order_id(order: Any) -> str:
 class SweepResult:
     cancelled: list[str] = field(default_factory=list)
     uncancellable: list[str] = field(default_factory=list)  # named in a critical alert
+    # REPRICE-RACE SWEEP (2026-07-11): an order that disappeared from
+    # working_orders() not because the cancel worked, but because it FILLED
+    # while the sweep was cancelling it. Named in its OWN critical alert
+    # (distinct from `uncancellable`) — it is neither cleanly cancelled nor
+    # stuck working, it is a real fill the day-end sweep must not misreport.
+    raced_fills: list[str] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
@@ -60,12 +68,30 @@ class EndOfDaySweep:
         # EOD-03: CONFIRM the bot's own orders are gone; a foreign order still
         # working is EXPECTED and ignored — the confirmation only covers ours.
         remaining = {_order_id(o) for o in await self._broker.working_orders()}
+        fills = await self._broker.fills_since(None)
         for oid in before:
             if oid in remaining:
                 result.uncancellable.append(oid)
                 self._alerts.alert(
                     "critical",
                     f"EOD-03: working order {oid} could not be cancelled",
+                    order_id=oid,
+                )
+            elif any(_fill_matches(f, oid) for f in fills):
+                # REPRICE-RACE SWEEP (2026-07-11): gone from working_orders(),
+                # but NOT because the cancel succeeded — it filled while this
+                # sweep was cancelling it (e.g. a resting stop the market
+                # traded through at the closing bell). Neither adapter's
+                # cancel() reliably distinguishes this from a clean cancel, so
+                # trusting "not remaining" alone would misreport a real
+                # stop-out as a tidy cancellation — losing the ShortStopped
+                # signal and, for a short's stop specifically, the LEX
+                # hand-off for its orphaned long.
+                result.raced_fills.append(oid)
+                self._alerts.alert(
+                    "critical",
+                    f"EOD-03: order {oid} FILLED while being cancelled — not a clean "
+                    "cancel; verify its position and orphaned long (if any) by hand",
                     order_id=oid,
                 )
             else:

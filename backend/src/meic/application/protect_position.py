@@ -26,6 +26,7 @@ from meic.domain.stop_policy import StopBasis, clears, stop_trigger
 from meic.domain.ticks import TickTable
 
 from .order_intent import OrderIntent, protective_stop, working_order_qty
+from .stop_fill_watch import _leg_action, _leg_symbol, _order_legs  # reused matchers, not new ones
 
 
 class LegsUnrecorded(ValueError):
@@ -160,12 +161,28 @@ class ProtectPosition:
         QUANTITY if it confirmed at the wrong size (STP-01 quantity invariant,
         v1.45). A short-sized stop is not retried and never silently resized — it
         is an UNPROTECTED condition immediately.
+
+        REPRICE-RACE SWEEP (2026-07-11): a submit can succeed at the broker even
+        though ITS OWN confirmation read (the `working_orders()` scan below)
+        fails or misses it — a slow/eventually-consistent read, or the historical
+        `.order_id`-vs-`.id` shape mismatch (2026-07-09). tastytrade enforces no
+        server-side idempotency key (`OrderIntent.idempotency_key` is never read
+        by `TastytradeAdapter.submit()`), so blindly resubmitting on the next
+        attempt would rest a SECOND buy-to-close beside the first — a real,
+        live-reachable duplicate stop. Before any retry's submit, scan for an
+        order already resting on this leg's symbol (reusing stop_fill_watch's own
+        buy-to-close matcher) and ADOPT it instead of resubmitting.
         """
+        symbol = intent.legs[0].symbol
         for attempt in range(self._retry_attempts):
-            try:
-                order_id = await self._broker.submit(intent)
-            except Exception:
-                order_id = None
+            order_id = None
+            if attempt > 0:
+                order_id = await self._find_resting(symbol)
+            if order_id is None:
+                try:
+                    order_id = await self._broker.submit(intent)
+                except Exception:
+                    order_id = None
             if order_id is not None:
                 qty = await self._confirmed_qty(order_id)
                 if qty == contracts:
@@ -183,6 +200,21 @@ class ProtectPosition:
             if attempt < self._retry_attempts - 1:
                 await self._clock.wait_until(self._clock.now())  # advance-controlled retry gap
         return False
+
+    async def _find_resting(self, symbol: str) -> str | None:
+        """REPRICE-RACE SWEEP (2026-07-11): is a buy-to-close stop already
+        resting on `symbol`? Reuses stop_fill_watch's own leg matchers (not a
+        new normalizer) so this reads working orders exactly the way the live
+        EC-STP-06 catch-up already does; `_order_legs` alone only reads the SDK
+        shape (`.legs`), so this also falls back to `.intent.legs` for our own
+        SimOrder/FakeOrder (paper/harness), same as `working_order_qty` does for
+        quantity. Returns its order id, or None."""
+        for o in await self._broker.working_orders():
+            legs = _order_legs(o) or getattr(getattr(o, "intent", None), "legs", None) or ()
+            for leg in legs:
+                if _leg_symbol(leg) == symbol and _leg_action(leg) == "buy_to_close":
+                    return getattr(o, "order_id", None) or getattr(o, "id", None)
+        return None
 
     async def _confirmed_qty(self, order_id: str) -> int | None:
         """The working stop's quantity, or None if it isn't working at all.

@@ -60,6 +60,7 @@ from meic.domain.events import EntryClosed, ShortStopped, SideClosed
 from meic.domain.ownership import OwnershipLedger
 
 from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
+from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import OrderIntent, OrderLeg, marketable_close, right_of
 
 VALID_INITIATORS = frozenset({
@@ -202,6 +203,24 @@ class CloseEntry:
                 return "TERMINAL", None
             except Exception as e:  # ORD-08(c) / unclassifiable -> transient
                 last_exc = e
+        # REPRICE-RACE SWEEP (2026-07-11): the LIVE TastytradeAdapter does not
+        # yet raise ReplaceFilled for a genuine ORD-08a race (its own `replace()`
+        # docstring flags this: cert's cancel-failure payloads are unverified,
+        # so EVERY live replace failure — including the target having already
+        # filled — lands here as "unclassifiable"). Before trusting "left
+        # resting", re-confirm directly against the fills feed: if the stop
+        # actually filled, "left resting" is not just imprecise, it is FALSE —
+        # the leg is already closed and this must route like any other stop-out
+        # (ShortStopped -> LEX), never sit in a retry-exhausted limbo repeating
+        # a replace against a dead order.
+        for f in await self._broker.fills_since(None):
+            if _fill_matches(f, stop_id):
+                price = None
+                for leg in await self._broker.fill_legs(stop_id):
+                    if leg.price is not None:
+                        price = leg.price
+                        break
+                return "FILLED", price
         self._alerts.alert(
             "critical", "CLS-01 replace exhausted retries; original stop left resting",
             entry_id=entry_id, side=side, stop_id=stop_id, error=repr(last_exc))
