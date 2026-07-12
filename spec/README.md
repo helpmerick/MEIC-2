@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.65 — 2026-07-12
+- v1.65 changes (operator-ratified, v1.64-review escalation): **EC-LEX-08(e)** fill-while-down recognition — a journaled floor order absent from working orders with a broker FILLED record synthesizes its LongSold at broker-actual price on boot (EC-STP-06's synthesize-the-missed-event principle applied to floor orders); genuinely-gone-unfilled takes OWN paths. Pure accounting/observability (position already flat at broker) but an EOD audit wrong by one event is a trust leak. TC-LEX-10 +1 scenario. Agent's NIT triage accepted.
 - Version: 1.64 — 2026-07-12
 - v1.64 changes (operator rulings on the final-review SHOULD-FIX pair): **EC-LEX-08(d)** restart survival — resting intrinsic-floor sells are RE-ADOPTED on boot via their `lex-floor:` idempotency key (REC-05 pattern; REC-03 resume applies; an orphaned working order breaks supersession, OWN classification, and the EOD-03 audit) — ruled REQUIRED before the next live session, not optional (also closes the reviewer's finding-5 narrow race). **RPT-07 sentinel** — floor-filled sides with no bid at stop time report "no mark (no bid)", never a fabricated baseline (D10). Stale-quote-never-supersedes accepted as designed; aria-describedby NIT fixed in-scope by the agent. TC-LEX-10 +2 scenarios.
 - Version: 1.63 — 2026-07-12
