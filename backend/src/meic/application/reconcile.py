@@ -128,10 +128,23 @@ class Reconcile:
 
         # EC-STP-06: record the stop-outs that happened while the bot was down,
         # BEFORE resuming their LEX below (so the log reads stop-out → LEX).
+        # R3-F2 guard (v1.65 ledger-clearing, sibling of EC-LEX-08(e)): `plan`
+        # was built off an earlier broker/journal snapshot with awaits since, so
+        # two concurrent boot reconciles (overlapping /broker/connect POSTs)
+        # could each carry the same missed side and DOUBLE-journal its
+        # ShortStopped — double-counting the realized loss AND slippage on the
+        # money log. Re-derive the already-stopped set SYNCHRONOUSLY here; this
+        # loop has no await, so whichever concurrent run appends first makes the
+        # other skip. Same one-line cure as the floor synthesis, on the original
+        # EC-STP-06 append next to it (final-review escalation).
+        stopped = {(e.entry_id, e.side) for e in self._events if isinstance(e, ShortStopped)}
         for entry_id, side, fill, slippage in plan.synthesize_stopped:
+            if (entry_id, side) in stopped:
+                continue  # a concurrent boot reconcile already synthesized it
             self._events.append(ShortStopped(
                 entry_id=entry_id, side=side, fill=fill, slippage=slippage,
                 initiator="resting_stop"))
+            stopped.add((entry_id, side))
 
         for order_id in plan.cancel_orders:
             await self._broker.cancel(order_id)

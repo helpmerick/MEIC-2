@@ -2,7 +2,7 @@
 import asyncio
 
 from meic.application.reconcile import Reconcile, TrackedShort
-from meic.domain.events import LongSaleStarted, ReconciliationMismatch, StopReplaced
+from meic.domain.events import LongSaleStarted, ReconciliationMismatch, ShortStopped, StopReplaced
 from tests.harness.fake_broker import FakeBroker, Scripted
 from tests.harness.intents import condor_intent, stop_intent
 from decimal import Decimal as D
@@ -68,6 +68,29 @@ def test_tc_rec_04_3_genuinely_unprotected_replaces_stop():
     asyncio.run(rec.execute(plan))
     assert plan.place_stops == [("e1", "PUT")]
     assert any(isinstance(e, StopReplaced) for e in events)
+
+
+def test_ec_stp_06_synthesis_is_idempotent_under_concurrent_boot():
+    """R3-F2 (v1.65 ledger-clearing, sibling of EC-LEX-08(e)): two concurrent
+    boot reconciles (overlapping /broker/connect POSTs) can each carry the same
+    missed stop in their plan. Without the synchronous re-check they would
+    DOUBLE-journal its ShortStopped — double-counting the realized loss AND
+    slippage on the money log. Replaying execute() twice against one event log
+    (the deterministic stand-in for the concurrent second run) must synthesize
+    the ShortStopped exactly once."""
+    broker, events = FakeBroker(), []
+    rec = Reconcile(broker, events)
+    tracked = [TrackedShort("e1", "PUT", "SPXW_5990P", stop_order_id=None,
+                            stop_filled=True, stop_fill_price=D("3.90"),
+                            stop_trigger=D("3.80"))]
+    plan = rec.plan(tracked_shorts=tracked, broker_working_order_ids=set(),
+                    mid_lex_sides=[], stale_entry_order_ids=[])
+    asyncio.run(rec.execute(plan))
+    asyncio.run(rec.execute(plan))   # the concurrent second run, replayed
+    stopped = [e for e in events
+               if isinstance(e, ShortStopped) and (e.entry_id, e.side) == ("e1", "PUT")]
+    assert len(stopped) == 1, "concurrent boot reconciles must not double-journal the stop-out"
+    assert stopped[0].fill == D("3.90") and stopped[0].slippage == D("0.10")
 
 
 def test_boot_cancel_race_on_stale_entry_order_is_never_silently_discarded():
