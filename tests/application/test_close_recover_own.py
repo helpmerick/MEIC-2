@@ -1,5 +1,6 @@
 """Slice 4 unit tests: OwnershipLedger, CloseEntry, RecoverLong."""
 import asyncio
+from datetime import datetime, timezone
 from decimal import Decimal as D
 
 from meic.application.close_entry import CloseEntry, LiveLeg
@@ -8,8 +9,10 @@ from meic.domain.events import EntryClosed, LongSold, SideClosed
 from meic.domain.ownership import Ownership, OwnershipLedger
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_broker import FakeBroker, Scripted
+from tests.harness.fake_clock import FastClock
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
+NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
 
 class TestOwnershipLedger:
@@ -47,12 +50,16 @@ class TestCloseEntry:
         import pytest
         with pytest.raises(ValueError):
             asyncio.run(CloseEntry(FakeBroker(), []).close(
-                "e1", "kill_switch", resting_stop_ids=[], live_legs=[], close_price=D("0.05")))
+                "e1", "kill_switch", resting_stop_ids={}, live_legs=[], close_price=D("0.05")))
 
     def test_records_initiator_and_closes_all_legs(self):
         broker, events = FakeBroker(), []
+        # CLS-01 v1.50: resting_stop_ids is keyed by side; neither "S1" nor "S2"
+        # was ever actually submitted, so each replace() classifies TERMINAL
+        # (ORD-08b — nothing to race) and CloseEntry closes directly instead.
         asyncio.run(CloseEntry(broker, events).close(
-            "e1", "manual", resting_stop_ids=["S1", "S2"], live_legs=self._legs(), close_price=D("0.05")))
+            "e1", "manual", resting_stop_ids={"PUT": "S1", "CALL": "S2"},
+            live_legs=self._legs(), close_price=D("0.05")))
         closed = [e for e in events if isinstance(e, EntryClosed)]
         assert len(closed) == 1 and closed[0].initiator == "manual"
         assert sum(isinstance(e, SideClosed) for e in events) == 4
@@ -61,19 +68,19 @@ class TestCloseEntry:
 class TestRecoverLong:
     def test_lex_ladder_then_fallback(self):
         broker, events = FakeBroker(), []  # never fills
-        r = asyncio.run(RecoverLong(broker, events, SPX, lex_reprice_attempts=4).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX, lex_reprice_attempts=4).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
         assert r.outcome == "FALLBACK_WORKING"
         assert r.prices_tried == (D("2.15"), D("2.10"), D("2.05"), D("2.00"))
         # a marketable-limit fallback at the bid exists
-        assert any(o.intent.get("type") == "marketable_limit" and o.intent["price"] == D("2.00")
+        assert any(o.intent.order_type == "marketable_limit" and o.intent.price == D("2.00")
                    for o in broker._orders.values())
 
     def test_lex_sells_and_records_recovery_on_fill(self):
         broker, events = FakeBroker(), []
         broker.script_submit(Scripted("fill", payload={"price": "2.15"}))
-        r = asyncio.run(RecoverLong(broker, events, SPX).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.00"), ask=D("2.30")), intrinsic=D("0")))
         assert r.outcome == "SOLD"
@@ -81,7 +88,7 @@ class TestRecoverLong:
 
     def test_lex02_unusable_quote_goes_straight_to_fallback(self):
         broker, events = FakeBroker(), []
-        r = asyncio.run(RecoverLong(broker, events, SPX).recover(
+        r = asyncio.run(RecoverLong(broker, FastClock(NOW), events, SPX).recover(
             entry_id="e1", side="PUT", long_symbol="SPXW_5940P",
             quote=Quote(bid=D("2.40"), ask=D("2.30")), intrinsic=D("0")))  # crossed
         assert r.outcome == "FALLBACK_WORKING" and r.prices_tried == ()

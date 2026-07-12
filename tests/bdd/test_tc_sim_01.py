@@ -7,6 +7,7 @@ import pytest
 from pytest_bdd import given, scenarios, then, when
 
 from meic.adapters.sim.simulated_broker import SimulatedBroker
+from tests.harness.intents import condor_intent
 
 scenarios("../features/TC-SIM-01.feature")
 
@@ -19,8 +20,7 @@ def world():
 @given('a condor limit at 2.30 net credit')
 def _(world):
     world["broker"] = SimulatedBroker(tick=D("0.05"), fill_through_ticks=1)
-    world["oid"] = asyncio.run(world["broker"].submit(
-        {"type": "limit", "kind": "iron_condor", "legs": 4, "net_credit": "2.30"}))
+    world["oid"] = asyncio.run(world["broker"].submit(condor_intent("2.30")))
 
 
 @when('the real net mid touches 2.30 exactly')

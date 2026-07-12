@@ -11,10 +11,16 @@ import pytest
 from pytest_bdd import given, scenarios, then
 
 from meic.domain.chain import ChainSide, Mark
+from meic.domain.events import CondorFilled
 from meic.domain.gates import GatesFailed, GatesPassed, check_credit_gates
+from meic.domain.projection import day_report
+from meic.domain.stop_policy import StopBasis, stop_trigger
+from meic.domain.ticks import TickRung, TickTable
 from meic.domain.walk import Selected, select_side
 
 scenarios("../features/TC-STK-02.feature")
+
+SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 
 FLOORS = dict(min_short_premium=D("1.00"), min_total_credit=D("2.00"))
 
@@ -76,20 +82,33 @@ def _(world):
     assert isinstance(world["thin"], GatesPassed) and world["thin"].total_net_credit == D("2.30")
 
 
-# --- FROZEN: stop semantics (operator direction 2026-07-04) -------------------
+# --- STK-02a stop math on ACTUAL net credit (freeze lifted: STP-05a reviewed --
+#     2026-07-06, semantics ratified v1.41/1.42/1.43) --------------------------
 
 @given('the condor fills with short put 3.00 and long put 1.00')
-def _():
-    raise NotImplementedError(
-        "TC-STK-02: stop math — STOP SEMANTICS FROZEN until the STP-05a "
-        "findings report is reviewed and the Phase 2 PR is merged")
+def _(world):
+    # short premium 3.00, wing 1.00 -> net credit 2.00 (the P&L basis, STK-02a)
+    world["short_premium"] = D("3.00")
+    world["net_credit"] = D("3.00") - D("1.00")
 
 
 @then('stop math uses the actual net credit (not 3.00)')
-def _():
-    raise NotImplementedError("TC-STK-02: stop semantics frozen (see above)")
+def _(world):
+    # v1.43 default basis total_credit @95%: trigger = floor(0.95 × NET), on 2.00
+    from_net = stop_trigger(StopBasis.TOTAL_CREDIT, ticks=SPX, pct=D("95"),
+                            total_net_credit=world["net_credit"])
+    assert from_net == SPX.floor(D("0.95") * D("2.00")) == D("1.90")
+    # had it (wrongly) used the 3.00 short premium, the trigger would differ
+    from_premium = stop_trigger(StopBasis.TOTAL_CREDIT, ticks=SPX, pct=D("95"),
+                                total_net_credit=world["short_premium"])
+    assert from_net != from_premium
 
 
 @then('the day report shows short premium and net credit as separate labelled figures  # UI-14')
-def _():
-    raise NotImplementedError("TC-STK-02: reporting/UI phase, and stop semantics frozen")
+def _(world):
+    events = [CondorFilled(entry_id="e1", net_credit=world["net_credit"],
+                           short_premium=world["short_premium"])]
+    rpt = day_report(events)
+    assert rpt.total_credit == D("2.00")          # net credit
+    assert rpt.total_short_premium == D("3.00")   # short premium — a distinct figure
+    assert rpt.total_credit != rpt.total_short_premium

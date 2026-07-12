@@ -20,6 +20,7 @@ pytestmark = pytest.mark.contract
 pytest.importorskip("tastytrade")
 
 from meic.adapters.tastytrade.adapter import TastytradeAdapter  # noqa: E402
+from meic.application.order_intent import OrderIntent, OrderLeg
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -77,8 +78,9 @@ async def test_single_leg_spxw_day_stop_dry_run_accepted(adapter, env):
                if e.expiration_date >= date.today())
     strike = sorted(exp.strikes, key=lambda s: s.strike_price)[0]  # deepest OTM put
 
-    intent = {"order_type": "stop_market", "tif": "Day", "stop_trigger": D("0.05"),
-              "legs": [{"symbol": strike.put, "action": "buy_to_open", "qty": 1}]}
+    intent = OrderIntent(
+        order_type="stop_market", tif="Day", contracts=1, stop_trigger=D("0.05"),
+        legs=(OrderLeg(right="P", action="buy_to_open", qty=1, symbol=strike.put),))
     resp = await adapter.dry_run(intent)
     assert resp.order is not None  # cert accepted the single-leg Day-TIF stop
 
@@ -94,10 +96,18 @@ async def test_gtc_option_stop_rejected_client_side(adapter, env):
     exp = next(e for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
                if e.expiration_date >= date.today())
     strike = sorted(exp.strikes, key=lambda s: s.strike_price)[0]
-    intent = {"order_type": "stop_market", "tif": "GTC", "stop_trigger": D("0.05"),
-              "legs": [{"symbol": strike.put, "action": "buy_to_open", "qty": 1}]}
+    # The canonical type refuses a GTC option stop at CONSTRUCTION — it can never
+    # reach the adapter, let alone the broker. (IntentError is a ValueError.)
+    with pytest.raises(ValueError):
+        OrderIntent(order_type="stop_market", tif="GTC", contracts=1, stop_trigger=D("0.05"),
+                    legs=(OrderLeg(right="P", action="buy_to_open", qty=1, symbol=strike.put),))
+
+    # ...and the adapter re-checks one that bypassed the constructor (last line of defence)
+    smuggled = object.__new__(OrderIntent)
+    object.__setattr__(smuggled, "order_type", "stop_market")
+    object.__setattr__(smuggled, "tif", "GTC")
     with pytest.raises(ValueError):  # client-side reject, never sent
-        await adapter.dry_run(intent)
+        await adapter.dry_run(smuggled)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -125,9 +135,10 @@ async def test_order_events_account_stream_receives_status(adapter, env):
     task = asyncio.ensure_future(asyncio.wait_for(listen(), timeout=30))
     await asyncio.sleep(2)  # let the stream connect + subscribe before we place
 
-    intent = {"order_type": "stop_market", "tif": "Day", "stop_trigger": D("0.05"),
-              "legs": [{"symbol": strike.put, "action": "buy_to_open", "qty": 1}]}
-    order_id = await adapter.submit({**intent, "dry_run": False})
+    intent = OrderIntent(
+        order_type="stop_market", tif="Day", contracts=1, stop_trigger=D("0.05"),
+        legs=(OrderLeg(right="P", action="buy_to_open", qty=1, symbol=strike.put),))
+    order_id = await adapter.submit(intent)
     try:
         await task
     finally:

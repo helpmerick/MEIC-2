@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 
+from meic.adapters.occ import simulated_fill_legs
+from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
+from meic.application.order_intent import OrderIntent
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
 
 
@@ -39,6 +43,18 @@ class SimLedger:
     def buying_power(self) -> Decimal:
         return self.cash - self._margin_held
 
+    def can_afford(self, margin: Decimal) -> bool:
+        """ENT-03 BP gate against simulated capital (SIM-04)."""
+        return self.buying_power >= margin
+
+    def to_dict(self) -> dict[str, str]:
+        """REC-07: the ledger is durable state — serialize it for restart."""
+        return {"cash": str(self.cash), "margin_held": str(self._margin_held)}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, str]) -> "SimLedger":
+        return cls(cash=Decimal(d["cash"]), _margin_held=Decimal(d["margin_held"]))
+
 
 def spread_margin(width: Decimal, net_credit: Decimal, *, contracts: int = 1) -> Decimal:
     """SIM-04 / RSK-04: SPX spread requirement = (width − credit) × 100 × qty,
@@ -46,12 +62,34 @@ def spread_margin(width: Decimal, net_credit: Decimal, *, contracts: int = 1) ->
     return max(Decimal("0"), (width - net_credit)) * 100 * contracts
 
 
+def condor_margin(intent: OrderIntent) -> Decimal | None:
+    """SIM-04: the worst-case requirement of an opening condor, derived from the
+    intent itself. The strikes are right there — a separate `margin_req` key
+    would be a second source of truth (and a second dialect)."""
+    if intent.kind != "iron_condor" or intent.price is None:
+        return None
+    puts = sorted(l.strike for l in intent.legs if l.right == "P")
+    calls = sorted(l.strike for l in intent.legs if l.right == "C")
+    if len(puts) != 2 or len(calls) != 2:
+        return None
+    width = max(puts[1] - puts[0], calls[1] - calls[0])
+    return spread_margin(width, intent.price, contracts=intent.contracts)
+
+
 @dataclass
 class SimOrder:
     order_id: str
-    intent: dict
-    status: str  # WORKING | FILLED
+    intent: OrderIntent
+    status: str  # WORKING | FILLED | CANCELLED | REJECTED
     fill_price: Decimal | None = None
+    received_at: str | None = None  # broker placement time (UC-12 drill evidence)
+    mode: str = "PAPER"             # SIM-05 stamp (the intent is frozen — never mutate it)
+    margin_held: Decimal | None = None
+
+    @property
+    def stop_leg_key(self) -> str:
+        """`short_put` / `short_call` — the mark key the pipeline feeds."""
+        return "short_put" if self.intent.legs[0].right == "P" else "short_call"
 
 
 class SimulatedBroker:
@@ -88,14 +126,15 @@ class SimulatedBroker:
     # --- SIM-02: try to fill a limit order against a market snapshot ----------
     def try_fill_limit(self, order_id: str, *, natural: Decimal, mid: Decimal, is_credit: bool) -> bool:
         o = self._orders[order_id]
-        raw = o.intent.get("net_credit", o.intent.get("price"))  # entries carry net_credit; legs carry price
-        limit = Decimal(str(raw))
+        limit = o.intent.price
         if o.status != "WORKING":
             return o.status == "FILLED"
         if limit_fills(is_credit=is_credit, limit=limit, natural=natural, mid=mid,
                        tick=self._tick, through_ticks=self._through):
-            o.status, o.fill_price = "FILLED", (natural if is_credit else natural)
-            self._settle(o, signed=(limit if is_credit else -limit), legs=o.intent.get("legs", 4))
+            o.status, o.fill_price = "FILLED", natural
+            # Cash scales with size: a 2-contract condor collects twice the credit.
+            self._settle(o, signed=(limit if is_credit else -limit) * o.intent.contracts,
+                         legs=len(o.intent.legs) * o.intent.contracts)
             return True
         return False
 
@@ -104,35 +143,58 @@ class SimulatedBroker:
         from meic.domain.events import ShortStopped
 
         o = self._orders[order_id]
-        trigger = Decimal(str(o.intent["trigger"]))
+        trigger = o.intent.stop_trigger
         if o.status == "WORKING" and stop_triggered(mark, trigger):
             price = stop_fill_price(trigger, tick=self._tick, slippage_ticks=self._slippage)
             o.status, o.fill_price = "FILLED", price
-            self._settle(o, signed=-price, legs=1)  # buy-to-close a short
+            # buy-to-close the WHOLE short: cost scales with contracts (v1.44)
+            self._settle(o, signed=-price * o.intent.contracts, legs=o.intent.contracts)
             # SIM-05: a paper stop fill emits the SAME event a live fill would,
             # routing the side into SIDE_STOPPED -> LEX through the normal pipeline.
-            side = "PUT" if "put" in o.intent.get("leg", "").lower() else "CALL"
+            side = "PUT" if o.intent.legs[0].right == "P" else "CALL"
             self.events.append(ShortStopped(
-                entry_id=o.intent.get("entry_id", ""), side=side, fill=price,
+                entry_id=o.intent.entry_id, side=side, fill=price,
                 slippage=price - trigger, initiator="resting_stop"))
             return price
         return None
 
     def _settle(self, o: SimOrder, *, signed: Decimal, legs: int) -> None:
         self.ledger.post_fill(signed * 100, fee=self._fee * legs)
-        o.intent["mode"] = self.PAPER  # SIM-05 stamp
+        o.mode = self.PAPER  # SIM-05 stamp — on the record, not the frozen intent
 
     # --- BrokerGateway surface ------------------------------------------------
-    async def submit(self, order: dict) -> str:
+    async def submit(self, order: OrderIntent) -> str:
+        if not isinstance(order, OrderIntent):  # one schema, all brokers
+            raise TypeError(f"SimulatedBroker.submit expects an OrderIntent, got {type(order).__name__}")
         oid = f"SIM-{next(self._ids)}"
-        self._orders[oid] = SimOrder(order_id=oid, intent=dict(order), status="WORKING")
+        margin_req = condor_margin(order)
+        self._orders[oid] = SimOrder(order_id=oid, intent=order, status="WORKING",
+                                     received_at=datetime.now(timezone.utc).isoformat(),
+                                     margin_held=margin_req)
+
+        # EC-ENT-07: the BROKER rejects an order it will not margin. This is the
+        # second of two distinct BP layers, and it is not a duplicate of the first:
+        #   ENT-03  `insufficient_bp` — the bot's own pre-trade gate, before submit
+        #   EC-ENT-07 `rejected_bp`   — the broker refuses anyway, after submit
+        # Live has both, so paper must too (SIM-05). The composition feeds
+        # `ledger.can_afford(...)` into GateSnapshot.buying_power_ok for the first;
+        # this is the second, and reaching it in paper means the gate let something
+        # through that real capital could not carry.
+        if margin_req is not None and not self.ledger.can_afford(margin_req):
+            self._orders[oid].status = "REJECTED"
+            self.events.append({"type": "order_rejected", "reason": "rejected_bp",
+                                "order_id": oid, "entry_id": order.entry_id})
+            return oid
+
         # A limit order fills immediately iff the current real market trades
         # through it (SIM-02); stops rest until a mark reaches the trigger.
-        if self._market is not None and order.get("type") in ("limit", "marketable_limit"):
+        if self._market is not None and order.order_type in ("limit", "marketable_limit"):
             snap = self._market(order)
             if snap is not None:
                 natural, mid, is_credit = snap
-                self.try_fill_limit(oid, natural=natural, mid=mid, is_credit=is_credit)
+                if self.try_fill_limit(oid, natural=natural, mid=mid, is_credit=is_credit) \
+                        and margin_req is not None:
+                    self.ledger.hold_margin(margin_req)  # consumed until the entry closes
         return oid
 
     def tick_marks(self, marks: dict[str, Decimal], *, entry_id: str | None = None) -> list[tuple[str, Decimal]]:
@@ -141,12 +203,11 @@ class SimulatedBroker:
         the (order_id, fill_price) of stops that filled."""
         filled = []
         for oid, o in list(self._orders.items()):
-            if o.status == "WORKING" and o.intent.get("type") == "stop_market":
-                if entry_id is not None and o.intent.get("entry_id") != entry_id:
+            if o.status == "WORKING" and o.intent.order_type == "stop_market":
+                if entry_id is not None and o.intent.entry_id != entry_id:
                     continue
-                leg = o.intent.get("leg", "")
-                if leg in marks:
-                    price = self.try_fill_stop(oid, mark=marks[leg])
+                if o.stop_leg_key in marks:
+                    price = self.try_fill_stop(oid, mark=marks[o.stop_leg_key])
                     if price is not None:
                         filled.append((oid, price))
         return filled
@@ -159,6 +220,17 @@ class SimulatedBroker:
         return {"result": "terminal", "status": o.status if o else "unknown"}
 
     async def replace(self, id, new):
+        """CLS-01: classify the OLD order before ever touching the new one — a
+        blind cancel-then-submit here would happily rest a SECOND buy-to-close
+        beside a stop that had already filled (the exact double-fill race
+        CLS-01 exists to prevent). Only a genuinely-WORKING stop is replaced."""
+        o = self._orders.get(id)
+        if o is None:
+            raise ReplaceTerminal(id)                      # ORD-08b: never existed
+        if o.status == "FILLED":
+            raise ReplaceFilled(id, fill_price=o.fill_price)  # ORD-08a: the stop beat us
+        if o.status != "WORKING":
+            raise ReplaceTerminal(id)                      # ORD-08b: cancelled/rejected
         await self.cancel(id)
         return await self.submit(new)
 
@@ -171,3 +243,11 @@ class SimulatedBroker:
     async def fills_since(self, cursor):
         return [{"order_id": o.order_id, "price": str(o.fill_price)} for o in self._orders.values()
                 if o.status == "FILLED"]
+
+    async def fill_legs(self, order_id):
+        """ORD-09: report the filled legs' symbols, as a real broker does.
+        Simulator-assigned, in the same fields (TC-ORD-07)."""
+        o = self._orders.get(order_id)
+        if o is None or o.status != "FILLED":
+            return ()
+        return simulated_fill_legs(o.intent)

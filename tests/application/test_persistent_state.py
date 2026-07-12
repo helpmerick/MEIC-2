@@ -15,6 +15,7 @@ def test_fresh_install_defaults_are_safe():
     assert s.trading_mode == "paper"
     assert s.entry_schedule == []
     assert s.tpf_floors == {}
+    assert s.tp_targets == {}
     assert s.entries_enabled() is False
     assert s.blocking_state() == "DISARMED"
 
@@ -43,6 +44,7 @@ def test_full_inventory_survives_docker_recovery(tmp_path):
     s.trading_mode = "paper"
     s.entry_schedule = [{"time": f"1{i}:00", "target_premium": "3.00"} for i in range(6)]
     s.tpf_floors = {"e1": 30}
+    s.tp_targets = {"e2": 60}  # v1.58 TPT-07: targets persist and restore per REC-07
     s.paper_cash_ledger = {"cash": "100000.00"}
     s.config_version = "1.41"
     store.close()  # container dies
@@ -54,6 +56,7 @@ def test_full_inventory_survives_docker_recovery(tmp_path):
     assert recovered.trading_mode == "paper"
     assert len(recovered.entry_schedule) == 6
     assert recovered.tpf_floors == {"e1": 30}
+    assert recovered.tp_targets == {"e2": 60}
     assert recovered.paper_cash_ledger == {"cash": "100000.00"}
     assert recovered.config_version == "1.41"
     # entries remain blocked (Stop Trading on) until the operator resumes

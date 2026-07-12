@@ -7,8 +7,10 @@ instance and boot a new one against the SAME FakeBroker object — working
 orders, positions and fills survive, exactly like a real broker across a
 process crash (REC-02/03 scenarios).
 
-Order payloads are opaque in Phase 1 (no domain types yet); everything is
-keyed by broker order ids this fake issues.
+Order payloads are NOT opaque: submit() takes the canonical `OrderIntent`, the
+same type the real TastytradeAdapter and SimulatedBroker take. A fake that
+accepted a looser shape than the real adapter is precisely how the paper/live
+dialect fork survived 483 green tests. See tests/adapters/test_broker_intent_contract.py.
 """
 from __future__ import annotations
 
@@ -16,6 +18,10 @@ import asyncio
 import itertools
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+
+from meic.adapters.occ import simulated_fill_legs
+from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
+from meic.application.order_intent import OrderIntent
 
 
 @dataclass
@@ -30,9 +36,16 @@ class Scripted:
 @dataclass
 class FakeOrder:
     order_id: str
-    intent: Any
+    intent: OrderIntent
     status: str  # WORKING | FILLED | PARTIAL | REJECTED | CANCELLED | REPLACED
     fills: list[dict[str, Any]] = field(default_factory=list)
+    received_at: str | None = None  # broker-recorded placement time (TC-STP-08/UC-12)
+
+    @property
+    def stop_leg_key(self) -> str:
+        """`short_put` / `short_call` — same accessor SimOrder exposes, so tests
+        read an order the same way whichever broker produced it."""
+        return "short_put" if self.intent.legs[0].right == "P" else "short_call"
 
 
 class FakeBroker:
@@ -69,11 +82,16 @@ class FakeBroker:
             q.put_nowait(event)
 
     # ------------------------------------------------------------- BrokerGateway
-    async def submit(self, order: Any) -> str:
+    async def submit(self, order: OrderIntent) -> str:
+        # One schema, all brokers (v1.44). The FakeBroker is a BrokerGateway like
+        # any other: if it accepted a dialect the real adapter can't consume, the
+        # whole suite could stay green while every live order crashed.
+        if not isinstance(order, OrderIntent):
+            raise TypeError(f"FakeBroker.submit expects an OrderIntent, got {type(order).__name__}")
         if self._submit_script:
             reaction = self._submit_script.pop(0)
         elif getattr(self, "_autofill", None) is not None and self._autofill(order):
-            reaction = Scripted("fill", payload={"price": order.get("net_credit") if isinstance(order, dict) else None})
+            reaction = Scripted("fill", payload={"price": order.price})
         else:
             reaction = Scripted("work")
         if reaction.latency_s:
@@ -81,7 +99,8 @@ class FakeBroker:
         if reaction.action == "timeout":
             raise TimeoutError("scripted broker timeout")
         order_id = f"FB-{next(self._ids)}"
-        rec = FakeOrder(order_id=order_id, intent=order, status="WORKING")
+        rec = FakeOrder(order_id=order_id, intent=order, status="WORKING",
+                        received_at=self._now())
         self._orders[order_id] = rec
         if reaction.action == "reject":
             rec.status = "REJECTED"
@@ -108,9 +127,19 @@ class FakeBroker:
         return {"result": "cancelled"}
 
     async def replace(self, id: str, new: Any) -> str:
+        """CLS-01: one call, one outcome. Either the OLD order flips to
+        REPLACED and the NEW order is submitted in the same breath (never a
+        beat with zero or two working buys on the leg), or nothing happens and
+        a typed ORD-08 exception tells the caller which class it hit — never a
+        bare `ValueError` a caller would have to string-sniff."""
         old = self._orders.get(id)
-        if old is None or old.status not in ("WORKING", "PARTIAL"):
-            raise ValueError(f"cannot replace order {id!r} in state {old.status if old else 'missing'}")
+        if old is None:
+            raise ReplaceTerminal(id)               # ORD-08b: never existed
+        if old.status == "FILLED":
+            price = old.fills[-1]["price"] if old.fills else None
+            raise ReplaceFilled(id, fill_price=price)  # ORD-08a: the stop beat us
+        if old.status not in ("WORKING", "PARTIAL"):
+            raise ReplaceTerminal(id)               # ORD-08b: cancelled/rejected/replaced
         old.status = "REPLACED"
         return await self.submit(new)
 
@@ -124,6 +153,14 @@ class FakeBroker:
         start = 0 if cursor is None else cursor
         return self._fills[start:]
 
+    async def fill_legs(self, order_id: str):
+        """ORD-09: a BrokerGateway reports the legs it filled. The fake must too,
+        or the services under test would take a path production never takes."""
+        rec = self._orders.get(order_id)
+        if rec is None or rec.status not in ("FILLED", "PARTIAL"):
+            return ()
+        return simulated_fill_legs(rec.intent)
+
     def order_events(self) -> AsyncIterator[Any]:
         q: asyncio.Queue[Any] = asyncio.Queue()
         self._event_queues.append(q)
@@ -135,6 +172,11 @@ class FakeBroker:
         return _stream()
 
     # ---------------------------------------------------------------- internals
+    @staticmethod
+    def _now() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
     def _record_fill(self, rec: FakeOrder, payload: dict[str, Any], *, partial: bool) -> None:
         rec.status = "PARTIAL" if partial else "FILLED"
         fill = {"order_id": rec.order_id, "cursor": len(self._fills) + 1, "partial": partial, **payload}

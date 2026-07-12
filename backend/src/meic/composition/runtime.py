@@ -32,10 +32,13 @@ class PaperDemoRuntime:
         self.step = step_seconds
         self._entry_times = ["09:32", "10:00", "10:30", "11:00", "11:30", "12:00"]
 
-    def _condor(self, n: int) -> Condor:
-        return Condor(entry_number=n, put_short=D(str(5990 - n)), call_short=D(str(6060 + n)),
+    def _condor(self, n: int, contracts: int = 1) -> Condor:
+        put_short, call_short = D(str(5990 - n)), D(str(6060 + n))
+        return Condor(entry_number=n, put_short=put_short, call_short=call_short,
+                      put_long=put_short - 50, call_long=call_short + 50,
                       put_short_mid=D("3.00"), call_short_mid=D("2.00"),
-                      mid_credit=D("4.00"), min_total_credit=D("2.00"))
+                      mid_credit=D("4.00"), min_total_credit=D("2.00"),
+                      expiration=self.comp.clock.now().date(), contracts=contracts)
 
     def _reset(self) -> None:
         self.comp.events.clear()
@@ -45,10 +48,20 @@ class PaperDemoRuntime:
 
     async def run_once(self) -> None:
         comp, e = self.comp, self.comp.events
-        # condors trade through their 4.00 credit limit; a LEX sale fills at 0.40
-        comp.broker.set_market(lambda intent: (D("4.00"), D("4.10"), True)
-                               if intent.get("kind") == "iron_condor"
-                               else ((D("0.40"), D("0.40"), True) if intent.get("action") == "sell_to_close" else None))
+
+        def market(intent):
+            # condors trade through their 4.00 credit limit
+            if intent.kind == "iron_condor":
+                return (D("4.00"), D("4.10"), True)
+            action = intent.legs[0].action
+            if action == "sell_to_close":      # LEX long sale (credit)
+                return (D("0.40"), D("0.40"), True)
+            if action == "buy_to_close":       # manual/flatten close of a short (debit)
+                price = intent.price or D("0.05")
+                return (price, price, False)   # fills so the book actually goes flat
+            return None
+
+        comp.broker.set_market(market)
         comp.compose_and_arm(self._entry_times)
         day = "2026-07-07"
         e.append(DayArmed(date=day, entry_count=6))

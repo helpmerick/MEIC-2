@@ -10,11 +10,21 @@ from decimal import Decimal
 
 def worst_case_loss(width: Decimal, net_credit: Decimal, *, contracts: int = 1) -> Decimal:
     """RSK-04: per-condor worst case = (width − credit) × 100 × contracts —
-    only ONE side can settle in the money."""
+    only ONE side can settle in the money, per side not both."""
     return max(Decimal("0"), width - net_credit) * 100 * contracts
 
 
+def day_worst_case(entries: list[tuple[Decimal, Decimal, int]]) -> Decimal:
+    """RSK-04 (v1.44): contracts are PER ENTRY, so the day's exposure is the SUM
+    of each entry's own worst case — `2 × wc₁ + 1 × wc₂`, NEVER `3 × max(wc)`.
+
+    entries: (wing_width, net_credit, contracts) per open/proposed entry.
+    """
+    return sum((worst_case_loss(w, c, contracts=n) for w, c, n in entries), Decimal("0"))
+
+
 def exceeds_max_day_risk(open_worst_cases: list[Decimal], new_worst_case: Decimal, max_day_risk: Decimal) -> bool:
+    """RSK-04: block a new entry when Σ(open worst cases) + its own exceeds the cap."""
     return sum(open_worst_cases, Decimal("0")) + new_worst_case > max_day_risk
 
 

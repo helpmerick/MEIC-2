@@ -1,0 +1,361 @@
+/* ===========================================================================
+   SCHEDULE & PARAMETERS  (UC-02 compose, ENT-09/UI-22 fire)
+
+   Keys off the same tokens as every other card, so light/dark invert cleanly
+   and nothing here hardcodes a colour.
+   =========================================================================== */
+
+/* grid placement for .schedule-panel lives in styles.css (.grid > .schedule-panel);
+   the header style comes from the global .card-head rule there too. */
+.chip {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  padding: 4px 9px; border-radius: 999px;
+  background: var(--badge-bg); border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap;
+}
+
+/* The panel is a query CONTAINER (it sits in a page grid, so its own width —
+   not the viewport — is what decides whether the table fits). Below its
+   comfortable width the table reflows into per-entry cards instead of forcing
+   a horizontal scroll (operator request 2026-07-12). */
+.schedule-panel { container-type: inline-size; container-name: sched; }
+
+/* --- the table ------------------------------------------------------------- */
+.sched-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px 2px; }
+table.schedule { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 660px; }
+/* operator request 2026-07-11: headings CENTRED above their boxes, in
+   full-contrast text (var(--text), not the faint grey). */
+table.schedule thead th {
+  text-align: center; padding: 0 10px 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text); white-space: nowrap;
+}
+table.schedule thead th.num { text-align: center; }
+table.schedule tbody tr { transition: background .15s ease; }
+table.schedule tbody tr:hover { background: var(--hover); }
+/* TOP-aligned, not middle: a cell whose hint sits under the box (time's local
+   echo, the buffer's worst-case figure) would otherwise centre the whole
+   box+hint block and push its box up out of line with the hint-less cells
+   (operator report 2026-07-11). Top-aligning puts every box on one line; the
+   hint hangs below without moving anything. */
+table.schedule tbody td { padding: 6px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+/* text-only / button cells: centre their content against the 36px box height
+   so they sit on the boxes' midline, not the cell's top edge */
+td.cell-wc { line-height: var(--field-h); }
+td.cell-actions .icon-btn { margin-top: calc((var(--field-h) - 30px) / 2); }
+table.schedule tbody tr:first-child td { border-top: none; }
+
+.schedule input,
+.schedule select {
+  width: 100%; min-width: 68px; height: var(--field-h); padding: 0 var(--sp-3);
+  font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+.schedule input:hover,
+.schedule select:hover { border-color: var(--line-strong); }
+.schedule input:focus,
+.schedule select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.schedule input::placeholder { color: var(--faint); }
+.schedule input[type="number"] { -moz-appearance: textfield; }
+/* operator request 2026-07-11: every value box BOLD, CENTRED, and the SAME
+   size (a fixed width instead of stretch-to-cell), under its centred heading. */
+.schedule td.cell-num { text-align: center; }
+.schedule .cell-num input,
+.schedule .cell-num select {
+  text-align: center; font-weight: 700;
+  width: 104px; min-width: 104px; max-width: 104px;
+  margin: 0 auto;
+}
+
+.schedule input.invalid,
+.schedule select.invalid { border-color: var(--bad); background: var(--bad-dim); }
+.schedule input.invalid:focus,
+.schedule select.invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 24%, transparent); }
+
+td.cell-wc {
+  font-variant-numeric: tabular-nums; color: var(--muted);
+  font-size: 13px; white-space: nowrap; text-align: center;
+}
+
+/* row counter (operator request 2026-07-12): a plain 1..N down the LEFT, no box,
+   centred and vertically lined up with the value boxes. In the narrow card
+   layout the "Entry N" heading numbers the card instead, so this cell is hidden
+   there (see the @container block). */
+th.rownum-head { width: 34px; color: var(--faint); }
+td.cell-rownum { text-align: center; }
+.rownum-n {
+  display: inline-block; line-height: var(--field-h);   /* centre on the box height */
+  font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted);
+}
+
+/* row actions */
+td.cell-actions { white-space: nowrap; text-align: right; }
+.icon-btn {
+  width: 30px; height: 30px; margin-left: 6px;
+  display: inline-grid; place-items: center;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  color: var(--muted);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); transform: translateY(-1px); }
+/* operator request 2026-07-11: fire is GREEN, cross is RED, both going
+   bolder/darker on hover (and the cross on click too). color-mix keeps the
+   darkening tied to the theme tokens instead of hardcoding shades. */
+.icon-btn.fire {
+  color: #fff; font-weight: 700;
+  background: var(--good); border-color: color-mix(in srgb, var(--good) 70%, black);
+}
+.icon-btn.fire:hover:not(:disabled) {
+  color: #fff; font-weight: 800;
+  background: color-mix(in srgb, var(--good) 78%, black);
+  border-color: color-mix(in srgb, var(--good) 55%, black);
+}
+.icon-btn.del {
+  color: #fff; font-weight: 700;
+  background: var(--bad); border-color: color-mix(in srgb, var(--bad) 70%, black);
+}
+.icon-btn.del:hover:not(:disabled) {
+  color: #fff; font-weight: 800;
+  background: color-mix(in srgb, var(--bad) 78%, black);
+  border-color: color-mix(in srgb, var(--bad) 55%, black);
+}
+.icon-btn.del:active:not(:disabled) {
+  font-weight: 800;
+  background: color-mix(in srgb, var(--bad) 60%, black);
+}
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* --- narrow width: reflow the table into per-entry cards (operator 2026-07-12)
+   At the panel's comfortable table width the layout above is unchanged. Below
+   it, the column headers hide, each row becomes a bordered "Entry N" card, and
+   its fields wrap onto two centred, aligned lines (four per line) — each with
+   its own label — so there's no horizontal scroll and trade 1 reads clearly
+   apart from trade 2. A tighter tier drops to two fields per line for phones. */
+@container sched (max-width: 1000px) {
+  .sched-scroll { overflow-x: visible; margin: 0; padding: 0; }
+  table.schedule { display: block; min-width: 0; width: 100%; }
+  .schedule thead { display: none; }
+  .schedule tbody { display: block; }
+  .schedule tbody tr {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 10px; align-items: start;
+    padding: 14px 14px 16px; margin: 0 0 14px;
+    border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2);
+  }
+  .schedule tbody tr:hover { background: var(--surface-2); }
+  /* the "Entry N" heading that separates one trade card from the next */
+  .schedule tbody tr::before {
+    content: "Entry " attr(data-entry); grid-column: 1 / -1;
+    font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text); padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  /* each cell: its own centred label above the box */
+  .schedule tbody td {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    border-top: none; padding: 0;
+  }
+  .schedule tbody td::before {
+    content: attr(data-label);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--muted); white-space: nowrap;
+  }
+  /* boxes fill their grid cell (drop the fixed 104px) so the lines stay aligned */
+  .schedule .cell-num input,
+  .schedule .cell-num select { width: 100%; min-width: 0; max-width: none; }
+  .schedule td.cell-wc { text-align: center; line-height: normal; }
+  .schedule td.cell-actions { text-align: center; }
+  .schedule td.cell-actions .icon-btn { margin: 0 3px; }
+  /* the card's "Entry N" heading already numbers it — drop the counter cell */
+  .schedule td.cell-rownum { display: none; }
+}
+@container sched (max-width: 520px) {
+  .schedule tbody tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* --- footer: add / ceiling / readout / save -------------------------------- */
+.sched-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.sched-foot .grow { flex: 1 1 auto; }
+.field { display: flex; flex-direction: column; gap: var(--sp-1); }
+.field > span { font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); }
+.field input {
+  width: 156px; height: var(--field-h); padding: 0 var(--sp-3); font: inherit; font-size: 13px;
+  font-variant-numeric: tabular-nums; text-align: right; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+}
+.field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.field input::placeholder { color: var(--faint); }
+
+/* The RSK-04 readout. The ceiling sits beside the composed day total, and the
+   meter makes "adding a row eats headroom" something the operator can SEE. */
+.risk-readout { min-width: 236px; }
+.risk-line { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.risk-line .k { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.risk-line .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.risk-line .v.over { color: var(--bad); }
+.risk-line .v.none { color: var(--faint); font-weight: 400; }
+.meter {
+  height: 6px; border-radius: 999px; margin: 8px 0 7px;
+  background: var(--surface); border: 1px solid var(--line); overflow: hidden;
+}
+.meter > i {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--good), #6ee7b7);
+  transition: width .3s ease, background .3s ease;
+}
+.meter.warn > i { background: linear-gradient(90deg, var(--warn), #fcd34d); }
+.meter.over > i { background: linear-gradient(90deg, var(--bad), #fca5a5); }
+
+/* --- shortfall tooltip (v1.63 UI-18a) ---------------------------------------
+   Styled, focus- AND tap-capable disclosure — NEVER a native `title`
+   attribute (invisible to touch, unreachable by keyboard focus). The bubble
+   is position:fixed on the trigger's own rect so it escapes .sched-scroll's
+   overflow-x:auto clipping — the same technique as .heatmap-tooltip
+   (results.css), same theme tokens, light/dark both handled for free. */
+.tooltip-wrap { position: relative; display: inline-block; margin-left: 4px; vertical-align: middle; }
+.tooltip-trigger {
+  display: inline-grid; place-items: center;
+  width: 16px; height: 16px; padding: 0;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 999px;
+  transition: color .15s ease, border-color .15s ease;
+}
+.tooltip-trigger:hover,
+.tooltip-trigger:focus-visible { color: var(--text); border-color: var(--line-strong); }
+.tooltip-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-tooltip {
+  position: fixed; z-index: 40; transform: translate(-50%, calc(-100% - 8px));
+  background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 9px;
+  box-shadow: var(--shadow); padding: 8px 12px; pointer-events: none;
+  font-size: 12px; line-height: 1.5; max-width: 260px; white-space: normal;
+  text-align: left; color: var(--text);
+}
+/* Visually hidden but present for assistive tech — the always-rendered copy
+   an aria-describedby resolves to when the visible bubble is closed. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+  white-space: nowrap; border: 0;
+}
+
+/* --- messages -------------------------------------------------------------- */
+.msg {
+  font-size: 12px; margin: 8px 0 0; padding: 9px 12px;
+  border-radius: 10px; border: 1px solid transparent;
+}
+.msg.err  { color: var(--bad);  background: var(--bad-dim);  border-color: rgba(248,113,113,0.22); }
+.msg.warn { color: var(--warn); background: var(--warn-dim); border-color: rgba(251,191,36,0.22); }
+.msg.ok   { color: var(--good); background: var(--good-dim); border-color: rgba(52,211,153,0.22); }
+.note { color: var(--faint); font-size: 11px; line-height: 1.55; margin: 11px 0 0; }
+
+/* UC-02 pre-flight checklist */
+.preflight { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 6px; }
+.preflight li {
+  display: flex; align-items: center; gap: 9px; font-size: 12px;
+  padding: 8px 11px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.preflight li .tick { width: 14px; text-align: center; font-weight: 700; }
+.preflight li.pass .tick { color: var(--good); }
+.preflight li.fail { background: var(--bad-dim); border-color: rgba(248,113,113,0.22); }
+.preflight li.fail .tick { color: var(--bad); }
+.preflight li strong { font-weight: 600; text-transform: capitalize; }
+.preflight li em { font-style: normal; color: var(--faint); font-size: 11px; }
+.preflight .detail { color: var(--muted); margin-left: auto; text-align: right; }
+
+/* --- UI-22 confirmation dialog --------------------------------------------- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center; padding: 20px;
+  background: rgba(3, 5, 9, 0.66); backdrop-filter: blur(3px);
+  animation: modal-fade .14s ease;
+}
+@keyframes modal-fade { from { opacity: 0; } }
+.modal {
+  width: min(440px, 100%);
+  background: var(--card-solid); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
+  padding: 22px; animation: modal-rise .16s ease;
+}
+@keyframes modal-rise { from { transform: translateY(6px); opacity: 0; } }
+.modal h3 { margin: 0 0 4px; font-size: 17px; }
+.modal .sub { margin: 0 0 16px; font-size: 12px; color: var(--muted); }
+
+.fire-params { margin: 0 0 16px; }
+.fire-params .p-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 7px 0; border-top: 1px solid var(--line); }
+.fire-params .p-row .k { font-size: 12px; color: var(--muted); }
+.fire-params .p-row .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* The number is an ESTIMATE (v1.46) — styled as a caution, never as a fact. */
+.estimate-box { padding: 12px 14px; border-radius: 11px; background: var(--warn-dim); border: 1px solid rgba(251, 191, 36, 0.24); }
+.estimate-box .lab { font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--warn); }
+.estimate-box .val { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.modal-actions .btn { min-width: 96px; justify-content: center; }
+
+/* --- ENT-11/UI-25 ad-hoc manual trade card ---------------------------------- */
+/* grid placement lives in styles.css (.grid > .manual-trade-card). */
+.manual-trade-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: flex-start;
+  background: none; border: none; padding: 0 0 var(--sp-3); margin: 0 0 var(--sp-4); cursor: pointer;
+  font: inherit; text-align: left; color: inherit;
+}
+/* Operator request 2026-07-12: a clean, aligned form. Every field box is the
+   SAME width and height, two per row, and the Stop% select is styled to match
+   the inputs beside it (a bare native select next to a 156px input was the old
+   size mismatch). The floors toggle renders as a real inline checkbox, not the
+   stray full-size empty box the generic `.field input` rule used to make of it.
+   All scoped to the manual card so the schedule footer's own `.field` inputs
+   (max day risk) keep their look. */
+.manual-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4);
+}
+.manual-trade-body .field { min-width: 0; }
+.manual-trade-body .field > input:not([type="checkbox"]),
+.manual-trade-body .field > select {
+  box-sizing: border-box; width: 100%; min-width: 0;
+  height: var(--field-h); padding: 0 var(--sp-3);
+  font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  text-align: left; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.manual-trade-body .field > select { cursor: pointer; }
+.manual-trade-body .field > input:not([type="checkbox"]):hover,
+.manual-trade-body .field > select:hover { border-color: var(--line-strong); }
+.manual-trade-body .field > input:not([type="checkbox"]):focus,
+.manual-trade-body .field > select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.manual-trade-body .field > input::placeholder { color: var(--faint); }
+
+/* Floors: the toggle spans the row as an inline checkbox + label; the two
+   floor dropdowns sit in the SAME two-column grid; notes span full width. */
+.manual-floors {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3) var(--sp-4); margin-top: var(--sp-4);
+}
+.manual-floors > .note,
+.manual-floors > .field.floor-toggle { grid-column: 1 / -1; }
+.field.floor-toggle { flex-direction: row; align-items: center; gap: var(--sp-2); }
+.field.floor-toggle > input[type="checkbox"] {
+  width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+.field.floor-toggle > span {
+  text-transform: none; letter-spacing: normal; font-size: 12px; color: var(--muted);
+}
+
+.manual-actions { display: flex; gap: var(--sp-3); margin-top: var(--sp-4); }

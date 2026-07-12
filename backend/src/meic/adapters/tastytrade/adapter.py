@@ -19,15 +19,24 @@ the BrokerGateway port.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator
 
+from meic.adapters.tastytrade.occ import occ_symbol
+from meic.application.order_intent import OrderIntent
 from meic.domain.allocation import AllocationGate, reconcile
 
 
 class NonCertTokenRefused(RuntimeError):
     """Assumption 10: a refresh token whose issuer is not cert/sandbox is
     refused before any network call."""
+
+
+class NonProductionTokenRefused(RuntimeError):
+    """The mirror guard: a token whose issuer is NOT production was slotted into
+    the production wiring. Fail loudly rather than silently authenticate against
+    the wrong environment (a cert token in TT_PROD_* is a configuration bug)."""
 
 
 def _jwt_issuer(token: str) -> str | None:
@@ -40,10 +49,29 @@ def _jwt_issuer(token: str) -> str | None:
         return None
 
 
+def _is_cert_issuer(issuer: str | None) -> bool:
+    return bool(issuer) and ("cert" in issuer or "sandbox" in issuer)
+
+
 def assert_cert_token(refresh_token: str) -> None:
     issuer = _jwt_issuer(refresh_token)
-    if issuer is None or not ("cert" in issuer or "sandbox" in issuer):
+    if not _is_cert_issuer(issuer):
         raise NonCertTokenRefused(f"refresh token issuer {issuer!r} is not cert/sandbox")
+
+
+def assert_production_token(refresh_token: str) -> None:
+    """Symmetric to assert_cert_token. The live/production wiring must carry a
+    PRODUCTION token: a missing/undecodable issuer, or a cert/sandbox one, is a
+    misconfiguration and is refused before any network call. Without this, a
+    cert token in the production slot would fail late and confusingly — or a
+    fat-fingered env could point real-money wiring at the wrong environment."""
+    issuer = _jwt_issuer(refresh_token)
+    if issuer is None:
+        raise NonProductionTokenRefused("refresh token has no decodable issuer")
+    if _is_cert_issuer(issuer):
+        raise NonProductionTokenRefused(
+            f"refresh token issuer {issuer!r} is CERT/SANDBOX, not production — "
+            "a cert token was slotted into the production wiring")
 
 
 # Option stop-markets are Day-TIF only (assumption 2). Any other TIF on an
@@ -66,6 +94,8 @@ class TastytradeAdapter:
     ) -> None:
         if is_test:  # paper/contract wiring must never carry a production token
             assert_cert_token(refresh_token)  # assumption 10 — before any network call
+        else:  # production wiring must never carry a cert token (mirror guard)
+            assert_production_token(refresh_token)
         self._secret = provider_secret
         self._refresh = refresh_token
         self._is_test = is_test
@@ -84,15 +114,25 @@ class TastytradeAdapter:
             self._account = accounts[0]
 
     # ---- intent translation (ACL) --------------------------------------------
-    async def _build_order(self, intent: dict[str, Any]):
-        """Translate an abstract order intent into a tastytrade NewOrder.
+    async def _option_for(self, symbol: str):
+        """Resolve an OCC symbol to the SDK instrument. Overridable so the ACL
+        can be contract-tested without a session (see the intent-contract suite)."""
+        from tastytrade.instruments import Option
+        return await Option.get(self._session, symbol)
 
-        Intent shape (concrete): {order_type, tif, price?, stop_trigger?, legs:
-        [{symbol, action, qty}]}. `symbol` is a resolved SPXW OCC symbol — the
-        composition root resolves strikes to symbols before submit."""
+    async def _build_order(self, intent: OrderIntent):
+        """Translate the canonical OrderIntent into a tastytrade NewOrder.
+
+        Payload translation is the ACL's job (doc 05 §121) — including resolving
+        each leg's (underlying, expiration, right, strike) to an OCC symbol. The
+        application layer speaks strikes; only this adapter knows symbology.
+
+        Every leg is sized at `intent.contracts` (the OrderIntent constructor
+        already refuses any other shape), so a stop can never be placed smaller
+        than the position it protects.
+        """
         from decimal import Decimal as D
 
-        from tastytrade.instruments import Option
         from tastytrade.order import NewOrder, OrderAction, OrderTimeInForce, OrderType
 
         self.validate_stop_tif(intent)  # assumption 2 — before building anything
@@ -103,29 +143,31 @@ class TastytradeAdapter:
         tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
 
         legs = []
-        for leg in intent["legs"]:
-            opt = await Option.get(self._session, leg["symbol"])
-            legs.append(opt.build_leg(D(str(leg.get("qty", 1))), action_map[leg["action"]]))
+        for leg in intent.legs:
+            symbol = leg.symbol or occ_symbol(
+                intent.underlying, intent.expiration, leg.right, leg.strike)
+            opt = await self._option_for(symbol)
+            legs.append(opt.build_leg(D(leg.qty), action_map[leg.action]))
 
         kwargs: dict[str, Any] = dict(
-            time_in_force=tif_map.get(intent.get("tif", "Day"), OrderTimeInForce.DAY),
-            order_type=type_map[intent["order_type"]],
+            time_in_force=tif_map.get(intent.tif, OrderTimeInForce.DAY),
+            order_type=type_map[intent.order_type],
             legs=legs,
         )
-        if "stop_trigger" in intent:
-            kwargs["stop_trigger"] = D(str(intent["stop_trigger"]))
-        if "price" in intent:
-            kwargs["price"] = D(str(intent["price"]))
+        if intent.stop_trigger is not None:
+            kwargs["stop_trigger"] = D(str(intent.stop_trigger))
+        if intent.price is not None:
+            kwargs["price"] = D(str(intent.price))
         return NewOrder(**kwargs)
 
     @staticmethod
-    def validate_stop_tif(order: dict[str, Any]) -> None:
+    def validate_stop_tif(intent: OrderIntent) -> None:
         """Assumption 2: reject an option stop that isn't Day-TIF before submit.
-        Accepts either intent shape (`order_type` or `type`)."""
-        otype = order.get("order_type") or order.get("type")
-        if otype in ("stop_market", "stop_limit") and order.get("tif") not in _OPTION_STOP_ALLOWED_TIF:
+        (OrderIntent already refuses this at construction; kept as the adapter's
+        own last line of defence against a hand-built intent.)"""
+        if intent.order_type in ("stop_market", "stop_limit") and intent.tif not in _OPTION_STOP_ALLOWED_TIF:
             raise ValueError(
-                f"option stop TIF {order.get('tif')!r} unsupported — Day only "
+                f"option stop TIF {intent.tif!r} unsupported — Day only "
                 "(cert: tif_no_stop_market_gtc_options)")
 
     def record_fill_allocation(
@@ -140,12 +182,14 @@ class TastytradeAdapter:
         return rec
 
     # ---- BrokerGateway surface (real SDK calls; proven by contract tests) -----
-    async def submit(self, order: dict[str, Any]) -> str:
+    async def submit(self, order: OrderIntent) -> str:
+        if not isinstance(order, OrderIntent):  # one schema, all brokers
+            raise TypeError(f"TastytradeAdapter.submit expects an OrderIntent, got {type(order).__name__}")
         new = await self._build_order(order)
-        resp = await self._account.place_order(self._session, new, dry_run=order.get("dry_run", False))
+        resp = await self._account.place_order(self._session, new, dry_run=False)
         return str(resp.order.id) if resp.order else ""
 
-    async def dry_run(self, order: dict[str, Any]):
+    async def dry_run(self, order: OrderIntent):
         """Assumption 1/2/7: validate an order against cert without placing it."""
         new = await self._build_order(order)
         return await self._account.place_order(self._session, new, dry_run=True)
@@ -158,19 +202,232 @@ class TastytradeAdapter:
             return {"result": "error", "error": repr(e)}
 
     async def replace(self, id, new):
-        await self.cancel(id)  # cert has no atomic replace for these; confirm-cancel then submit
-        return await self.submit(new)
+        """CLS-01 replace: same-leg stop -> marketable buy-to-close in as close
+        to ONE broker operation as the SDK allows.
+
+        *** ATOMIC-REPLACE FINDING (2026-07-10, CLS-01 v1.50 implementation) ***
+        This module's original comment ("cert has no atomic replace for
+        these") was WRONG for this shape. The installed SDK (tastytrade
+        v13, `Account.replace_order`) issues a single `PUT
+        /accounts/{acct}/orders/{id}` that mutates order_type/price/
+        stop_trigger while explicitly EXCLUDING `legs` from the payload
+        (`model_dump_json(exclude={"legs"}, ...)`) — i.e. it keeps the SAME
+        leg (same instrument, same buy_to_close action) and only swaps the
+        order's shape. That is EXACTLY the CLS-01 replace (stop_market ->
+        marketable_limit, same short leg): a native single-call replace
+        exists and is used as the PRIMARY path below.
+
+        UNVERIFIED against cert (flagged for the operator / contract suite,
+        `pytest -m contract` — NOT run as part of this change): whether
+        `replace_order` (a) 400s outright on an order-TYPE change (only
+        same-type reprices — LEX/entry-ladder limit->limit — are proven live
+        today), (b) errors distinctly when the target already filled
+        (ORD-08a), or (c) silently no-ops. Until the contract suite
+        characterizes this, the fallback below is deliberately conservative.
+
+        RESIDUAL GAP (report prominently — this is the operator-escalation
+        item): the FALLBACK path (native call raised) is cancel-then-submit,
+        which is NOT atomic — cert genuinely has no atomic replace for a
+        stop-market -> marketable-limit TYPE change if the native call turns
+        out not to support it. Between the fallback's confirmed cancel and its
+        submit there is a real, if brief, naked window. This gap is why the
+        primary path exists (to avoid the fallback whenever the SDK's native
+        replace actually works) and why it must be exercised in cert before
+        being trusted live.
+        """
+        try:
+            built = await self._build_order(new)
+            resp = await self._account.replace_order(self._session, int(id), built)
+            return str(getattr(resp, "id", "")) or ""
+        except Exception:
+            return await self._replace_fallback(id, new)
+
+    async def _replace_fallback(self, id, new):
+        """NOT atomic (see `replace` docstring) — the residual gap this change
+        must report. Probes via `cancel()` BEFORE ever submitting a second
+        order, so a stop that beat the replace to a fill is never double-
+        bought; anything else that isn't a clean confirmed cancel is treated
+        as ORD-08 "unclassifiable" (transient) and re-raised so the caller
+        retries with the ORIGINAL stop presumed still resting, per
+        ORD-08/CLS-01(2).
+
+        KNOWN LIMITATION (part of the same residual-gap report): `cancel()`
+        today returns only `{"result": "cancelled"}` or `{"result": "error",
+        "error": repr(exc)}` — it does not itself classify WHY a cancel
+        failed (cert's exact error shape for "already filled" vs "already
+        gone" vs "rate limited" is unverified, assumption 5/ORD-08). So this
+        fallback cannot yet distinguish a genuine ORD-08a fill-race from any
+        other cancel failure here; it takes the SAFE default for both
+        (transient — never submit a second order) rather than guess at an
+        unverified error string. That means a live fill-race during THIS
+        fallback path is currently handled as "retry the close later", not
+        "route to LEX immediately" — correct-but-slow rather than wrong. Once
+        the contract suite characterizes cert's cancel-failure payloads, this
+        should classify `error` via `cancel_taxonomy.classify_cancel_failure`
+        and raise `ReplaceFilled` when it resolves to "filled"."""
+        cancel_result = await self.cancel(id)
+        if cancel_result.get("result") == "cancelled":
+            return await self.submit(new)  # confirmed dead just now — safe to submit
+        # "error" (or any other shape): ambiguous -- ORD-08's unclassifiable-
+        # defaults-to-transient rule. Do NOT submit a second order.
+        raise RuntimeError(
+            f"replace fallback: cancel of {id!r} was inconclusive "
+            f"({cancel_result!r}) — ORD-08 transient, original stop presumed resting")
 
     async def working_orders(self) -> list[Any]:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().split(".")[-1] in ("live", "received")]
 
+    async def server_time(self) -> "datetime | None":
+        """The broker's clock, from the `Date` header of a light authenticated call
+        (DAY-03 v1.48 — measure drift against the counterparty whose clock governs
+        windows). Best-effort: None means 'no reading', which the clock probe treats
+        as unverified and therefore blocking. Never raises — a probe that cannot
+        read the header must degrade to blocked, not crash the health loop.
+
+        `_probe_response` is the injectable seam; the SDK's exact client is not
+        pinned here, so it is contract-tested offline rather than assumed."""
+        from email.utils import parsedate_to_datetime
+
+        try:
+            resp = await self._probe_response()
+            date = resp.headers.get("date") if resp is not None else None
+            return parsedate_to_datetime(date) if date else None
+        except Exception:  # noqa: BLE001 — any failure is "no reading" (blocked), not a crash
+            return None
+
+    async def _probe_response(self):
+        """A light authenticated call whose response carries the broker `Date`
+        header. Overridable so `server_time` is testable without a session; in
+        production it reuses the SDK's authenticated async client (the same session
+        the ~60 s probe already uses — no new network path).
+
+        SDK v13 exposes its httpx client as `Session._client` and validates the
+        session with a POST to `/sessions/validate` (see `Session.validate`). Both
+        matter: the previous `async_client`/GET pair silently returned None, so the
+        DAY-03 clock never verified and arming was blocked forever."""
+        client = getattr(self._session, "_client", None) or getattr(self._session, "async_client", None)
+        if client is None:
+            return None
+        return await client.post("/sessions/validate")
+
     async def positions(self) -> list[Any]:
         return await self._account.get_positions(self._session)
+
+    async def buying_power(self) -> Decimal:
+        """Options buying power (ENT-03 BP gate / RSK-04). `derivative_buying_power`
+        is the figure that governs an options spread, not equity BP."""
+        balances = await self._account.get_balances(self._session)
+        return Decimal(str(balances.derivative_buying_power))
 
     async def fills_since(self, cursor) -> list[Any]:
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]
+
+    async def day_fills(self, day: str) -> list[Any]:
+        """RPT-15 read-only: the broker's own Trade transactions for `day`
+        (YYYY-MM-DD), straight from the SDK's transaction history --
+        `Account.get_history` (a GET). No order-action capability; this is
+        the ONLY method the RPT-15 `ReportReconciler` facade forwards to for
+        "the day's fills" (see adapters/api/server.py's `_BrokerReadFacade`,
+        which is the ONLY thing the reconciler ever sees -- never this
+        adapter directly)."""
+        from datetime import date as _date
+
+        d = _date.fromisoformat(day)
+        return await self._account.get_history(
+            self._session, start_date=d, end_date=d, type="Trade")
+
+    async def day_settlements(self, day: str) -> list[Any]:
+        """RPT-16 (operator ruling 2026-07-10): the broker's own
+        Receive-Deliver transactions for `day` -- cash settlement
+        assignments ("Cash Settled Assignment") and worthless-expiry
+        removals ("Expiration" / "Assignment") -- via the SAME
+        `Account.get_history` GET surface as `day_fills`, mirroring its
+        `type=` filter (server-side, exact match on `transaction_type`).
+
+        `end_date` is `day + 1`: a settlement can post to the broker's
+        ledger the day AFTER the trading day it settles even though it
+        belongs to THAT day's expiry (verified live: 2026-07-09's C7540
+        cash-settled assignment). No order-action capability -- a plain GET,
+        same as `day_fills`."""
+        from datetime import date as _date, timedelta
+
+        d = _date.fromisoformat(day)
+        return await self._account.get_history(
+            self._session, start_date=d, end_date=d + timedelta(days=1), type="Receive Deliver")
+
+    async def cash_and_fees(self, day: str) -> tuple[Decimal, Decimal]:
+        """RPT-15 read-only: (cash_delta, total_fees) for `day`, from the
+        broker's own transaction/fees endpoints. `cash_delta` is the sum of
+        that day's Trade transactions' `net_value` (the broker's own signed
+        cash effect) PLUS its Receive-Deliver settlement rows' `net_value`
+        (EOD-01 v1.59 -- widened so this broker-side figure is never a
+        trades-only view that silently omits an ITM-expiring short's real
+        cash effect: the 2026-07-09 vector is +355.12 in Trade fills alone,
+        vs the true -13.88 once the -369.00 settlement is included -- a
+        trades-only sum would let RPT-15 wrongly confirm a day that is
+        still actually wrong). `total_fees` comes straight from
+        `Account.get_total_fees`, which already covers the account's whole
+        fee ledger for `day` (settlement fees included), so only
+        `cash_delta` needs widening here. Both are plain GETs -- no
+        order-action capability."""
+        from datetime import date as _date
+
+        d = _date.fromisoformat(day)
+        fills = await self.day_fills(day)
+        cash_delta = sum((Decimal(str(t.net_value)) for t in fills), Decimal("0"))
+        settlements = await self.day_settlements(day)
+        cash_delta += sum(
+            (Decimal(str(t.net_value)) for t in settlements if getattr(t, "net_value", None) is not None),
+            Decimal("0"))
+        fees_info = await self._account.get_total_fees(self._session, day=d)
+        return cash_delta, Decimal(str(fees_info.total_fees))
+
+    async def fill_legs(self, order_id) -> tuple:
+        """ORD-09: report each filled leg's BROKER-REPORTED symbol and
+        BROKER-ALLOCATED fill price, byte-identical to the payload.
+
+        Nothing here reconstructs a symbol; we copy `leg.symbol` through verbatim.
+        The allocated price is the broker's own per-leg fill price — the input the
+        STP-02d reconciler compares against the net fill. Where the SDK reports no
+        allocation for a leg, we record None rather than guess: a fabricated
+        allocation would make the reconciler agree with itself.
+        """
+        from meic.domain.events import FilledLeg
+
+        live = await self._account.get_live_orders(self._session)
+        order = next((o for o in live if str(getattr(o, "id", "")) == str(order_id)), None)
+        if order is None:
+            return ()
+
+        legs: list[FilledLeg] = []
+        for leg in getattr(order, "legs", ()) or ():
+            action = str(getattr(leg, "action", "")).lower().replace(" ", "_").split(".")[-1]
+            symbol = str(leg.symbol)
+            legs.append(FilledLeg(
+                symbol=symbol,                       # verbatim, never reconstructed
+                right="P" if symbol[12:13] == "P" else "C",
+                role="short" if "sell_to_open" in action else "long",
+                qty=int(Decimal(str(getattr(leg, "quantity", 0)))),
+                price=self._allocated_price(leg),
+            ))
+        return tuple(legs)
+
+    @staticmethod
+    def _allocated_price(leg) -> Decimal | None:
+        """The broker's allocated fill price for one leg, or None if it reported
+        none. Cert showed these do not always reconcile to the net (assumption 5),
+        which is precisely why they are recorded rather than derived."""
+        fills = getattr(leg, "fills", None) or ()
+        prices = [Decimal(str(f.fill_price)) for f in fills if getattr(f, "fill_price", None) is not None]
+        if not prices:
+            return None
+        quantities = [Decimal(str(getattr(f, "quantity", 1) or 1)) for f in fills]
+        total_qty = sum(quantities)
+        if total_qty == 0:
+            return None
+        return sum(p * q for p, q in zip(prices, quantities)) / total_qty  # vwap of partials
 
     async def order_events(self) -> AsyncIterator[dict[str, Any]]:
         """Account order-status stream (STP-04/ORD-05/LEX-01). Uses the

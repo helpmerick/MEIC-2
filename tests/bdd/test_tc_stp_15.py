@@ -67,7 +67,7 @@ def _(world):
     broker, events = FakeBroker(), []
     clock = FakeClock(datetime(2026, 7, 6, 10, 0, tzinfo=ET))
     p = ProtectPosition(broker, clock, _Alerts(), events, SPX)
-    shorts = [ShortLeg("PUT", D("3.00"), D("0.50")), ShortLeg("CALL", D("2.00"), D("0.50"))]
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("0.50"), symbol="SPXW  260707C06060000")]
     world["result"] = asyncio.run(p.protect(entry_id="e", basis=StopBasis.TOTAL_CREDIT,
                                              shorts=shorts, total_net_credit=D("4.00")))
     world["broker"] = broker
@@ -94,7 +94,7 @@ def _(world):
 
     p = ProtectPosition(broker, clock, alerts, events, SPX, close_entry=close_cb)
     # trigger 1.90 (net 2.00 @95) does not clear the 3.00 short fill
-    shorts = [ShortLeg("PUT", D("3.00"), D("1.50")), ShortLeg("CALL", D("2.00"), D("1.50"))]
+    shorts = [ShortLeg("PUT", D("3.00"), D("1.50"), symbol="SPXW  260707P05990000"), ShortLeg("CALL", D("2.00"), D("1.50"), symbol="SPXW  260707C06060000")]
     world["result"] = asyncio.run(p.protect(entry_id="e5", basis=StopBasis.TOTAL_CREDIT,
                                              shorts=shorts, total_net_credit=D("2.00")))
     world["broker"], world["alerts"] = broker, alerts

@@ -4,6 +4,7 @@ from decimal import Decimal as D
 
 from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker, spread_margin
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
+from tests.harness.intents import condor_intent, stop_intent
 
 TICK = D("0.05")
 
@@ -52,20 +53,20 @@ class TestSimLedgerAndMargin:
 class TestSimulatedBroker:
     def test_credit_order_fills_through_and_posts_cash(self):
         b = SimulatedBroker(SimLedger(cash=D("100000")), tick=TICK)
-        oid = asyncio.run(b.submit({"type": "limit", "legs": 4, "net_credit": "2.30"}))
+        oid = asyncio.run(b.submit(condor_intent("2.30")))
         assert b.try_fill_limit(oid, natural=D("2.20"), mid=D("2.35"), is_credit=True)
         assert b.ledger.cash == D("100230")  # +2.30 x100
         assert asyncio.run(b.working_orders()) == []
 
     def test_stop_fills_with_slippage_and_stamps_paper(self):
         b = SimulatedBroker(SimLedger(), tick=TICK, stop_slippage_ticks=3)
-        oid = asyncio.run(b.submit({"type": "stop_market", "trigger": "3.80", "leg": "short_put"}))
+        oid = asyncio.run(b.submit(stop_intent("PUT", "3.80")))
         price = b.try_fill_stop(oid, mark=D("3.85"))
         assert price == D("3.95")  # trigger + 3 ticks
-        assert b._orders[oid].intent["mode"] == "PAPER"  # SIM-05 stamp
+        assert b._orders[oid].mode == "PAPER"  # SIM-05 stamp
 
     def test_stop_not_triggered_below_trigger(self):
         b = SimulatedBroker(SimLedger(), tick=TICK)
-        oid = asyncio.run(b.submit({"type": "stop_market", "trigger": "3.80", "leg": "short_put"}))
+        oid = asyncio.run(b.submit(stop_intent("PUT", "3.80")))
         assert b.try_fill_stop(oid, mark=D("3.70")) is None
         assert len(asyncio.run(b.working_orders())) == 1

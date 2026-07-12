@@ -25,12 +25,47 @@ from meic.domain.events import (
 from meic.domain.stop_policy import StopBasis, clears, stop_trigger
 from meic.domain.ticks import TickTable
 
+from .order_intent import OrderIntent, protective_stop, working_order_qty
+from .stop_fill_watch import _leg_action, _leg_symbol, _order_legs  # reused matchers, not new ones
+
+
+class LegsUnrecorded(ValueError):
+    """ORD-09: the broker never reported this fill's legs, so no order can name
+    the instrument. A hard refusal - the bot does not invent a symbol, and it does
+    not reconstruct one from strikes at action time."""
+
 
 @dataclass(frozen=True)
 class ShortLeg:
+    """A filled short, carrying the BROKER-REPORTED identity needed to protect it.
+
+    ORD-09 (v1.45/v1.46, operator-ratified hard refusal): a stop names the symbol
+    the broker said it filled — read from the fill event via LegBook. There is no
+    strike fallback. Reconstructing a symbol here would be action-time symbology,
+    which ORD-09 prohibits: it re-runs the math on every use, and if it disagrees
+    with the broker we would rest a stop on an instrument the broker never filled.
+
+    A fill whose legs were never recorded is `legs_unrecorded` — refused loudly,
+    never guessed around.
+    """
+
     side: str            # "PUT" | "CALL"
     fill: Decimal        # actual short fill (STP-02 uses actual fills)
     long_fill: Decimal   # allocated long fill (per_side basis only)
+    symbol: str = ""     # ORD-09: broker-reported, mandatory
+
+    def __post_init__(self) -> None:
+        if self.side not in ("PUT", "CALL"):
+            raise ValueError(f"side must be PUT or CALL, got {self.side!r}")
+        if not self.symbol:
+            raise LegsUnrecorded(
+                f"short {self.side} has no broker-reported symbol (ORD-09): a stop cannot "
+                "be placed on an instrument the broker never told us it filled")
+
+    @property
+    def right(self) -> str:
+        """OCC right: PUT -> P, CALL -> C."""
+        return "P" if self.side == "PUT" else "C"
 
 
 @dataclass(frozen=True)
@@ -83,7 +118,10 @@ class ProtectPosition:
         pct: Decimal = Decimal("95"),
         markup: Decimal = Decimal("0"),
         total_net_credit: Decimal | None = None,
+        contracts: int = 1,
     ) -> ProtectResult:
+        """`contracts` (v1.44, ENT-04) sizes each stop at the position it
+        protects — a 2-contract condor gets 2-contract stops."""
         shorts = list(shorts)
         triggers = {
             leg.side: self._trigger_for(basis, leg, pct=pct, markup=markup, total_net_credit=total_net_credit)
@@ -103,38 +141,128 @@ class ProtectPosition:
 
         # STP-01/06: one broker-resting buy-to-close stop-market per SHORT.
         for leg in shorts:
-            if not await self._place_and_verify(entry_id, leg.side, triggers[leg.side]):
-                await self._go_unprotected(entry_id, leg.side)
+            intent = protective_stop(
+                entry_id=entry_id, right=leg.right, contracts=contracts,
+                trigger=triggers[leg.side], symbol=leg.symbol,   # ORD-09: recorded, not derived
+                idempotency_key=f"stop:{entry_id}:{leg.side}",  # ORD-04
+            )
+            placed = await self._place_and_verify(
+                entry_id, leg.side, triggers[leg.side], intent, contracts, markup)
+            if placed is not True:
+                await self._go_unprotected(entry_id, leg.side, naked=placed or None)
                 return ProtectResult("UNPROTECTED_FLATTENED", triggers)
         return ProtectResult("PROTECTED", triggers)
 
-    async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal) -> bool:
-        """STP-04: place, then confirm working; retry up to attempts."""
+    async def _place_and_verify(self, entry_id: str, side: str, trigger: Decimal,
+                                intent: OrderIntent, contracts: int,
+                                markup: Decimal | None = None) -> bool | int:
+        """STP-04: place, then confirm working; retry up to attempts.
+
+        Returns True on confirmation, False if it never confirmed, or the NAKED
+        QUANTITY if it confirmed at the wrong size (STP-01 quantity invariant,
+        v1.45). A short-sized stop is not retried and never silently resized — it
+        is an UNPROTECTED condition immediately.
+
+        REPRICE-RACE SWEEP (2026-07-11): a submit can succeed at the broker even
+        though ITS OWN confirmation read (the `working_orders()` scan below)
+        fails or misses it — a slow/eventually-consistent read, or the historical
+        `.order_id`-vs-`.id` shape mismatch (2026-07-09). tastytrade enforces no
+        server-side idempotency key (`OrderIntent.idempotency_key` is never read
+        by `TastytradeAdapter.submit()`), so blindly resubmitting on the next
+        attempt would rest a SECOND buy-to-close beside the first — a real,
+        live-reachable duplicate stop. Before any retry's submit, scan for an
+        order already resting on this leg's symbol (reusing stop_fill_watch's own
+        buy-to-close matcher) and ADOPT it instead of resubmitting.
+        """
+        symbol = intent.legs[0].symbol
         for attempt in range(self._retry_attempts):
-            try:
-                order_id = await self._broker.submit({
-                    "action": "buy_to_close", "type": "stop_market", "tif": "Day",
-                    "leg": f"short_{side.lower()}", "trigger": trigger, "entry_id": entry_id,
-                })
-            except Exception:
-                order_id = None
-            if order_id is not None and await self._confirmed(order_id):
-                self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger))
-                self._events.append(StopConfirmed(entry_id=entry_id, side=side))
-                return True
+            order_id = None
+            if attempt > 0:
+                order_id = await self._find_resting(symbol)
+            if order_id is None:
+                try:
+                    order_id = await self._broker.submit(intent)
+                except Exception:
+                    order_id = None
+            if order_id is not None:
+                qty = await self._confirmed_qty(order_id)
+                if qty == contracts:
+                    # broker_order_id (additive, v1.60): lets a later live
+                    # catch-up pass match a fill to THIS stop precisely,
+                    # instead of by symbol inference (see stop_fill_watch.py).
+                    # markup (RPT-07, 2026-07-11): the STP-02b buffer in force
+                    # for THIS stop's trigger, journaled so realized long-sale
+                    # recovery can later be compared against it (NLE-06).
+                    self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger,
+                                                   broker_order_id=str(order_id), markup=markup))
+                    self._events.append(StopConfirmed(entry_id=entry_id, side=side))
+                    return True
+                if qty is not None:
+                    # STP-01: it IS working, at the wrong size. Retrying would rest a
+                    # second stop beside it; resizing it ourselves is forbidden.
+                    return contracts - qty      # the naked quantity
             if attempt < self._retry_attempts - 1:
                 await self._clock.wait_until(self._clock.now())  # advance-controlled retry gap
         return False
 
-    async def _confirmed(self, order_id: str) -> bool:
-        working = await self._broker.working_orders()
-        return any(getattr(o, "order_id", None) == order_id for o in working)
+    async def _find_resting(self, symbol: str) -> str | None:
+        """REPRICE-RACE SWEEP (2026-07-11): is a buy-to-close stop already
+        resting on `symbol`? Reuses stop_fill_watch's own leg matchers (not a
+        new normalizer) so this reads working orders exactly the way the live
+        EC-STP-06 catch-up already does; `_order_legs` alone only reads the SDK
+        shape (`.legs`), so this also falls back to `.intent.legs` for our own
+        SimOrder/FakeOrder (paper/harness), same as `working_order_qty` does for
+        quantity. Returns its order id, or None."""
+        for o in await self._broker.working_orders():
+            legs = _order_legs(o) or getattr(getattr(o, "intent", None), "legs", None) or ()
+            for leg in legs:
+                if _leg_symbol(leg) == symbol and _leg_action(leg) == "buy_to_close":
+                    return getattr(o, "order_id", None) or getattr(o, "id", None)
+        return None
 
-    async def _go_unprotected(self, entry_id: str, side: str) -> None:
-        """STP-04: retries exhausted — flatten per unprotected_action + alert.
-        A position is never knowingly left without a resting stop."""
+    async def _confirmed_qty(self, order_id: str) -> int | None:
+        """The working stop's quantity, or None if it isn't working at all.
+        An unreadable quantity is 'unknown', which is NOT 'confirmed'."""
+        for o in await self._broker.working_orders():
+            # id lives under `.order_id` on our SimOrder/FakeOrder but `.id` on the
+            # SDK's PlacedOrder — matching only one silently fails to confirm a live
+            # stop, sending a protected condor down the UNPROTECTED path.
+            oid = getattr(o, "order_id", None) or getattr(o, "id", None)
+            if str(oid) == str(order_id):
+                return working_order_qty(o)
+        return None
+
+    async def _go_unprotected(self, entry_id: str, side: str, *, naked: int | None = None) -> None:
+        """STP-04: retries exhausted, or the stop confirmed at the wrong size
+        (STP-01) — flatten per unprotected_action + alert. A position is never
+        knowingly left without a resting stop that covers all of it.
+
+        OPEN ITEM (flagged for the operator, not resolved here): doc 06's
+        `unprotected_action` distinguishes `flatten_side` (close only THIS
+        `side`) from `flatten_condor` (close the whole entry), and `side` is
+        right here in scope. But the injected `close_entry` callback's
+        signature is `(entry_id, initiator)` — no side — and the composition
+        wiring (live.py/paper.py `_auto_flatten_entry`) that supplies it
+        always closes the entry's FULL recorded leg set via the one canonical
+        CloseEntry. So today BOTH `flatten_side` and `flatten_condor` produce
+        a whole-entry close; `flatten_side`'s narrower promise is not yet
+        honoured. Narrowing it needs a side-scoped extension to CloseEntry's
+        API (CLS-02 forbids adding a second close path instead).
+
+        Initiator note: `"unprotected"` is not in CLS-02's operator-ratified
+        initiator list (`manual, manual_flatten, take_profit, eod, decay,
+        infeasible_stop`), though `CloseEntry.VALID_INITIATORS` already
+        includes it. Kept as the honest, distinct label STP-04 demands;
+        flagged here for operator ratification rather than silently renamed
+        to fit the existing list.
+        """
         self._events.append(SideUnprotected(entry_id=entry_id, side=side, action=self._unprotected_action))
-        self._alerts.alert("critical", "UNPROTECTED: stop placement failed, flattening",
-                           entry_id=entry_id, side=side, action=self._unprotected_action)
+        if naked is not None:
+            self._alerts.alert(
+                "critical", f"UNPROTECTED: stop quantity mismatch, {naked} contract(s) naked",
+                entry_id=entry_id, side=side, action=self._unprotected_action, naked_quantity=str(naked))
+        else:
+            self._alerts.alert("critical", "UNPROTECTED: stop placement failed, flattening",
+                               entry_id=entry_id, side=side, action=self._unprotected_action)
         if self._close_entry is not None:
             await self._close_entry(entry_id, "unprotected")

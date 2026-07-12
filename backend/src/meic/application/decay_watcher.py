@@ -14,7 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from meic.domain.events import EntryClosed, ShortStopped
+from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped
+
+from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
+from .order_intent import OrderIntent, buy_to_close_leg, protective_stop, right_of
 
 
 @dataclass
@@ -64,19 +67,44 @@ class DecayWatcher:
         return False
 
     # --- DCY-02 procedure (short-only close, initiator decay) ------------------
-    async def buyback(self, *, entry_id: str, side: str, resting_stop_id: str) -> str:
+    async def buyback(self, *, entry_id: str, side: str, resting_stop_id: str,
+                      symbol: str, contracts: int = 1) -> str:
         """Cancel the short's resting stop (ORD-08 classified), then place a
         limit buy-to-close at the trigger. If the cancel reveals the stop
-        already FILLED, abort and signal the LEX path."""
+        already FILLED, abort and signal the LEX path.
+
+        NOT WIRED LIVE today (flagged in stop_fill_watch.py's docstring). Guard
+        added preventatively (2026-07-11 sweep): the `cancel.get("status")`
+        check below only matches SimulatedBroker's cancel() shape
+        ({"result": "terminal", "status": ...}) — the LIVE TastytradeAdapter's
+        cancel() never carries a "status" key at all (assumption 5: cert's
+        exact cancel-failure payload is unverified), so a live stop that raced
+        this cancel to a fill would be invisible to that check and this would
+        submit a SECOND buy-to-close on an already-closed leg. Re-confirm
+        directly against the fills feed (reused normalizer, not a new one)
+        before ever submitting.
+        """
         cancel = await self.broker.cancel(resting_stop_id)
         if isinstance(cancel, dict) and cancel.get("status") == "FILLED":
             return "STOP_FILLED_RUN_LEX"  # it was a real stop-out (DCY-02.1)
+        for f in await self.broker.fills_since(None):
+            if _fill_matches(f, resting_stop_id):
+                return "STOP_FILLED_RUN_LEX"
 
-        order_id = await self.broker.submit({
-            "action": "buy_to_close", "type": "limit", "tif": "Day",
-            "leg": f"short_{side.lower()}", "price": self.decay_buyback_trigger,
-            "entry_id": entry_id, "idempotency_key": f"decay:{entry_id}:{side}"})
+        order_id = await self.broker.submit(OrderIntent(
+            order_type="limit", tif="Day", kind="decay", entry_id=entry_id,
+            contracts=contracts, price=self.decay_buyback_trigger,
+            idempotency_key=f"decay:{entry_id}:{side}",
+            legs=(buy_to_close_leg(right=right_of(side), contracts=contracts, symbol=symbol),)))
         self._buyback_id = order_id
+        # STP-08a (v1.61): journal the buyback's broker order id AT PLACEMENT so
+        # the live detection pass (stop_fill_watch.py) can classify this order's
+        # fill as SIDE_CLOSED_DECAY by id — never as a stop-out via the symbol
+        # fallback (the latent hazard previously only flagged in that module's
+        # docstring). Additive event; nothing else changes shape.
+        self.events.append(DecayBuybackPlaced(
+            entry_id=entry_id, side=side, broker_order_id=str(order_id),
+            price=self.decay_buyback_trigger))
         return order_id
 
     async def complete(self, *, entry_id: str, side: str) -> None:
@@ -90,16 +118,34 @@ class DecayWatcher:
     # --- DCY-02.3 re-inflation guard ------------------------------------------
     async def reinflation_guard(
         self, *, entry_id: str, side: str, buyback_id: str, resting_stop_id: str,
-        current_ask: Decimal, unfilled: bool,
+        current_ask: Decimal, unfilled: bool, symbol: str, trigger: Decimal,
+        contracts: int = 1,
     ) -> str:
         """If the buyback is unfilled past the timeout OR the ask rose above
         the trigger: cancel the buyback and RE-PLACE the resting stop. Returns
-        the outcome. The re-placed stop id lets ProtectPosition/STP-04 confirm."""
+        the outcome. The re-placed stop id lets ProtectPosition/STP-04 confirm.
+
+        `trigger` is the short's ORIGINAL stop trigger — re-protecting restores
+        the stop that was cancelled, it does not invent a new one. (Before v1.44
+        this emitted a stop-market with no trigger at all, which no broker
+        accepts: the guard would have left the short unprotected.)
+
+        NOT WIRED LIVE today. Guard added preventatively (2026-07-11 sweep):
+        the buyback can itself fill in the window between the caller's
+        `unfilled`/`current_ask` read and this cancel — re-placing a stop on a
+        leg that is, in fact, already closed would rest a phantom order with
+        no position behind it and never record the close at all (no
+        ShortStopped, no EntryClosed). Re-confirm against the fills feed
+        before cancelling/re-protecting.
+        """
         if not unfilled and current_ask <= self.decay_buyback_trigger:
             return "BUYBACK_STILL_LIVE"
+        for f in await self.broker.fills_since(None):
+            if _fill_matches(f, buyback_id):
+                return "BUYBACK_ALREADY_FILLED"
         await self.broker.cancel(buyback_id)
-        new_stop = await self.broker.submit({
-            "action": "buy_to_close", "type": "stop_market", "tif": "Day",
-            "leg": f"short_{side.lower()}", "entry_id": entry_id, "replaced_from": resting_stop_id,
-            "idempotency_key": f"reprotect:{entry_id}:{side}"})
+        new_stop = await self.broker.submit(protective_stop(
+            entry_id=entry_id, right=right_of(side), contracts=contracts,
+            trigger=trigger, symbol=symbol, replaced_from=resting_stop_id,
+            idempotency_key=f"reprotect:{entry_id}:{side}"))
         return f"REPROTECTED:{new_stop}"

@@ -31,7 +31,17 @@ _DEFAULTS: dict[str, Any] = {
     "trading_mode": "paper",  # (4) DAY-05
     "entry_schedule": [],     # (5) standing schedule + per-entry params
     "config_version": None,   # (6) active config version
+    # RSK-04 ceiling. Lives on the schedule panel beside the composed day total
+    # (v1.46), so adding a row visibly eats headroom. Doc 06 s169 makes it
+    # mandatory before live mode can be enabled -- None is paper/unconfigured,
+    # never "unlimited".
+    "max_day_risk": None,
     "tpf_floors": {},         # (7) armed TPF floors (TPF-08), per entry_id
+    # v1.58 TPT-07 ("Targets persist and restore per REC-07") is the spec's OWN
+    # ratification for this key — the same exit-monitor armed-state slot as
+    # item (7) above, extended by TPT-07's explicit text rather than an
+    # unratified addition. Per entry_id, mirrors tpf_floors exactly.
+    "tp_targets": {},
     "own_ledger": {},         # (9) OWN ledger + SUSPENDED/quarantine states
     "paper_cash_ledger": None,  # (10) paper cash ledger + sim positions
 }
@@ -105,12 +115,28 @@ class PersistentState:
         self._set("config_version", v)
 
     @property
+    def max_day_risk(self) -> Any:
+        return self._get("max_day_risk")
+
+    @max_day_risk.setter
+    def max_day_risk(self, v: Any) -> None:
+        self._set("max_day_risk", v)
+
+    @property
     def tpf_floors(self) -> dict[str, Any]:
         return self._get("tpf_floors")
 
     @tpf_floors.setter
     def tpf_floors(self, v: dict[str, Any]) -> None:
         self._set("tpf_floors", v)
+
+    @property
+    def tp_targets(self) -> dict[str, Any]:
+        return self._get("tp_targets")
+
+    @tp_targets.setter
+    def tp_targets(self, v: dict[str, Any]) -> None:
+        self._set("tp_targets", v)
 
     @property
     def own_ledger(self) -> dict[str, Any]:
@@ -129,6 +155,11 @@ class PersistentState:
         self._set("paper_cash_ledger", v)
 
     # --- entry gate (ENT-01/01a/01b): the three durable enabling states -------
+    def may_arm(self) -> bool:
+        """ENT-01a: arming requires at least one composed entry — arming an empty
+        schedule is rejected (never a silent no-op)."""
+        return bool(self.entry_schedule)
+
     def entries_enabled(self) -> bool:
         """Entries fire iff ARMED ∧ Stop Trading OFF ∧ Confirm Live ON
         (ENT-01b). Names the blocking state for the dashboard via

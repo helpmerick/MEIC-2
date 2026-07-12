@@ -1,0 +1,7 @@
+# Runtime deps for the containerized paper panel (no test/broker SDK deps).
+# The live adapter / contract tests additionally need `tastytrade` (see
+# backend/requirements.txt) — installed only for live mode.
+fastapi>=0.110
+uvicorn>=0.29
+websockets>=12
+tzdata>=2024.1  # zoneinfo tz database (America/New_York, DAY-03)

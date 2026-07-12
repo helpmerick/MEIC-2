@@ -1,0 +1,59 @@
+"""Shared fixtures for tests/bdd.
+
+`vitest_result` is used by TC-UI-05 and TC-UI-06: both scenarios pin frontend
+TypeScript behaviour (frontend/src/time.ts's etToZone, and
+frontend/src/components/NextEntryCountdown.tsx's display logic) that Python
+cannot execute directly. Each binds its clause by shelling out to the REAL
+vitest suite via `npx vitest run` and asserting on the actual pass/fail
+result -- never a tautology, since a regression in either frontend file
+fails the corresponding vitest test and therefore this fixture's assertions.
+
+Session-scoped so the (~2-3s) vitest/esbuild startup cost is paid once for
+the whole tests/bdd run rather than once per scenario.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+@pytest.fixture(scope="session")
+def vitest_result():
+    """Runs the two vitest files TC-UI-05/TC-UI-06 (and TC-DAY-07's frontend
+    halves) depend on, once, verbose (so individual test names appear in the
+    output for scenarios to assert against, not just an aggregate pass
+    count)."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/time.test.ts",
+         "src/components/NextEntryCountdown.test.tsx", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=120,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output
+
+
+@pytest.fixture(scope="session")
+def vitest_ui07_result():
+    """TC-UI-07's frontend halves (UI-28 contract-dollar display, UI-18a
+    markup disclosure, UI-26a heatmap honesty, UI-28 slippage columns) — the
+    same real-vitest binding strategy as `vitest_result` above, over the four
+    suites those behaviours live in. Session-scoped for the same startup-cost
+    reason."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/money.test.ts",
+         "src/components/SchedulePanel.test.tsx",
+         "src/components/results/CalendarHeatmap.test.tsx",
+         "src/components/results/SlippagePanels.test.tsx", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=180,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output

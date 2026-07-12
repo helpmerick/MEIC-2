@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-07-06T13:35:59.633277+00:00",
+  "recorded_at": "2026-07-09T19:18:12.816503+00:00",
   "observation": {
     "trigger_related_fields": {
       "stop_trigger": "0.05"
@@ -18,7 +18,7 @@
       "legs": [
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260706P03000000",
+          "symbol": "SPXW  260709P03000000",
           "action": "Buy to Open",
           "quantity": 1,
           "remaining_quantity": "1",

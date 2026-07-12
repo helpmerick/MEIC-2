@@ -33,9 +33,9 @@ def test_full_paper_day_through_simulated_broker():
     # SIM-02: the real market trades through the entry's 4.00 credit limit; a
     # LEX long-sale fills at its 0.40 ask; other order types rest.
     def market(intent):
-        if intent.get("kind") == "iron_condor":
+        if intent.kind == "iron_condor":
             return (D("4.00"), D("4.10"), True)
-        if intent.get("action") == "sell_to_close":
+        if intent.legs[0].action == "sell_to_close":
             return (D("0.40"), D("0.40"), True)
         return None
     paper.broker.set_market(market)
