@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.66 — 2026-07-12
+- v1.66 changes (operator-ratified, agent flag on its own v1.65 review): **boot-seam idempotency generalized** — all while-down syntheses (EC-STP-06 original included) carry the same synchronous pending-set re-check guard as EC-LEX-08(e); one journal entry per missed event under concurrent connects, ever. Ledger-clearing hardening, not new construction; the freeze stands.
 - Version: 1.65 — 2026-07-12
 - v1.65 changes (operator-ratified, v1.64-review escalation): **EC-LEX-08(e)** fill-while-down recognition — a journaled floor order absent from working orders with a broker FILLED record synthesizes its LongSold at broker-actual price on boot (EC-STP-06's synthesize-the-missed-event principle applied to floor orders); genuinely-gone-unfilled takes OWN paths. Pure accounting/observability (position already flat at broker) but an EOD audit wrong by one event is a trust leak. TC-LEX-10 +1 scenario. Agent's NIT triage accepted.
 - Version: 1.64 — 2026-07-12
