@@ -204,6 +204,17 @@ class CondorFilled(Event):
     # 7500"). None/None for every non-floor and pre-v1.57 fill.
     put_floor: Decimal | None = None
     call_floor: Decimal | None = None
+    # OWN-01/OWN-03 (2026-07-11 incident fix): the broker order id of the
+    # condor's ENTRY order, journaled AT FILL TIME so `reporting/own_orders.py`
+    # (`own_order_ids`) can recognise the bot's own entry fill and never
+    # confuse it with the operator's own trades on the same shared account
+    # (single-account operation is first-class, v1.49). Before this field
+    # existed, an entry's order id was journaled NOWHERE, so RPT-15's EOD
+    # reconciliation had no way to scope broker reads to the bot's own rows
+    # and instead summed the WHOLE ACCOUNT — including the operator's foreign
+    # trades — into "broker truth". Optional/None default so pre-existing log
+    # entries still replay (same convention as `fee`/`at` above).
+    broker_order_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -367,6 +378,28 @@ class LexOrderPlaced(Event):
 
 
 @dataclass(frozen=True)
+class OwnOrderIdBackfilled(Event):
+    """OWN-03 / RPT-16 escape hatch: an operator-supplied broker order id for an
+    entry whose events predate order-id journaling (pre-2026-07-12 code recorded
+    none), so RPT-15 can scope the broker's rows to the bot's OWN trades on a
+    shared account (v1.49). METADATA ONLY -- carries no money and is folded into
+    NO P&L projection; the entry's credit/stops/fills remain the sole money
+    record. `role`: "entry" | "stop" | "lex".
+
+    Read generically off ANY event carrying `broker_order_id`
+    (`reporting/own_orders.py::own_order_ids`), the same mechanism every other
+    order-id-journaling event (StopPlaced/DecayBuybackPlaced/LexOrderPlaced/
+    CondorFilled) already uses -- no special-casing needed there. Written only
+    by `application/backfill_order_ids.backfill_own_order_ids`, which is
+    idempotent per (entry_id, broker_order_id)."""
+    entry_id: str
+    broker_order_id: str
+    role: str
+    at: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class ForeignDetected(Event):
     symbol: str  # OWN-03: FOREIGN quarantine, alert-only
 
@@ -404,13 +437,33 @@ class CorrectionRecord(Event):
     corrects to `broker_value` (reporting/corrections.py), but NEVER silently:
     this event is the sole permission slip for a rendered number to differ
     from the plain projection fold, and it is always visible in the drill-down.
-    Written only by application/report_reconciler.py."""
+    Written only by application/report_reconciler.py.
+
+    `scope` (additive, 2026-07-12 own-scoping fix): "own" means this record
+    was written by the OWN-01/OWN-03-scoped reconciler -- i.e. its
+    `broker_value` was computed from ONLY the bot's own journaled order ids
+    (see application/report_reconciler.py's module docstring). That is
+    genuine broker truth for the bot's own trades and is safe to display
+    (PNL-04). `None`/absent means a LEGACY record written BEFORE that fix,
+    when RPT-15 summed the WHOLE shared account -- the operator's own,
+    unrelated trades included -- into "broker truth". The real 2026-07-10
+    incident record is exactly this: it claims cash_delta -534.46 for a day
+    the bot's own trade actually made +43.68 (the other -578.14 was the
+    operator's personal futures trade and a second, unrelated condor on the
+    same account). Such a record's `broker_value` is POLLUTED and must NEVER
+    reach the dashboard -- `reporting/corrections.corrected_value` skips any
+    record whose `scope != "own"`, so a legacy record is inert: it still
+    exists in the log (append-only, drill-down history via
+    `corrections_for_day` is unchanged) but never overrides a rendered
+    number. Optional/None default keeps every pre-fix log entry replayable
+    (same convention as `CondorFilled.broker_order_id` etc above)."""
     date: str
     field: str
     bot_value: str
     broker_value: str
     diff: str
     at: str
+    scope: str | None = None
 
 
 @dataclass(frozen=True)

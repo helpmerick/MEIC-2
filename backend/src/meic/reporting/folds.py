@@ -30,6 +30,7 @@ from decimal import Decimal
 
 from meic.domain.events import DayArmed, Event, EntrySkipped, ExternalFillImported
 from meic.domain.projection import EntryProjection, fold
+from meic.reporting.corrections import corrected_value
 
 CONTRACT_MULTIPLIER = Decimal(100)
 
@@ -183,12 +184,20 @@ def daily_net(events: list[Event]) -> dict[str, Decimal]:
     INPUT series (Sharpe/MDD/etc, doc 10 rule 3) must exclude imported days
     themselves (see reports.py's `_summary_metrics`) -- this function's
     output is deliberately still complete, not pre-filtered, since the CSV
-    daily-table export and RPT-01 day_win_rate both want the honest figure."""
+    daily-table export and RPT-01 day_win_rate both want the honest figure.
+
+    PNL-04: after folding entries + imported cash for the day, an own-scoped
+    `CorrectionRecord` (field "cash_delta") -- if one exists for that day --
+    overrides the folded value with broker truth, exactly like
+    `core_results` does (see that function's docstring for why this must be
+    per-day and why a legacy, non-"own"-scoped record is inert)."""
     out = {day: Decimal("0") for day in trading_days(events)}
     for day, entries in entries_by_day(events).items():
         out[day] = sum((entry_dollars(e) for e in entries), Decimal("0"))
     for day, fills in imported_fills_by_day(events).items():
         out[day] = out.get(day, Decimal("0")) + imported_day_net(fills)
+    for day in out:
+        out[day] = corrected_value(events, day, "cash_delta", out[day])
     return out
 
 
@@ -239,13 +248,36 @@ def core_results(events: list[Event]) -> CoreResults:
     `entry_win_rate`, or `premium_capture`: those stay computed purely from
     real fold entries, exactly as before this rule existed, because an
     imported fill carries no recorded entry-level intent to count as one
-    (REC-02) and `entries_by_day`/`fold` never produce a pseudo-entry for it."""
+    (REC-02) and `entries_by_day`/`fold` never produce a pseudo-entry for it.
+
+    PNL-04 (2026-07-12): broker transaction history is authoritative for the
+    permanent record, so `entry_net_pnl`/`entry_fees` are folded PER DAY --
+    not as one flat sum over every filled entry -- because a `CorrectionRecord`
+    (RPT-15) is itself scoped to ONE (day, field). Each day's own projected
+    net/fees is computed first, then `corrections.corrected_value` is given
+    the chance to override THAT day's figure with broker truth before the
+    days are summed. Only a record stamped `scope="own"` (written by the
+    OWN-01/OWN-03-scoped reconciler) can actually override -- a legacy
+    record (pre-2026-07-12, potentially polluted by the whole shared
+    account) is inert, see `corrected_value`'s docstring. With NO
+    CorrectionRecord present for a day at all, `corrected_value` returns the
+    fold value unchanged, so this is numerically identical to the old flat
+    sum whenever nothing has been corrected."""
     by_day = entries_by_day(events)
     all_entries = [e for es in by_day.values() for e in es]
     filled_entries = [e for e in all_entries if e.net_credit != 0]
 
-    entry_fees = sum((entry_dollars_fees(e) for e in filled_entries), Decimal("0"))
-    entry_net_pnl = sum((entry_dollars(e) for e in filled_entries), Decimal("0"))
+    entry_net_pnl = Decimal("0")
+    entry_fees = Decimal("0")
+    for day, entries in by_day.items():
+        day_filled = [e for e in entries if e.net_credit != 0]
+        day_net = sum((entry_dollars(e) for e in day_filled), Decimal("0"))
+        day_fees = sum((entry_dollars_fees(e) for e in day_filled), Decimal("0"))
+        day_net = corrected_value(events, day, "cash_delta", day_net)
+        day_fees = corrected_value(events, day, "fees", day_fees)
+        entry_net_pnl += day_net
+        entry_fees += day_fees
+
     total_credit = sum((entry_credit_dollars(e) for e in filled_entries), Decimal("0"))
 
     imported_by_day = imported_fills_by_day(events)

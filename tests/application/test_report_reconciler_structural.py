@@ -41,10 +41,12 @@ def test_reconciler_source_has_no_order_action_capability():
 
 def test_reconciler_facade_protocol_declares_only_read_methods():
     """The narrow `ReadOnlyBrokerFacade` Protocol this module defines carries
-    ONLY the three read fetches RPT-15 needs -- never an order-action method,
-    so nothing that duck-types against it can be mistaken for a full
-    BrokerGateway."""
+    ONLY the four read fetches RPT-15 needs (OWN-01/OWN-03 fix added
+    `day_settlements`, the same read `capture_settlements`/`backfill_day`
+    already use, so the reconciler can scope settlement rows to the bot's
+    own symbols too) -- never an order-action method, so nothing that
+    duck-types against it can be mistaken for a full BrokerGateway."""
     from meic.application.report_reconciler import ReadOnlyBrokerFacade
 
     methods = {name for name in vars(ReadOnlyBrokerFacade) if not name.startswith("_")}
-    assert methods == {"positions", "day_fills", "cash_and_fees"}
+    assert methods == {"positions", "day_fills", "day_settlements", "cash_and_fees"}

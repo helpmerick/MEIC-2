@@ -15,16 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, time as dtime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 
 from meic.adapters.api.app import _strike_from_symbol
 from meic.application.clocks import MutableClock
 from meic.application.market_calendar import is_trading_day, next_trading_day
-from meic.application.nyse_holidays import half_days_near, holidays_near
+from meic.application.nyse_holidays import half_days_near, holidays_near, nyse_holidays
 from meic.composition.paper import PaperComposition
 from meic.composition.runtime import PaperDemoRuntime
 from meic.domain.ticks import TickRung, TickTable
@@ -501,12 +501,25 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
     """RPT-15: after `EOD_RECONCILE_TIME` ET on a trading day (RPT-01: any ET
     day with >= 1 entry attempt), run the reconciler ONCE for that day.
     Idempotent by construction: a day already carrying a `DayBrokerConfirmed`
-    OR any `CorrectionRecord` has already been resolved (matched or
-    corrected) and is skipped; a day with neither (never reconciled, or the
-    broker was unreachable last time) is retried -- exactly RPT-15's "stays
-    bot-computed... retries at next boot/reconcile" rule. Factored out of
-    `live_app`'s health loop, mirroring `_supervise_once`, so it is
-    unit-testable without a running FastAPI app.
+    OR a `CorrectionRecord` with `scope == "own"` has already been resolved
+    (matched or corrected) and is skipped; a day with neither (never
+    reconciled, or the broker was unreachable last time) is retried --
+    exactly RPT-15's "stays bot-computed... retries at next boot/reconcile"
+    rule. Factored out of `live_app`'s health loop, mirroring
+    `_supervise_once`, so it is unit-testable without a running FastAPI app.
+
+    Own-scoping gate (2026-07-12, PNL-04/on-demand-reconcile follow-up): a
+    `CorrectionRecord` WITHOUT `scope == "own"` is a LEGACY record, written
+    before the OWN-01/OWN-03 fix, when this reconciler summed the operator's
+    WHOLE shared account into "broker truth" (the real 2026-07-10 incident:
+    it claims cash_delta -534.46 for a day the bot's own trade actually made
+    +43.68). Such a record is not a resolution -- it is a stale artifact of
+    the pre-fix bug, and `reporting/corrections.py` already refuses to
+    render it. Treating its mere presence as "already reconciled" would
+    permanently freeze that day on a polluted number with no way back in:
+    the day must stay eligible for re-reconciliation (here, and via the
+    on-demand endpoint below) until a genuine `scope="own"` record or a
+    `DayBrokerConfirmed` actually resolves it.
 
     EOD-01 v1.59: when `broker_reads` is supplied (the live wiring passes
     the SAME `_BrokerReadFacade` the reconciler uses), settlement capture
@@ -529,7 +542,8 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
     if day not in trading_days(comp.events):
         return  # RPT-15 only reconciles days with real activity
     already = any((isinstance(e, DayBrokerConfirmed) and e.date == day)
-                  or (isinstance(e, CorrectionRecord) and e.date == day)
+                  or (isinstance(e, CorrectionRecord) and e.date == day
+                      and e.scope == "own")
                   for e in comp.events)
     if already:
         return
@@ -547,11 +561,14 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
 def _journaled_own_order_ids(events) -> set[str]:
     """OWN-03: every broker order id the bot itself journaled placing — today
     `StopPlaced.broker_order_id` (v1.60), `DecayBuybackPlaced.broker_order_id`
-    (v1.61) and `LexOrderPlaced.broker_order_id` (v1.62), read generically off
-    any event carrying the field. The EOD-03 sweep cancels ONLY these: on a
-    shared account (single-account operation is first-class, v1.49) the
-    operator's own working orders are never touched and never flagged
-    uncancellable.
+    (v1.61), `LexOrderPlaced.broker_order_id` (v1.62) and
+    `CondorFilled.broker_order_id` (entry order, OWN-01/OWN-03 fix), read
+    generically off any event carrying the field. Delegates to the pure
+    `reporting/own_orders.py::own_order_ids` — the ONE definition shared with
+    `application/report_reconciler.py`, which cannot import this adapters
+    module. The EOD-03 sweep cancels ONLY these: on a shared account
+    (single-account operation is first-class, v1.49) the operator's own
+    working orders are never touched and never flagged uncancellable.
 
     RESOLVED (v1.62, operator-ratified — the LEX-01 order-id journaling
     sub-bullet): the previously flagged known limit ("LEX-ladder orders
@@ -562,12 +579,9 @@ def _journaled_own_order_ids(events) -> set[str]:
     expires' is unchanged for positions; this covers the ORDERS"). The one
     remaining non-journaled id is a live entry ladder's CURRENT working id,
     which the caller still merges in from the working-entry registry."""
-    ids: set[str] = set()
-    for e in events:
-        oid = getattr(e, "broker_order_id", None)
-        if oid:
-            ids.add(str(oid))
-    return ids
+    from meic.reporting.own_orders import own_order_ids
+
+    return own_order_ids(events)
 
 
 async def _maybe_eod_sweep_once(comp, now_fn, *, half_days: frozenset = frozenset()) -> None:
@@ -1535,6 +1549,42 @@ def live_app():
                 "lex_resumed": [list(s) for s in r.lex_resumed],
                 "mismatches": r.mismatches, "entries_blocked": r.entries_blocked}
 
+    @app.post("/reports/reconcile/{day}")
+    async def reconcile_day_on_demand(day: str) -> dict:
+        """PNL-04: "At EOD (**and on demand**)" -- an operator-triggered
+        reconcile for `day`, run right now, using the SAME `report_reconciler`
+        instance (and its `_BrokerReadFacade`) the EOD health tick calls via
+        `_maybe_eod_reconcile_once` above -- never a second, separately-wired
+        reconciler.
+
+        Deliberately does NOT consult that function's already-resolved gate:
+        an explicit operator request must always run, even on a day the
+        automatic tick would skip -- including a day whose only prior record
+        is a pre-fix LEGACY `CorrectionRecord` (`scope != "own"`, see that
+        gate's docstring above), which is exactly the case an operator would
+        reach for this endpoint to fix. A broker-unreachable outcome is
+        surfaced as-is (`ReconcileOutcome.status == "unreachable"`), never
+        caught-and-swallowed.
+
+        Mutating POST -> gated by the SAME auth/origin security middleware as
+        every other command (adapters/api/app.py's `security` middleware:
+        NFR-06 origin check + `x-api-token`)."""
+        import re
+
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(status_code=422, detail="bad_day_format")
+        outcome = await report_reconciler.reconcile_day(day)
+        return {
+            "day": outcome.day,
+            "status": outcome.status,
+            "corrections": [
+                {"field": c.field, "bot_value": c.bot_value,
+                 "broker_value": c.broker_value, "diff": c.diff}
+                for c in outcome.corrections
+            ],
+            "ambiguous_settlements": outcome.ambiguous_settlements,
+        }
+
     @app.get("/alerts")
     def recent_alerts() -> list[dict]:
         return alerts.recent()
@@ -1624,6 +1674,32 @@ def live_app():
         return {**base, "started": True, "running": False,
                 "filled": None if exc else task.result(),
                 "error": repr(exc) if exc else None}
+
+    @app.get("/calendar/adjacent-trading-day")
+    def adjacent_trading_day(
+        from_: str = Query(..., alias="from"),
+        dir: str = Query(...),
+    ) -> dict:
+        """DAY-01: step the Results day picker to the previous/next NYSE session,
+        skipping weekends AND market holidays. Read-only calendar math over the SAME
+        exchange calendar the countdown uses; never a trading input (UI-03). `next`
+        never returns a date past today's ET session (no navigating into the future)."""
+        try:
+            d = date.fromisoformat(from_)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="from must be YYYY-MM-DD")
+        if dir not in ("prev", "next"):
+            raise HTTPException(status_code=422, detail="dir must be 'prev' or 'next'")
+        # 3-year window so a single ±1 session step is correct across a year boundary.
+        holidays = nyse_holidays(d.year - 1) | nyse_holidays(d.year) | nyse_holidays(d.year + 1)
+        if dir == "prev":
+            c = d - timedelta(days=1)
+            while not is_trading_day(c, holidays=holidays):
+                c -= timedelta(days=1)
+            return {"date": c.isoformat()}
+        nxt = next_trading_day(d, holidays=holidays)  # strictly after d
+        today = datetime.now(ET).date()
+        return {"date": nxt.isoformat() if nxt <= today else None}
 
     # ENT-10: arming runs the day. This supervisor is what turns "ARMED" from a
     # state flag into a running watch — it starts run_day for the REMAINING

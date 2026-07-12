@@ -10,8 +10,11 @@ def test_no_correction_renders_the_plain_fold_value():
 
 
 def test_a_correction_overrides_with_broker_truth():
+    # scope="own": only an own-scoped record (OWN-01/OWN-03) may override --
+    # see test_a_legacy_correction_with_no_scope_never_overrides below for the
+    # legacy (scope=None) case, which must NOT override.
     events = [CorrectionRecord(date="2026-07-09", field="fees", bot_value="220.00",
-                               broker_value="240.00", diff="20.00", at="t")]
+                               broker_value="240.00", diff="20.00", at="t", scope="own")]
     assert corrected_value(events, "2026-07-09", "fees", D("220.00")) == D("240.00")
 
 
@@ -20,6 +23,24 @@ def test_a_correction_for_a_different_field_or_day_never_leaks():
                                broker_value="2", diff="1", at="t")]
     assert corrected_value(events, "2026-07-09", "fees", D("220.00")) == D("220.00")
     assert corrected_value(events, "2026-07-08", "cash_delta", D("1")) == D("1")
+
+
+def test_a_legacy_correction_with_no_scope_never_overrides():
+    """THE SAFETY TEST. A record with no `scope` (scope=None) predates the
+    2026-07-12 OWN-01/OWN-03 own-scoping fix and may carry a whole-shared-
+    account-polluted `broker_value` (the real 2026-07-10 incident record
+    claims cash_delta -534.46 for a day the bot's own trade actually made
+    +43.68). Such a record must NEVER override the fold value -- it must
+    render as if it were not there at all."""
+    events = [CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                               broker_value="-534.46", diff="-574.46", at="t")]
+    assert corrected_value(events, "2026-07-10", "cash_delta", D("40.00")) == D("40.00")
+
+
+def test_an_own_scoped_correction_does_override():
+    events = [CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                               broker_value="43.68", diff="3.68", at="t", scope="own")]
+    assert corrected_value(events, "2026-07-10", "cash_delta", D("40.00")) == D("43.68")
 
 
 def test_corrections_for_day_returns_only_that_day():

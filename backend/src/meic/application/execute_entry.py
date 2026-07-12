@@ -406,7 +406,8 @@ class ExecuteEntryAttempt:
             entry_id=entry_id, net_credit=actual, legs=legs,
             initiator=initiator,             # ENT-09 / UC-08 tagging
             at=self._clock.now().isoformat(),  # UI card: fill time
-            put_floor=put_floor, call_floor=call_floor))  # ENT-09b v1.57 audit
+            put_floor=put_floor, call_floor=call_floor,  # ENT-09b v1.57 audit
+            broker_order_id=str(working_id)))  # OWN-01/OWN-03: the entry's own order id
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:

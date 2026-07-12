@@ -3,6 +3,7 @@ from decimal import Decimal as D
 
 from meic.domain.events import (
     CondorFilled,
+    CorrectionRecord,
     DayArmed,
     EntryClosed,
     EntrySkipped,
@@ -121,6 +122,91 @@ def test_core_results_on_an_empty_log_has_no_rates():
     assert r.day_win_rate is None
     assert r.entry_win_rate is None
     assert r.premium_capture is None
+
+
+# --- PNL-04: broker-truth corrections applied to core_results/daily_net -----
+
+def test_core_results_applies_an_own_scoped_correction_to_the_real_2026_07_10_vector():
+    """The real 2026-07-10 condor: bot's own projection folds to net 40.00 /
+    fees 0 / gross 40.00, but the broker's true numbers are net 43.68 /
+    fees 6.32 / gross 50.00 (PNL-04: broker truth is authoritative for the
+    permanent record). An own-scoped CorrectionRecord for each field must
+    make core_results report the BROKER'S numbers, not the bot's own."""
+    events = [
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("0.40")),
+        CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                         broker_value="43.68", diff="3.68", at="t", scope="own"),
+        CorrectionRecord(date="2026-07-10", field="fees", bot_value="0",
+                         broker_value="6.32", diff="6.32", at="t", scope="own"),
+    ]
+    r = core_results(events)
+    assert r.net_pnl == D("43.68")
+    assert r.fees == D("6.32")
+    assert r.gross_pnl == D("50.00")
+
+
+def test_core_results_never_lets_a_legacy_unscoped_correction_override():
+    """THE SAFETY TEST. A legacy correction (no `scope`, pre-2026-07-12
+    own-scoping fix) may carry a whole-shared-account-polluted broker_value
+    -- the real 2026-07-10 incident record claims cash_delta -534.46 for a
+    day the bot's own trade actually made +43.68 (the rest was the
+    operator's own unrelated futures trade and a second condor on the same
+    shared account). That figure must NEVER reach core_results: the bot's
+    own projected net (40.00) must render exactly as if no correction
+    existed at all."""
+    events = [
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("0.40")),
+        CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                         broker_value="-534.46", diff="-574.46", at="t"),  # scope=None
+    ]
+    r = core_results(events)
+    assert r.net_pnl == D("40.00")
+    assert r.gross_pnl == D("40.00")
+
+
+def test_core_results_with_no_corrections_is_byte_identical_to_the_plain_fold():
+    events = [
+        DayArmed(date="2026-07-09", entry_count=1),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"), fee=D("1.00")),
+    ]
+    r = core_results(events)
+    assert r.net_pnl == D("300.00")
+    assert r.fees == D("100.00")
+    assert r.gross_pnl == D("400.00")
+
+
+def test_core_results_multi_day_sums_one_corrected_day_and_one_uncorrected_day():
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"), fee=D("1.00")),
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("0.40")),
+        CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                         broker_value="43.68", diff="3.68", at="t", scope="own"),
+        CorrectionRecord(date="2026-07-10", field="fees", bot_value="0",
+                         broker_value="6.32", diff="6.32", at="t", scope="own"),
+    ]
+    r = core_results(events)
+    # 07-09 uncorrected: net 300.00, fees 100.00. 07-10 corrected: net 43.68, fees 6.32.
+    assert r.net_pnl == D("343.68")
+    assert r.fees == D("106.32")
+    assert r.gross_pnl == D("450.00")
+
+
+def test_daily_net_reflects_an_own_scoped_correction():
+    events = [
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("0.40")),
+        CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                         broker_value="43.68", diff="3.68", at="t", scope="own"),
+    ]
+    assert daily_net(events) == {"2026-07-10": D("43.68")}
+
+
+def test_daily_net_never_lets_a_legacy_unscoped_correction_override():
+    events = [
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("0.40")),
+        CorrectionRecord(date="2026-07-10", field="cash_delta", bot_value="40.00",
+                         broker_value="-534.46", diff="-574.46", at="t"),  # scope=None
+    ]
+    assert daily_net(events) == {"2026-07-10": D("40.00")}
 
 
 def test_day_snapshot_flat_when_every_entry_is_settled():

@@ -8,7 +8,7 @@ comp/state/runtime objects instead of a real broker (see AMENDMENT-PROPOSAL-
 arm-runs-the-day.md)."""
 import asyncio
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal as D
 
 import pytest
@@ -538,3 +538,88 @@ def test_day_start_reports_no_remaining_entries_when_the_filter_leaves_nothing(m
         assert r.status_code == 200
         assert r.json() == {"running": False, "reason": "no_remaining_entries"}
     assert app.state.day_task is None
+
+
+# --- GET /calendar/adjacent-trading-day: DAY-01 session stepping for the Results
+# page's Day arrows (weekends AND market holidays skipped, never into the future) --
+
+def _calendar_client(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_DAY_SUPERVISOR_INTERVAL_S", "3600")
+
+    app = live_app()
+    _fake_broker(app)
+    return TestClient(app)
+
+
+def test_adjacent_trading_day_prev_skips_a_plain_weekend(monkeypatch, tmp_path):
+    """Monday 2020-07-13 has no adjacent holiday: prev must land on the
+    previous Friday, 2020-07-10. (A safely-past year so the endpoint's
+    never-into-the-future cap on `next` can't interfere with this `prev` case.)"""
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2020-07-13", "dir": "prev"})
+        assert r.status_code == 200
+        assert r.json() == {"date": "2020-07-10"}
+
+
+def test_adjacent_trading_day_next_skips_a_plain_weekend(monkeypatch, tmp_path):
+    """Friday 2020-07-10 has no adjacent holiday: next must land on the
+    following Monday, 2020-07-13. Safely in the past so it lands well below
+    the endpoint's never-into-the-future cap regardless of when this runs."""
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2020-07-10", "dir": "next"})
+        assert r.status_code == 200
+        assert r.json() == {"date": "2020-07-13"}
+
+
+def test_adjacent_trading_day_prev_skips_both_a_holiday_and_the_weekend(monkeypatch, tmp_path):
+    """2020's Independence Day is OBSERVED on Friday 2020-07-03 (July 4th
+    itself falls on a Saturday, per nyse_holidays). Stepping back from Monday
+    2020-07-06 must skip Sun 07-05, Sat 07-04, AND the observed holiday Fri
+    07-03, landing on Thursday 2020-07-02 -- verified against nyse_holidays(2020)
+    + is_trading_day, not eyeballed off a calendar."""
+    from meic.application.market_calendar import is_trading_day
+    from meic.application.nyse_holidays import nyse_holidays
+
+    holidays = nyse_holidays(2019) | nyse_holidays(2020) | nyse_holidays(2021)
+    assert date.fromisoformat("2020-07-03") in holidays          # observed Independence Day
+    assert is_trading_day(date.fromisoformat("2020-07-02"), holidays=holidays)
+    assert not is_trading_day(date.fromisoformat("2020-07-03"), holidays=holidays)
+
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2020-07-06", "dir": "prev"})
+        assert r.status_code == 200
+        assert r.json() == {"date": "2020-07-02"}
+
+
+def test_adjacent_trading_day_next_returns_null_well_past_today(monkeypatch, tmp_path):
+    """`next` must never navigate the Results Day picker into the future."""
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2099-12-31", "dir": "next"})
+        assert r.status_code == 200
+        assert r.json() == {"date": None}
+
+
+def test_adjacent_trading_day_next_returns_a_session_well_before_today(monkeypatch, tmp_path):
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2020-01-01", "dir": "next"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["date"] is not None
+        assert body["date"] > "2020-01-01"
+
+
+def test_adjacent_trading_day_rejects_a_bad_from_date(monkeypatch, tmp_path):
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "nonsense", "dir": "prev"})
+        assert r.status_code == 422
+
+
+def test_adjacent_trading_day_rejects_a_bad_dir(monkeypatch, tmp_path):
+    with _calendar_client(monkeypatch, tmp_path) as client:
+        r = client.get("/calendar/adjacent-trading-day", params={"from": "2026-07-13", "dir": "sideways"})
+        assert r.status_code == 422

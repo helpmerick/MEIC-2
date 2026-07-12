@@ -98,6 +98,12 @@ def _sample_instances() -> dict[type, ev.Event]:
             symbol="SPXW  260709C07540000", sub_type="Cash Settled Assignment", quantity=1,
             price=D("7540.00"), value=D("-369.00"), fee=D("5.00"),
             source="tastytrade_receive_deliver"),
+        # OWN-03 / RPT-16 escape hatch (2026-07-12): operator-supplied broker
+        # order id backfilled for an entry that predates order-id journaling.
+        # METADATA ONLY -- see events.py docstring.
+        ev.OwnOrderIdBackfilled: ev.OwnOrderIdBackfilled(
+            entry_id="2026-07-10#1", broker_order_id="482621396", role="entry",
+            at="2026-07-12T09:00:00-04:00", note="operator-authorised backfill, RPT-16"),
     }
 
 

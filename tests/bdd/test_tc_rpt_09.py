@@ -4,6 +4,16 @@ facade (never a BrokerGateway) and appends `DayBrokerConfirmed` on a match,
 `CorrectionRecord` per diverging field on a mismatch (plus a critical
 alert), and nothing at all when the broker is unreachable -- the day stays
 bot-computed and is retried at the next boot/reconcile, never auto-confirmed.
+
+OWN-01/OWN-03 (2026-07-11 incident fix): `reconcile_day` no longer takes
+`cash_delta`/`fees` straight off the broker's whole-account `cash_and_fees`
+-- it derives them from `day_fills`/`day_settlements` rows scoped to the
+bot's OWN journaled order ids (see application/report_reconciler.py's module
+docstring). Every fake broker below carries a realistic Trade-row/
+Receive-Deliver-row shape (order_id / symbol / signed `value` / signed
+`net_value`, each row's fee being exactly `value - net_value`) with the
+bot's own `CondorFilled.broker_order_id` threaded through, instead of a
+directly-fed cash_delta/fees pair.
 """
 import asyncio
 from dataclasses import dataclass
@@ -30,6 +40,7 @@ from meic.reporting.trust import trust_stamp
 scenarios("../features/TC-RPT-09.feature")
 
 DAY = "2026-07-09"
+ORDER_ID = "482621396"  # the bot's own entry order id (OWN-01/OWN-03)
 
 # --- the real 2026-07-09 vector (EOD-01 v1.59) --------------------------------
 
@@ -53,7 +64,10 @@ class _FakeSettlement:
     """Mirrors the tastytrade SDK's Receive-Deliver Transaction shape closely
     enough for `capture_settlements`'s field reads (see
     application/backfill.py's docstring for the exact SDK field mapping this
-    mirrors)."""
+    mirrors). Its FEE is `value - net_value` -- the broker's own invariant
+    (`net_value = value + fees`, fees negative), which is also how
+    `ReportReconciler` and `backfill.py` derive it: no fee-category field is
+    read at all."""
     symbol: str
     transaction_sub_type: str
     value: D
@@ -64,14 +78,25 @@ class _FakeSettlement:
 
 
 def _real_settlement_rows() -> list[_FakeSettlement]:
-    """The C7540 cash-settled assignment (-364 value, -369 net = $5 fee) plus
-    the three worthless legs' zero-value Expiration removals."""
+    """The C7540 cash-settled assignment (-364 value, -369 net -> a $5 fee)
+    plus the three worthless legs' zero-value Expiration removals."""
     return [
-        _FakeSettlement(C7540, "Cash Settled Assignment", D("-364.0"), D("-369.0"), price=D("7540.0")),
+        _FakeSettlement(C7540, "Cash Settled Assignment", D("-364.00"), D("-369.00"),
+                        price=D("7540.0")),
         _FakeSettlement(P7535, "Expiration", D("0"), D("0")),
         _FakeSettlement(P7510, "Expiration", D("0"), D("0")),
         _FakeSettlement(C7565, "Expiration", D("0"), D("0")),
     ]
+
+
+def _fill(order_id, net_value, *, value=None, symbol=C7540):
+    """A fake broker Trade-row transaction: just enough shape for
+    `report_reconciler.py`'s field readers. The row's fee is `value -
+    net_value`; `value=None` means a zero-fee row."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(order_id=order_id, symbol=symbol, net_value=net_value,
+                           value=net_value if value is None else value)
 
 
 class _SettlementBroker:
@@ -94,10 +119,13 @@ class _FakeAlerts:
 
 
 class _MatchingBroker:
-    """Read-only facade; caller sets whatever numbers it wants returned."""
+    """Read-only facade; caller sets whatever fills/settlements it wants
+    returned (OWN-01/OWN-03: `cash_delta`/`fees` are no longer fed
+    directly -- the reconciler derives them from `fills`/`settlements`)."""
 
-    def __init__(self, *, positions=(), fills=(), cash_delta=D("0"), fees=D("0")) -> None:
-        self._positions, self._fills = positions, fills
+    def __init__(self, *, positions=(), fills=(), settlements=(),
+                cash_delta=D("0"), fees=D("0")) -> None:
+        self._positions, self._fills, self._settlements = positions, fills, settlements
         self._cash_delta, self._fees = cash_delta, fees
 
     async def positions(self):
@@ -105,6 +133,9 @@ class _MatchingBroker:
 
     async def day_fills(self, day):
         return list(self._fills)
+
+    async def day_settlements(self, day):
+        return list(self._settlements)
 
     async def cash_and_fees(self, day):
         return self._cash_delta, self._fees
@@ -117,6 +148,9 @@ class _UnreachableBroker:
     async def day_fills(self, day):
         raise ConnectionError("broker unreachable")
 
+    async def day_settlements(self, day):
+        raise ConnectionError("broker unreachable")
+
     async def cash_and_fees(self, day):
         raise ConnectionError("broker unreachable")
 
@@ -125,7 +159,8 @@ def _bot_events(*, fee: D) -> list:
     """One filled, fully-closed entry: net_credit 4.00, the given per-share
     fee, closed same day (flat=True), one fill (fill_count=1)."""
     return [
-        CondorFilled(entry_id=f"{DAY}#1", net_credit=D("4.00"), fee=fee),
+        CondorFilled(entry_id=f"{DAY}#1", net_credit=D("4.00"), fee=fee,
+                     broker_order_id=ORDER_ID),
         EntryClosed(entry_id=f"{DAY}#1", initiator="eod"),
     ]
 
@@ -137,8 +172,11 @@ def _bot_events(*, fee: D) -> list:
 def _():
     events = _bot_events(fee=D("2.20"))  # -> $220.00 bot-side fees
     # bot net = pnl * 100 = (4.00 credit - 2.20 fee) * 100 = $180.00
-    broker = _MatchingBroker(positions=(), fills=[object()], cash_delta=D("180.00"),
-                             fees=D("220.00"))
+    # net_value 180.00 with value 400.00 -> a 220.00 fee (value - net_value),
+    # matching the bot's own $220.00 -- the broker's own invariant, not a
+    # fee-category field.
+    broker = _MatchingBroker(positions=(),
+                             fills=[_fill(ORDER_ID, D("180.00"), value=D("400.00"))])
     alerts = _FakeAlerts()
     reconciler = ReportReconciler(broker=broker, events=events, alerts=alerts,
                                   now=lambda: "2026-07-09T16:20:00-04:00")
@@ -163,11 +201,14 @@ def _(broker_fee, bot_fee):
     bot_fee_dollars = D(bot_fee) * 100      # 2.20/share -> $220.00
     broker_fee_dollars = D(broker_fee) * 100  # 2.40/share -> $240.00
     events = _bot_events(fee=D(bot_fee))
-    # bot net = (4.00 credit - bot_fee) * 100 -- matches the broker's cash_delta
-    # so ONLY "fees" mismatches, isolating the scenario to that one field.
+    # bot net = (4.00 credit - bot_fee) * 100 -- matches the broker's cash side
+    # (net_value) so ONLY "fees" mismatches, isolating the scenario to that one
+    # field. The broker's fee is `value - net_value`, so `value` is set to put
+    # the FULL broker fee (2.40/share -> $240.00) on the row.
     bot_net = (D("4.00") - D(bot_fee)) * 100
-    broker = _MatchingBroker(positions=(), fills=[object()], cash_delta=bot_net,
-                             fees=broker_fee_dollars)
+    broker = _MatchingBroker(
+        positions=(),
+        fills=[_fill(ORDER_ID, bot_net, value=bot_net + broker_fee_dollars)])
     alerts = _FakeAlerts()
     reconciler = ReportReconciler(broker=broker, events=events, alerts=alerts,
                                   now=lambda: "2026-07-09T16:20:00-04:00")
@@ -259,7 +300,7 @@ def _(unreachable_world):
                      "at {settle_price}"), target_fixture="settlement_vector_world")
 def _(credit, settle_price):
     events = [CondorFilled(entry_id=f"{DAY}#1", net_credit=D("3.60"), fee=D("0.0488"),
-                           legs=_real_condor_legs())]
+                           legs=_real_condor_legs(), broker_order_id=ORDER_ID)]
     capture_result = asyncio.run(capture_settlements(
         events, _SettlementBroker(_real_settlement_rows()), DAY,
         now_iso=lambda: "2026-07-10T09:00:00-04:00"))
@@ -282,16 +323,15 @@ def _(settlement_vector_world):
     entry = entries_by_day(events)[DAY][0]
     assert entry_dollars(entry) == D("-13.88")  # +355.12 credit - 369.00 settlement
 
-    # A broker facade reporting the FULL day cash (trades + settlement, EOD-01
-    # v1.59's widened cash_and_fees) matches the bot's now-settled -13.88 --
-    # ONLY THEN may the day stamp broker-confirmed.
-    # NOTE: ReportReconciler compares str(Decimal) -- scale-sensitive, not
-    # just value-equal (pre-existing, not introduced here). The bot's own
-    # arithmetic lands on 4 decimal places (fee 0.0488 has scale 4), so the
-    # "matching" broker figures are expressed at that SAME scale to actually
-    # exercise a true match rather than a spurious string mismatch.
-    full_broker = _MatchingBroker(positions=(), fills=[object()],
-                                  cash_delta=D("-13.8800"), fees=D("9.8800"))
+    # OWN-01/OWN-03: a broker facade whose Trade-row fill AND Receive-Deliver
+    # settlement row both carry the bot's own order id / matching symbol
+    # (EOD-01 v1.59's widened cash accounting) matches the bot's now-settled
+    # -13.88 -- ONLY THEN may the day stamp broker-confirmed. The fill's fee is
+    # `value - net_value` = 360.00 - 355.12 = 4.88; the settlement's is 5.00;
+    # together the 9.88 the bot's own fold computes.
+    full_broker = _MatchingBroker(
+        positions=(), fills=[_fill(ORDER_ID, D("355.12"), value=D("360.00"))],
+        settlements=_real_settlement_rows())
     reconciler = ReportReconciler(broker=full_broker, events=list(events),
                                   now=lambda: "2026-07-09T16:20:00-04:00")
     outcome = asyncio.run(reconciler.reconcile_day(DAY))
@@ -302,11 +342,12 @@ def _(settlement_vector_world):
 def _(settlement_vector_world):
     """The decisive test: a reconciler whose broker facade reports ONLY the
     Trade-side cash (the old, pre-v1.59 shape -- +355.12, the settlement
-    never folded in) must NOT confirm against the bot's now-settled -13.88.
-    Proves the old trades-only reconciler behavior is dead."""
+    never folded in -- modeled here as `day_settlements` returning nothing)
+    must NOT confirm against the bot's now-settled -13.88. Proves the old
+    trades-only reconciler behavior is dead."""
     events = settlement_vector_world["events"]
-    trades_only_broker = _MatchingBroker(positions=(), fills=[object()],
-                                         cash_delta=D("355.12"), fees=D("4.88"))
+    trades_only_broker = _MatchingBroker(
+        positions=(), fills=[_fill(ORDER_ID, D("355.12"), value=D("360.00"))])
     events_copy = list(events)
     reconciler = ReportReconciler(broker=trades_only_broker, events=events_copy,
                                   now=lambda: "2026-07-09T16:20:00-04:00")
@@ -321,7 +362,7 @@ def _(settlement_vector_world):
 @given("the settlement backfill runs three times", target_fixture="idempotent_settlement_world")
 def _():
     events = [CondorFilled(entry_id=f"{DAY}#1", net_credit=D("3.60"), fee=D("0.0488"),
-                           legs=_real_condor_legs())]
+                           legs=_real_condor_legs(), broker_order_id=ORDER_ID)]
     # OWN-03: C7540 carries a standing FOREIGN quarantine -- its settlement
     # cash is genuinely unattributable and must be withheld, never guessed.
     events.append(ForeignDetected(symbol=C7540))

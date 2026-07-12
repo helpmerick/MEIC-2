@@ -1217,3 +1217,126 @@ def test_live_app_close_of_a_pending_entry_with_no_working_order_says_so(monkeyp
 
     assert res["result"] == "no_working_order"
     assert comp.broker.cancels == [] and comp.broker.submits == 0
+
+
+# --- PNL-04 "At EOD (and on demand)": POST /reports/reconcile/{day} ------------
+# The reconciler (application/report_reconciler.py, wired here as
+# `report_reconciler`/`app.state.report_reconciler`) previously ran ONLY from
+# the automatic EOD health tick (`_maybe_eod_reconcile_once`) -- there was no
+# way for the operator to trigger it on demand, which PNL-04 explicitly
+# requires. These capstones drive the REAL live_app() endpoint: it must reuse
+# the SAME reconciler/facade the tick uses (never a second, separately-wired
+# one), require the SAME auth as every other mutating command, validate the
+# day format, and run even on a day the tick's own already-resolved gate
+# would skip (a pre-fix legacy CorrectionRecord with no `scope="own"`).
+
+def test_reconcile_endpoint_requires_auth_like_any_other_mutating_command(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+
+    client = TestClient(app)  # no x-api-token at all
+    r = client.post("/reports/reconcile/2026-07-09")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "missing_or_bad_token"
+
+
+def test_reconcile_endpoint_bad_day_format_is_422(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+
+    r = client.post("/reports/reconcile/not-a-day")
+    assert r.status_code == 422
+
+
+def test_reconcile_endpoint_runs_the_same_reconciler_the_eod_tick_uses(monkeypatch, tmp_path):
+    """A valid day, posted with the right token, actually runs
+    `report_reconciler.reconcile_day` (the SAME instance `_maybe_eod_reconcile_once`
+    calls, per `app.state.report_reconciler`) and returns its outcome as JSON."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.domain.events import DayBrokerConfirmed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+    comp = app.state.composition
+    day = "2026-07-09"
+    # no activity that day -> an honestly flat/empty day on both sides
+    comp.broker._inner.positions = lambda: _async([])
+    comp.broker._inner.day_fills = lambda d: _async([])
+    comp.broker._inner.day_settlements = lambda d: _async([])
+
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+    r = client.post(f"/reports/reconcile/{day}")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"day": day, "status": "confirmed", "corrections": [],
+                    "ambiguous_settlements": 0}
+    assert any(isinstance(e, DayBrokerConfirmed) and e.date == day for e in comp.events)
+
+
+def test_reconcile_endpoint_runs_even_on_a_day_the_eod_gate_would_skip(monkeypatch, tmp_path):
+    """The exact case PNL-04's on-demand trigger exists for: a day whose only
+    prior record is a pre-fix LEGACY `CorrectionRecord` (no `scope="own"`).
+    `_maybe_eod_reconcile_once`'s own gate would skip such a day (see its
+    2026-07-12 own-scoping docstring) -- but an explicit operator POST must
+    always run regardless."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.domain.events import CorrectionRecord, DayBrokerConfirmed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+    comp = app.state.composition
+    day = "2026-07-09"
+    comp.events.append(CorrectionRecord(date=day, field="fees", bot_value="0",
+                                        broker_value="1", diff="1", at="t"))  # legacy: scope=None
+    comp.broker._inner.positions = lambda: _async([])
+    comp.broker._inner.day_fills = lambda d: _async([])
+    comp.broker._inner.day_settlements = lambda d: _async([])
+
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+    r = client.post(f"/reports/reconcile/{day}")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "confirmed"
+    assert any(isinstance(e, DayBrokerConfirmed) and e.date == day for e in comp.events)
+
+
+def test_reconcile_endpoint_surfaces_an_unreachable_broker_rather_than_swallowing_it(monkeypatch, tmp_path):
+    """The reconciler's own "unreachable" outcome (any broker read raising) must
+    reach the operator through this endpoint, never be caught-and-hidden."""
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+    comp = app.state.composition
+
+    async def _boom():
+        raise ConnectionError("down")
+
+    comp.broker._inner.positions = _boom
+
+    client = TestClient(app, headers={"x-api-token": "panel-secret"})
+    r = client.post("/reports/reconcile/2026-07-09")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "unreachable"
