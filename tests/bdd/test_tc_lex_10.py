@@ -20,11 +20,13 @@ from decimal import Decimal as D
 import pytest
 from pytest_bdd import given, scenarios, then
 
+from meic.adapters.api.reports import _long_recovery_rows
 from meic.application.recover_long import Quote, RecoverLong
 from meic.application.stop_fill_watch import (
     NoBidFloor,
     QUOTE_DEFERRAL_ALERT_TICKS,
     detect_and_recover_stop_fills,
+    readopt_resting_floors,
 )
 from meic.domain.events import (
     CondorFilled,
@@ -261,3 +263,119 @@ def _(world):
     asyncio.run(detect_and_recover_stop_fills(world["comp"], world["alerts"], _no_quote))
     assert world["recover"].calls == []
     assert len([a for a in world["alerts"].calls if a[0] == "critical"]) == 1
+
+
+# --- Scenario: A resting floor survives a restart (v1.64) --------------------
+
+def _restarted_floor_world(broker_cls=_ReplaceSpyBroker):
+    """Shared rig for the v1.64 restart-survival scenario: rest a floor via
+    one process, then simulate a restart -- a FRESH `_Comp` (empty registry)
+    over the SAME durable events log and the SAME broker (only the in-memory
+    registry is lost on restart; never the broker's own resting order, never
+    the durable log). `readopt_resting_floors` is what must repopulate it."""
+    events = _pending_put_world()
+    clock = FastClock(datetime(2026, 7, 11, 12, 0, tzinfo=ET))
+    broker = broker_cls(clock)
+    broker.set_positions([(PUT_LONG, 1, "Long")])
+    recover = RecoverLong(broker, clock, events, SPX)
+    alerts = _Alerts()
+    comp_before_restart = _Comp(broker, events, recover)
+
+    async def _no_bid_floor(symbol, side):
+        return NoBidFloor(intrinsic=D("30.00"))
+
+    asyncio.run(detect_and_recover_stop_fills(comp_before_restart, alerts, _no_bid_floor))
+    floor_oid, floor_price = comp_before_restart._stop_fill_floor_orders[(ENTRY_ID, "PUT")]
+
+    comp = _Comp(broker, events, recover)  # the restarted process's composition
+    asyncio.run(readopt_resting_floors(comp, broker))
+
+    return {"events": events, "broker": broker, "comp": comp, "alerts": alerts,
+            "recover": recover, "floor_oid": floor_oid, "floor_price": floor_price,
+            "no_bid_floor": _no_bid_floor}
+
+
+@given("a resting intrinsic-floor sell and a bot restart")
+def _(world):
+    world.update(_restarted_floor_world())
+
+
+@then("boot re-adopts the order via its lex-floor idempotency key")
+def _(world):
+    comp = world["comp"]
+    assert comp._stop_fill_floor_orders[(ENTRY_ID, "PUT")] == (world["floor_oid"], world["floor_price"])
+    rec = world["broker"]._orders[world["floor_oid"]]
+    assert rec["intent"].idempotency_key == f"lex-floor:{ENTRY_ID}:PUT"
+    assert rec["cancelled"] is False, "re-adoption only tracks an order genuinely still resting"
+
+
+@then("a later usable quote supersedes it normally")
+def _(world):
+    # Independent rig: this step's own action (supersession) must not consume
+    # the shared floor the NEXT step's own independent rig needs untouched.
+    case = _restarted_floor_world()
+    fresh = (Quote(bid=D("31.00"), ask=D("31.20")), D("30.00"))
+
+    async def _usable(symbol, side):
+        return fresh
+
+    asyncio.run(detect_and_recover_stop_fills(case["comp"], case["alerts"], _usable))
+
+    replaced_ids = [oid for oid, _ in case["broker"].replace_calls]
+    assert case["floor_oid"] in replaced_ids, \
+        "supersession replaced the RE-ADOPTED floor order id, never a blind fresh submit"
+
+    rungs = [e for e in case["events"] if isinstance(e, LexOrderPlaced) and e.kind == "ladder"]
+    assert len(rungs) == 1 and rungs[0].price == fresh[0].mid
+    assert (ENTRY_ID, "PUT") not in case["comp"]._stop_fill_floor_orders
+
+    starts = [e for e in case["events"] if isinstance(e, LongSaleStarted) and e.side == "PUT"]
+    assert len(starts) == 1 and starts[0].mark_bid == fresh[0].bid
+
+
+@then("a fill after restart classifies LongSold, never OWN standdown")
+def _(world):
+    case = _restarted_floor_world()
+    broker, comp, alerts, events = case["broker"], case["comp"], case["alerts"], case["events"]
+
+    # The RE-ADOPTED floor order itself fills post-restart -- nothing else
+    # was ever watching it (it is never inside a recover() ladder call)
+    # except this detection pass, which must resolve it via the SAME
+    # `_resolve_by_order_id` path the pre-restart tick uses.
+    broker.fill_stop(case["floor_oid"])
+    asyncio.run(detect_and_recover_stop_fills(comp, alerts, case["no_bid_floor"]))
+
+    sold = [e for e in events if isinstance(e, LongSold) and e.side == "PUT"]
+    assert len(sold) == 1 and sold[0].recovery == case["floor_price"]
+    closed = [e for e in events if isinstance(e, SideClosed) and e.side == "PUT"]
+    assert len(closed) == 1
+    assert (ENTRY_ID, "PUT") not in comp._stop_fill_floor_orders
+
+    # Never misread as OWN standdown (operator ruling 2026-07-10's info alert).
+    standdowns = [a for a in alerts.calls if a[0] == "info" and "standdown" in a[1]]
+    assert standdowns == [], "a floor fill after restart is a genuine LongSold, never OWN standdown"
+
+
+# --- Scenario: Floor-filled sides report an honest gap ------------------------
+
+@given("a side closed via the intrinsic floor with no bid at stop time")
+def _(world):
+    events = [
+        ShortStopped(entry_id=ENTRY_ID, side="PUT", fill=D("4.00"), slippage=D("1.50")),
+        LexOrderPlaced(entry_id=ENTRY_ID, side="PUT", broker_order_id="9001",
+                       price=D("30.00"), kind="floor"),
+        LongSold(entry_id=ENTRY_ID, side="PUT", recovery=D("30.00")),
+        SideClosed(entry_id=ENTRY_ID, side="PUT"),
+    ]
+    world["rows"] = _long_recovery_rows(events)
+
+
+@then('the long-recovery report shows "no mark (no bid)" and never a fabricated baseline')
+def _(world):
+    rows = world["rows"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["mark_mid"] == "no mark (no bid)"
+    assert row["realized"] == "30.00"
+    assert row["diff"] is None, "never a fabricated baseline"
+    assert row["shortfall"] is None, "never a fabricated baseline"

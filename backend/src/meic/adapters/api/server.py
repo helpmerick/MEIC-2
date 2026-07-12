@@ -1322,10 +1322,17 @@ def live_app():
         the bot's durable ledger cannot account for is FOREIGN -> quarantined and
         entries stay blocked until the operator resolves it."""
         from meic.application.reconcile_boot import reconcile_on_boot
+        from meic.application.stop_fill_watch import readopt_resting_floors
 
         result = await reconcile_on_boot(
             broker=comp.broker, events=comp.events, state=comp.state, alerts=alerts)
         app.state.reconcile = result
+        # EC-LEX-08(d) (v1.64): the in-memory floor registry does not survive
+        # a restart -- re-adopt any still-resting intrinsic-floor sell before
+        # the stop-fill poll loop (or the order-event push consumer) can run
+        # its first pass, so supersession/fill-recognition resumes exactly as
+        # it does for a resumed ladder (REC-03).
+        await readopt_resting_floors(comp, comp.broker)
 
     async def _probe_once() -> None:
         """One health tick: the NFR-02 session probe (which records the DAY-03

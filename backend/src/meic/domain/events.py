@@ -363,6 +363,7 @@ class LexOrderPlaced(Event):
     broker_order_id: str
     price: Decimal
     kind: str  # "ladder" (LEX-03 rung: initial submit or replace) | "fallback" (LEX-05)
+               # | "floor" (EC-LEX-08 no-bid intrinsic-floor rest, v1.63)
 
 
 @dataclass(frozen=True)

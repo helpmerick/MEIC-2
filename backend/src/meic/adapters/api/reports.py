@@ -290,16 +290,23 @@ def _long_recovery_rows(scoped: list[Event]) -> list[dict[str, Any]]:
 
     - `mark_mid`: the long's mid at ladder start, from the LAST `LongSaleStarted`
       journaled for this (entry_id, side) before the sale -- None for a
-      pre-stamping event (mark_bid/mark_ask absent on decode).
+      pre-stamping event (mark_bid/mark_ask absent on decode). EC-LEX-08
+      (v1.64): when NO `LongSaleStarted` was ever journaled for this
+      `LongSold` at all -- the floor-fill path (`record_floor_sold` appends
+      `LongSold`+`SideClosed` but never stamps `LongSaleStarted`; there was no
+      bid/ask to honestly stamp) -- `mark_mid` is the literal sentinel string
+      `"no mark (no bid)"` (RPT-07) rather than `None`: an explained gap, not
+      a silently missing one.
     - `realized`: `LongSold.recovery` -- always present, it IS the sale.
-    - `diff` = realized - mark_mid, None whenever mark_mid is None (never
-      fabricated from a missing mark).
+    - `diff` = realized - mark_mid, None whenever mark_mid is None OR the
+      sentinel (never fabricated from a missing mark or from the sentinel).
     - `markup`: the STP-02b buffer in force, from the LAST `StopPlaced`
       journaled for this (entry_id, side) -- None for a pre-stamping event.
     - `shortfall` = markup - realized, None unless both are known.
     - `nle_estimate`: ALWAYS None here -- see the module note on
       `_long_recovery_family` below (no production path journals one).
     """
+    NO_MARK_SENTINEL = "no mark (no bid)"  # RPT-07 / EC-LEX-08(v1.64)
     last_start: dict[tuple[str, str], LongSaleStarted] = {}
     last_stop: dict[tuple[str, str], StopPlaced] = {}
     rows: list[dict[str, Any]] = []
@@ -312,15 +319,27 @@ def _long_recovery_rows(scoped: list[Event]) -> list[dict[str, Any]]:
             key = (e.entry_id, e.side)
             start = last_start.get(key)
             stop = last_stop.get(key)
-            mark_mid = None
-            if start is not None and start.mark_bid is not None and start.mark_ask is not None:
-                mark_mid = (start.mark_bid + start.mark_ask) / 2
+            if start is None:
+                # EC-LEX-08 (v1.64): no LongSaleStarted at all for this
+                # LongSold -- the floor-fill path. An honest, explicit gap,
+                # never a fabricated baseline: diff is never computed.
+                mark_mid_out: Any = NO_MARK_SENTINEL
+                diff = None
+            else:
+                # Legacy/pre-stamping LongSaleStarted (mark_bid/mark_ask
+                # absent on decode): existing behaviour unchanged -- None,
+                # NOT the sentinel, which is specifically the no-bid floor
+                # case.
+                mark_mid = None
+                if start.mark_bid is not None and start.mark_ask is not None:
+                    mark_mid = (start.mark_bid + start.mark_ask) / 2
+                mark_mid_out = _s(mark_mid)
+                diff = (e.recovery - mark_mid) if mark_mid is not None else None
             markup = stop.markup if stop is not None else None
-            diff = (e.recovery - mark_mid) if mark_mid is not None else None
             shortfall = (markup - e.recovery) if markup is not None else None
             rows.append({
                 "entry_id": e.entry_id, "side": e.side,
-                "mark_mid": _s(mark_mid), "realized": _s(e.recovery),
+                "mark_mid": mark_mid_out, "realized": _s(e.recovery),
                 "diff": _s(diff), "markup": _s(markup), "shortfall": _s(shortfall),
                 "nle_estimate": None,
             })

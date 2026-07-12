@@ -67,7 +67,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
-from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped, StopPlaced
+from meic.domain.events import DecayBuybackPlaced, EntryClosed, LexOrderPlaced, ShortStopped, StopPlaced
 from meic.domain.projection import fold
 
 from .execute_entry import _fill_matches
@@ -674,3 +674,51 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
     for entry_id, side in _pending_lex_sides(events):
         await _try_recover(comp, alerts, quote_provider, entry_id, side,
                            lex_quote_wait_seconds=lex_quote_wait_seconds)
+
+
+def _latest_lex_order_placed(events) -> dict[tuple[str, str], LexOrderPlaced]:
+    """The latest journaled `LexOrderPlaced` per (entry_id, side) -- iterate
+    in order, keep last. Used by `readopt_resting_floors` (EC-LEX-08(d),
+    v1.64) to tell a still-RESTING floor from one already superseded by a
+    ladder/fallback rung: only the LAST order this side ever carried tells
+    the truth about what is (or was) working at the broker."""
+    latest: dict[tuple[str, str], LexOrderPlaced] = {}
+    for e in events:
+        if isinstance(e, LexOrderPlaced):
+            latest[(e.entry_id, e.side)] = e
+    return latest
+
+
+async def readopt_resting_floors(comp, broker) -> None:
+    """EC-LEX-08(d) (v1.64): the floor registry is in-memory and lost on
+    restart. On boot, re-adopt any still-resting intrinsic-floor sell into
+    comp._stop_fill_floor_orders via its journaled LexOrderPlaced(kind="floor")
+    id (REC-05 pattern) -- so supersession resumes and a post-restart fill
+    records LongSold (never misread as OWN standdown). REC-03's 'resume'
+    applies to floor orders exactly as to ladders.
+
+    Only the LATEST `LexOrderPlaced` per (entry_id, side) is considered, and
+    only if its `kind == "floor"`: a side whose latest journaled order is a
+    "ladder"/"fallback" rung already SUPERSEDED whatever floor once rested
+    there -- re-adopting a stale floor id as this side's floor would corrupt
+    the double-ladder guard (two orders both believed "the resting sell").
+    A floor id no longer in the broker's own `working_orders()` (cancelled,
+    already filled and drained before restart, etc.) is likewise left alone
+    -- re-adopting an order the broker itself no longer shows resting would
+    have `_try_recover`'s own fill-check silently do nothing forever.
+
+    Deliberately silent: no alert here. The placement alert already fired
+    (once) when the floor was first rested, pre-restart; re-alerting on
+    every boot would double-count a single degraded-liquidity event."""
+    floor_orders = getattr(comp, "_stop_fill_floor_orders", None)
+    if floor_orders is None:
+        floor_orders = {}
+        comp._stop_fill_floor_orders = floor_orders
+
+    latest = _latest_lex_order_placed(comp.events)
+    working_ids = {_order_id(o) for o in await broker.working_orders()}
+
+    for entry_id, side in _pending_lex_sides(comp.events):
+        lop = latest.get((entry_id, side))
+        if lop is not None and lop.kind == "floor" and lop.broker_order_id in working_ids:
+            floor_orders[(entry_id, side)] = (lop.broker_order_id, Decimal(str(lop.price)))
