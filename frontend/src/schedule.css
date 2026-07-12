@@ -80,7 +80,7 @@ table.schedule tbody tr:first-child td { border-top: none; }
 
 td.cell-wc {
   font-variant-numeric: tabular-nums; color: var(--muted);
-  font-size: 13px; white-space: nowrap; text-align: right;
+  font-size: 13px; white-space: nowrap; text-align: center;
 }
 
 /* row counter (operator request 2026-07-12): a plain 1..N down the LEFT, no box,
