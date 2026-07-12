@@ -1,7 +1,7 @@
 // The Results page holds no trading logic (UI-03) — these pin what it RENDERS
 // from a mocked API: metric states (ok/insufficient/unconfigured), the UI-25
 // trust badge in both states, the SIM-05 paper banner, and CSV export hrefs.
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../../api";
@@ -122,5 +122,153 @@ describe("ResultsPage", () => {
     const links = await screen.findByTestId("day-links");
     expect(links.querySelector('a[href="#/results/day/2026-07-08"]')).toBeInTheDocument();
     expect(links.querySelector('a[href="#/results/day/2026-07-09"]')).toBeInTheDocument();
+  });
+});
+
+// UTC-safe month/year shift used only to compute expected values in these
+// tests; mirrors the component's private shiftIsoMonth/shiftYear (UI-03
+// display-only date math).
+function shiftIsoMonthForTest(month: string, delta: number): string {
+  const d = new Date(month + "-01T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() + delta);
+  return d.toISOString().slice(0, 7);
+}
+function monthIsoGuessForTest(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+function yearIsoGuessForTest(): string {
+  return String(new Date().getFullYear());
+}
+
+describe("period selector — Path A (Month default, navigable Day, Today kept last)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+      matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }));
+  });
+
+  it("defaults to the Month tab as active on first paint", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    expect(picker.getByRole("button", { name: "Month" }).className).toContain("active");
+    expect(picker.getByRole("button", { name: "Today" }).className).not.toContain("active");
+  });
+
+  it("keeps the Today tab present, and last among the period tabs", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const pickerEl = screen.getByTestId("period-picker");
+    const picker = within(pickerEl);
+    expect(picker.getByRole("button", { name: "Today" })).toBeInTheDocument();
+    const tabs = pickerEl.querySelectorAll(".period-tab");
+    expect(tabs[tabs.length - 1].textContent).toBe("Today");
+  });
+
+  it("disables the next-day button once the day reaches today", async () => {
+    mockApis(baseSummary());
+    vi.spyOn(api, "adjacentTradingDay").mockResolvedValue({ date: "2026-07-08" });
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    fireEvent.click(picker.getByRole("button", { name: "Day" }));
+    await picker.findByLabelText("pick a day");
+    // Day defaults to today, so the next-day button starts disabled.
+    expect(picker.getByLabelText("next day")).toBeDisabled();
+
+    fireEvent.click(picker.getByLabelText("previous day"));
+    await waitFor(() =>
+      expect((picker.getByLabelText("pick a day") as HTMLInputElement).value).toBe("2026-07-08"));
+    expect(picker.getByLabelText("next day")).not.toBeDisabled();
+  });
+
+  it("steps the day PREVIOUS via the DAY-01 trading-day-aware backend endpoint", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    fireEvent.click(picker.getByRole("button", { name: "Day" }));
+    const dayInput = (await picker.findByLabelText("pick a day")) as HTMLInputElement;
+    const original = dayInput.value;
+
+    const spy = vi.spyOn(api, "adjacentTradingDay").mockResolvedValue({ date: "2026-07-02" });
+    fireEvent.click(picker.getByLabelText("previous day"));
+    expect(spy).toHaveBeenCalledWith(original, "prev");
+    await waitFor(() => expect(dayInput.value).toBe("2026-07-02"));
+  });
+
+  it("steps the day NEXT via the DAY-01 trading-day-aware backend endpoint", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    fireEvent.click(picker.getByRole("button", { name: "Day" }));
+    const dayInput = (await picker.findByLabelText("pick a day")) as HTMLInputElement;
+
+    // step back first so the (today-capped) next-day button is enabled
+    vi.spyOn(api, "adjacentTradingDay").mockResolvedValueOnce({ date: "2026-07-02" });
+    fireEvent.click(picker.getByLabelText("previous day"));
+    await waitFor(() => expect(dayInput.value).toBe("2026-07-02"));
+
+    const spy = vi.spyOn(api, "adjacentTradingDay").mockResolvedValue({ date: "2026-07-06" });
+    fireEvent.click(picker.getByLabelText("next day"));
+    expect(spy).toHaveBeenCalledWith("2026-07-02", "next");
+    await waitFor(() => expect(dayInput.value).toBe("2026-07-06"));
+  });
+
+  it("a null date back from the calendar endpoint (never-into-the-future cap) is a no-op", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    fireEvent.click(picker.getByRole("button", { name: "Day" }));
+    const dayInput = (await picker.findByLabelText("pick a day")) as HTMLInputElement;
+
+    vi.spyOn(api, "adjacentTradingDay").mockResolvedValueOnce({ date: "2026-07-02" });
+    fireEvent.click(picker.getByLabelText("previous day"));
+    await waitFor(() => expect(dayInput.value).toBe("2026-07-02"));
+
+    const spy = vi.spyOn(api, "adjacentTradingDay").mockResolvedValue({ date: null });
+    fireEvent.click(picker.getByLabelText("next day"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("2026-07-02", "next"));
+    expect(dayInput.value).toBe("2026-07-02");   // unchanged: null means no-op
+  });
+
+  it("steps the month with the ◀ and ▶ nav buttons (frontend-only)", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    // Month is the default tab.
+    const monthInput = (await picker.findByLabelText("pick a month")) as HTMLInputElement;
+    const original = monthInput.value;
+
+    fireEvent.click(picker.getByLabelText("previous month"));
+    expect(monthInput.value).toBe(shiftIsoMonthForTest(original, -1));
+
+    fireEvent.click(picker.getByLabelText("next month"));
+    expect(monthInput.value).toBe(original);
+  });
+
+  it("disables the next-month button once the month reaches the current month", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    await picker.findByLabelText("pick a month");
+    expect(picker.getByLabelText("next month")).toBeDisabled();
+    expect(monthIsoGuessForTest()).toBeTruthy(); // sanity: helper mirrors the component
+  });
+
+  it("steps the year with the ◀ and ▶ nav buttons and disables ▶ at the current year", async () => {
+    mockApis(baseSummary());
+    render(<ResultsPage entries={[]} />);
+    const picker = within(screen.getByTestId("period-picker"));
+    fireEvent.click(picker.getByRole("button", { name: "Year" }));
+    const yearInput = (await picker.findByLabelText("pick a year")) as HTMLInputElement;
+    const original = yearInput.value;
+    expect(original).toBe(yearIsoGuessForTest());
+    expect(picker.getByLabelText("next year")).toBeDisabled();
+
+    fireEvent.click(picker.getByLabelText("previous year"));
+    expect(yearInput.value).toBe(String(Number(original) - 1));
+    expect(picker.getByLabelText("next year")).not.toBeDisabled();
+
+    fireEvent.click(picker.getByLabelText("next year"));
+    expect(yearInput.value).toBe(original);
   });
 });

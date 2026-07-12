@@ -122,6 +122,10 @@ export const api = {
   getPreflight: () => get<Preflight>("/preflight"),
   // ENT-10 / UI-24: the day supervisor's watch state — next entry, countdown.
   getDayStatus: () => get<DayStatus>("/day/status"),
+  // DAY-01: the Results page Day picker's ◀/▶ arrows — step to the previous/
+  // next NYSE trading session, skipping weekends and market holidays.
+  adjacentTradingDay: (from: string, dir: "prev" | "next") =>
+    get<{ date: string | null }>(`/calendar/adjacent-trading-day?from=${from}&dir=${dir}`),
 
   // --- ENT-09 manual fire (UI-22) -------------------------------------------
   firePreview: (n: number) => get<FirePreview>(`/entry/${n}/fire-preview`),

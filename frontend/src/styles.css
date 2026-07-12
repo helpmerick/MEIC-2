@@ -196,21 +196,13 @@ body {
 .hero .hero-title { font-size: 15px; font-weight: 700; }
 .hero .hero-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
-/* status orb — a live "radar" ping when firing on schedule, a calm amber dot
-   when a gate is holding entries, grey when disconnected. Replaces the flat 🟢
-   emoji (operator request 2026-07-12). */
-.status-orb { position: relative; width: 12px; height: 12px; border-radius: 50%; flex: none; margin: 5px; background: var(--faint); }
-.status-orb.live { background: var(--good); box-shadow: 0 0 10px 1px color-mix(in srgb, var(--good) 55%, transparent); }
-.status-orb.live::before,
-.status-orb.live::after {
-  content: ""; position: absolute; inset: 0; border-radius: 50%;
-  border: 1.5px solid var(--good); animation: orb-ping 2.4s cubic-bezier(0, 0, .2, 1) infinite;
-}
-.status-orb.live::after { animation-delay: 1.2s; }
-.status-orb.hold { background: var(--warn); box-shadow: 0 0 8px 0 color-mix(in srgb, var(--warn) 45%, transparent); }
-.status-orb.off { background: var(--faint); }
-@keyframes orb-ping { 0% { transform: scale(1); opacity: .7; } 80%, 100% { transform: scale(3); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .status-orb.live::before, .status-orb.live::after { animation: none; } }
+/* status signal — 🎯 "locked on & firing" (a gentle pulse) when armed, an
+   amber dot when a gate is holding entries, a grey dot when disconnected.
+   (Operator chose the 🎯 armed emoji 2026-07-12; replaces the CSS radar orb.) */
+.status-emoji { font-size: 22px; line-height: 1; flex: none; margin: 2px 3px; }
+.status-emoji.live { animation: status-pulse 2.4s ease-in-out infinite; transform-origin: center; }
+@keyframes status-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.13); opacity: 0.82; } }
+@media (prefers-reduced-motion: reduce) { .status-emoji.live { animation: none; } }
 
 /* divider between the status headline and the command buttons in the one card */
 .control-divider { height: 1px; background: var(--line); margin: 18px 0; }

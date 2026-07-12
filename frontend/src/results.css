@@ -52,6 +52,15 @@
 .period-tab:hover { color: var(--text); }
 .period-tab.active { background: var(--card-solid); color: var(--accent); box-shadow: var(--shadow); }
 .period-picker input { height: var(--field-h); padding: 0 var(--sp-3); background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; color: var(--text); font-size: 13px; }
+.day-nav { display: inline-flex; align-items: center; gap: 6px; }
+.day-nav-btn {
+  height: var(--field-h); min-width: 30px; padding: 0 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  cursor: pointer; font-size: 12px; line-height: 1;
+  transition: color .15s ease, border-color .15s ease;
+}
+.day-nav-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.day-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* --- charts (equity curve, timeline) ------------------------------------------ */
 .chart-wrap { margin: 8px 0 14px; }

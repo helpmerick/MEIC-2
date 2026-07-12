@@ -25,6 +25,20 @@ function yearIsoGuess(): string {
   return String(new Date().getFullYear());
 }
 
+// Step an ISO month (YYYY-MM) by whole months in UTC. Frontend-only display
+// math (UI-03: the month string is just a query param; the backend is
+// authoritative for the data) — unlike the Day picker, months/years have no
+// weekend/holiday calendar to respect.
+function shiftIsoMonth(month: string, delta: number): string {
+  const d = new Date(month + "-01T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() + delta);
+  return d.toISOString().slice(0, 7);
+}
+
+function shiftYear(year: string, delta: number): string {
+  return String(Number(year) + delta);
+}
+
 function periodParams(choice: Choice, day: string, month: string, year: string): ReportPeriod {
   switch (choice) {
     case "today":
@@ -41,11 +55,15 @@ function periodParams(choice: Choice, day: string, month: string, year: string):
 }
 
 const OPTIONS: { value: Choice; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "day", label: "Day" },
   { value: "month", label: "Month" },
+  { value: "day", label: "Day" },
   { value: "year", label: "Year" },
   { value: "all", label: "All-time" },
+  // "Today" kept LAST, de-emphasized (Path A, operator-ratified 2026-07-12):
+  // RPT-01 enumerates a "today" bucket and TC-RPT-01 asserts it, so the tab
+  // stays. Day now defaults to today with ◀▶ nav, so it's redundant-but-present.
+  // The live Today *hero* (UI-26 ①) is a separate always-on band, untouched.
+  { value: "today", label: "Today" },
 ];
 
 function PeriodPicker({
@@ -60,6 +78,23 @@ function PeriodPicker({
   year: string;
   onYear: (v: string) => void;
 }) {
+  const [navBusy, setNavBusy] = useState(false);
+
+  // DAY-01: step the Day arrows to the previous/next NYSE trading session
+  // (weekends AND market holidays skipped) via the backend's read-only
+  // calendar endpoint — never computed as a trading input in the frontend
+  // (UI-03). `null` back from the backend (the never-into-the-future cap on
+  // `next`) is simply a no-op.
+  async function stepTradingDay(dir: "prev" | "next") {
+    setNavBusy(true);
+    try {
+      const r = await api.adjacentTradingDay(day, dir);
+      if (r.date) onDay(r.date);
+    } finally {
+      setNavBusy(false);
+    }
+  }
+
   return (
     <div className="period-picker" data-testid="period-picker">
       <div className="period-tabs">
@@ -75,25 +110,47 @@ function PeriodPicker({
         ))}
       </div>
       {choice === "day" && (
-        <input type="date" aria-label="pick a day" value={day} onChange={(e) => onDay(e.target.value)} />
+        <div className="day-nav">
+          <button type="button" className="day-nav-btn" aria-label="previous day"
+            disabled={navBusy}
+            onClick={() => stepTradingDay("prev")}>◀</button>
+          <input type="date" aria-label="pick a day" value={day} onChange={(e) => onDay(e.target.value)} />
+          <button type="button" className="day-nav-btn" aria-label="next day"
+            disabled={navBusy || day >= todayIsoGuess()}
+            onClick={() => stepTradingDay("next")}>▶</button>
+        </div>
       )}
       {choice === "month" && (
-        <input
-          type="month"
-          aria-label="pick a month"
-          value={month}
-          onChange={(e) => onMonth(e.target.value)}
-        />
+        <div className="day-nav">
+          <button type="button" className="day-nav-btn" aria-label="previous month"
+            onClick={() => onMonth(shiftIsoMonth(month, -1))}>◀</button>
+          <input
+            type="month"
+            aria-label="pick a month"
+            value={month}
+            onChange={(e) => onMonth(e.target.value)}
+          />
+          <button type="button" className="day-nav-btn" aria-label="next month"
+            disabled={month >= monthIsoGuess()}
+            onClick={() => onMonth(shiftIsoMonth(month, 1))}>▶</button>
+        </div>
       )}
       {choice === "year" && (
-        <input
-          type="number"
-          aria-label="pick a year"
-          value={year}
-          min={2000}
-          max={2100}
-          onChange={(e) => onYear(e.target.value)}
-        />
+        <div className="day-nav">
+          <button type="button" className="day-nav-btn" aria-label="previous year"
+            onClick={() => onYear(shiftYear(year, -1))}>◀</button>
+          <input
+            type="number"
+            aria-label="pick a year"
+            value={year}
+            min={2000}
+            max={2100}
+            onChange={(e) => onYear(e.target.value)}
+          />
+          <button type="button" className="day-nav-btn" aria-label="next year"
+            disabled={Number(year) >= Number(yearIsoGuess())}
+            onClick={() => onYear(shiftYear(year, 1))}>▶</button>
+        </div>
       )}
     </div>
   );
@@ -128,11 +185,12 @@ function Stat({
 }
 
 // UI-26 fixed layout: ① Today hero → ② Performance → ③ Execution quality →
-// ④ Health. The period picker (Today/day/month/year/all-time) drives bands
-// ②-④ via GET /reports/summary; the Today hero band is always literally
-// today, independent of the picker.
+// ④ Health. The period picker (month/day/year/all-time/today) drives bands
+// ②-④ via GET /reports/summary, defaulting to month (Path A, operator-ratified
+// 2026-07-12); the Today hero band is always literally today, independent of
+// the picker's default or current selection.
 export function ResultsPage({ entries }: { entries: EntryCard[] }) {
-  const [choice, setChoice] = useState<Choice>("today");
+  const [choice, setChoice] = useState<Choice>("month");
   const [day, setDay] = useState(todayIsoGuess());
   const [month, setMonth] = useState(monthIsoGuess());
   const [year, setYear] = useState(yearIsoGuess());

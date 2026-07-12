@@ -22,15 +22,23 @@ export function Dashboard({ state, connected }: { state: PanelState | null; conn
   }
   const enabled = state.entries_enabled;
   const block = state.blocking_state ? BLOCKING[state.blocking_state] : null;
-  // The status orb: a live radar "ping" when firing, a calm amber dot when a
-  // gate is holding entries, grey when we've lost the connection (replaces the
-  // flat 🟢 emoji — operator request 2026-07-12).
+  // The status signal: 🎯 locked-on & firing when armed, an amber dot when a
+  // gate is holding entries, a grey dot when we've lost the connection
+  // (operator chose the 🎯 armed emoji — 2026-07-12).
   const orb = !connected ? "off" : enabled ? "live" : "hold";
+  const STATUS_EMOJI: Record<string, string> = { live: "🎯", hold: "🟡", off: "⚪" };
+  const STATUS_LABEL: Record<string, string> = {
+    live: "armed, firing on schedule",
+    hold: "entries held by a gate",
+    off: "disconnected",
+  };
 
   return (
     <>
       <div className={`hero ${enabled ? "good" : "idle"}`}>
-        <span className={`status-orb ${orb}`} aria-hidden />
+        <span className={`status-emoji ${orb}`} role="img" aria-label={STATUS_LABEL[orb]}>
+          {STATUS_EMOJI[orb]}
+        </span>
         <div>
           <div className="hero-title">{enabled ? "Armed · firing on schedule" : block?.title ?? "Idle"}</div>
           <div className="hero-sub">
