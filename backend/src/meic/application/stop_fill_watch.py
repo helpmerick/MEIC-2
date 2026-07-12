@@ -690,26 +690,39 @@ def _latest_lex_order_placed(events) -> dict[tuple[str, str], LexOrderPlaced]:
 
 
 async def readopt_resting_floors(comp, broker) -> None:
-    """EC-LEX-08(d) (v1.64): the floor registry is in-memory and lost on
-    restart. On boot, re-adopt any still-resting intrinsic-floor sell into
-    comp._stop_fill_floor_orders via its journaled LexOrderPlaced(kind="floor")
-    id (REC-05 pattern) -- so supersession resumes and a post-restart fill
-    records LongSold (never misread as OWN standdown). REC-03's 'resume'
-    applies to floor orders exactly as to ladders.
+    """EC-LEX-08(d)/(e) (v1.64/v1.65): the floor registry is in-memory and lost
+    on restart. On boot, for each pending side whose LATEST journaled order is
+    a `LexOrderPlaced(kind="floor")`, reconcile that floor against broker truth:
+
+      (d) STILL WORKING (id in `working_orders()`): re-adopt it into
+          comp._stop_fill_floor_orders via its journaled id (REC-05 pattern) --
+          so supersession resumes and a later fill records LongSold (never
+          misread as OWN standdown). REC-03's 'resume' applies to floor orders
+          exactly as to ladders.
+      (e) ABSENT from working orders but its broker FILL record shows FILLED:
+          the floor filled while the bot was down -- synthesize its LongSold +
+          SideClosed at the BROKER-ACTUAL fill price (ORD-09), closing the side
+          terminally. This is EC-STP-06's synthesize-the-missed-event principle
+          applied to a floor order: never leave it perpetual-pending, never let
+          `_try_recover`'s OWN-standdown path misclassify a genuine fill, never
+          leave the EOD-03 audit one event short. The broker-actual price is
+          resolved via the SAME shape-safe `_resolve_by_order_id` normalizer
+          the fill-detection paths use (never a new one); the journaled floor
+          price is used only if the broker fill record carries no price.
+      ABSENT and NOT filled (externally cancelled): do NOTHING here -- neither
+          re-adopt nor synthesize. `_try_recover`'s OWN-standdown path handles
+          the genuinely-gone-without-a-fill case on the next tick.
 
     Only the LATEST `LexOrderPlaced` per (entry_id, side) is considered, and
     only if its `kind == "floor"`: a side whose latest journaled order is a
     "ladder"/"fallback" rung already SUPERSEDED whatever floor once rested
-    there -- re-adopting a stale floor id as this side's floor would corrupt
-    the double-ladder guard (two orders both believed "the resting sell").
-    A floor id no longer in the broker's own `working_orders()` (cancelled,
-    already filled and drained before restart, etc.) is likewise left alone
-    -- re-adopting an order the broker itself no longer shows resting would
-    have `_try_recover`'s own fill-check silently do nothing forever.
+    there -- treating a stale floor id as this side's floor would corrupt the
+    double-ladder guard (two orders both believed "the resting sell").
 
-    Deliberately silent: no alert here. The placement alert already fired
-    (once) when the floor was first rested, pre-restart; re-alerting on
-    every boot would double-count a single degraded-liquidity event."""
+    Deliberately silent for (d): no alert. The placement alert already fired
+    (once) when the floor was first rested, pre-restart; re-alerting on every
+    boot would double-count a single degraded-liquidity event. (e)'s terminal
+    appends are the same `record_floor_sold` a live catch-up would make."""
     floor_orders = getattr(comp, "_stop_fill_floor_orders", None)
     if floor_orders is None:
         floor_orders = {}
@@ -720,5 +733,23 @@ async def readopt_resting_floors(comp, broker) -> None:
 
     for entry_id, side in _pending_lex_sides(comp.events):
         lop = latest.get((entry_id, side))
-        if lop is not None and lop.kind == "floor" and lop.broker_order_id in working_ids:
+        if lop is None or lop.kind != "floor":
+            continue
+        if lop.broker_order_id in working_ids:
+            # (d): genuinely still resting -- re-adopt for supersession/fill watch.
             floor_orders[(entry_id, side)] = (lop.broker_order_id, Decimal(str(lop.price)))
+            continue
+        # (e): gone from working orders -- did it FILL while we were down?
+        filled, price = await _resolve_by_order_id(broker, lop.broker_order_id)
+        # R3-F2 guard (final review v1.65): there is an await between this side's
+        # pending snapshot and the append below, so two concurrent readopt runs
+        # (overlapping /broker/connect POSTs) could each pass the check and
+        # double-JOURNAL the synthesis (record_floor_sold is not idempotent).
+        # Re-derive pending SYNCHRONOUSLY here -- no await before the append --
+        # so whichever run appends first closes the side and the other skips.
+        # Mirrors the identical Phase-1 detection guard elsewhere in this module.
+        if filled and (entry_id, side) in set(_pending_lex_sides(comp.events)):
+            comp.recover.record_floor_sold(
+                entry_id, side, price if price is not None else Decimal(str(lop.price)))
+        # else: gone WITHOUT a fill (externally cancelled) -- leave it for the
+        # OWN external-cancel path; do not synthesize, do not re-adopt.

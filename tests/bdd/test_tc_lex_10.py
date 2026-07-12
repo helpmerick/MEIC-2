@@ -18,13 +18,14 @@ from datetime import datetime
 from decimal import Decimal as D
 
 import pytest
-from pytest_bdd import given, scenarios, then
+from pytest_bdd import given, scenarios, then, when
 
 from meic.adapters.api.reports import _long_recovery_rows
 from meic.application.recover_long import Quote, RecoverLong
 from meic.application.stop_fill_watch import (
     NoBidFloor,
     QUOTE_DEFERRAL_ALERT_TICKS,
+    _pending_lex_sides,
     detect_and_recover_stop_fills,
     readopt_resting_floors,
 )
@@ -379,3 +380,103 @@ def _(world):
     assert row["realized"] == "30.00"
     assert row["diff"] is None, "never a fabricated baseline"
     assert row["shortfall"] is None, "never a fabricated baseline"
+
+
+# --- Scenario: A floor that fills while the bot is down is recognized on boot (v1.65) ---
+
+FLOOR_OID = "9100"
+FLOOR_JOURNALED_PRICE = D("30.00")
+BROKER_ACTUAL_FILL = D("29.50")   # DISTINCT from the journaled floor price
+
+
+def _downed_floor_events():
+    """A stopped PUT side whose intrinsic-floor sell (id FLOOR_OID) is on the
+    durable log but whose in-memory registry is gone (restart). No SideClosed
+    yet -- the side is still pending until boot reconciles the floor."""
+    return [
+        ShortStopped(entry_id=ENTRY_ID, side="PUT", fill=D("4.00"), slippage=D("1.50")),
+        LexOrderPlaced(entry_id=ENTRY_ID, side="PUT", broker_order_id=FLOOR_OID,
+                       price=FLOOR_JOURNALED_PRICE, kind="floor"),
+    ]
+
+
+def _downed_floor_comp(*, filled: bool):
+    """A restarted composition (empty registry) over a durable log carrying a
+    resting floor id absent from `working_orders()`. `filled=True` arms the
+    broker's fill record to show FLOOR_OID FILLED at the BROKER-ACTUAL price
+    (distinct from the journaled floor price, so the synthesized LongSold's
+    price proves it came from broker truth, not the journal); `filled=False`
+    is the externally-cancelled shape (gone, never filled)."""
+    events = _downed_floor_events()
+    broker = _FakeBroker()
+    broker.working = []  # the floor is ABSENT from working orders
+    if filled:
+        broker.fills = [{"order_id": FLOOR_OID,
+                         "legs": [{"symbol": PUT_LONG, "action": "sell_to_close"}]}]
+        broker.fill_legs_by_order[FLOOR_OID] = (
+            FilledLeg(symbol=PUT_LONG, right="P", role="long", qty=1, price=BROKER_ACTUAL_FILL),)
+    clock = FastClock(datetime(2026, 7, 11, 12, 0, tzinfo=ET))
+    recover = RecoverLong(broker, clock, events, SPX)
+    alerts = _Alerts()
+    comp = _Comp(broker, events, recover)
+    return {"events": events, "broker": broker, "comp": comp, "alerts": alerts, "recover": recover}
+
+
+@given("a resting floor order that FILLED during a bot outage")
+def _(world):
+    world.update(_downed_floor_comp(filled=True))
+
+
+@when("the bot boots and the order is absent from working orders with a broker fill record")
+def _(world):
+    # sanity: the durable side is genuinely pending before boot reconciles it.
+    assert (ENTRY_ID, "PUT") in _pending_lex_sides(world["events"])
+    asyncio.run(readopt_resting_floors(world["comp"], world["broker"]))
+
+
+@then("LongSold is synthesized at the broker-actual price and the side closes terminally")
+def _(world):
+    sold = [e for e in world["events"] if isinstance(e, LongSold) and e.side == "PUT"]
+    assert len(sold) == 1, "exactly one LongSold synthesized -- never perpetual-pending"
+    assert sold[0].recovery == BROKER_ACTUAL_FILL, \
+        "synthesized at the BROKER-ACTUAL fill price (ORD-09), not the journaled floor price"
+    assert sold[0].recovery != FLOOR_JOURNALED_PRICE, "'broker-actual' is load-bearing"
+    closed = [e for e in world["events"] if isinstance(e, SideClosed) and e.side == "PUT"]
+    assert len(closed) == 1
+    # terminal: the side has left the pending set entirely.
+    assert (ENTRY_ID, "PUT") not in _pending_lex_sides(world["events"])
+    # the registry is NOT left holding a phantom floor for a side already closed.
+    assert (ENTRY_ID, "PUT") not in getattr(world["comp"], "_stop_fill_floor_orders", {})
+
+
+@then("no OWN-standdown misclassification occurs and the EOD audit counts the event")
+def _(world):
+    # A subsequent live catch-up tick sees a terminal side: no OWN-standdown
+    # info alert, no second LongSold -- the fill was recognized as its own.
+    asyncio.run(detect_and_recover_stop_fills(world["comp"], world["alerts"], _no_quote))
+    standdowns = [a for a in world["alerts"].calls if a[0] == "info" and "standing down" in a[1]]
+    assert standdowns == [], "a floor fill while down is a genuine LongSold, never OWN standdown"
+    sold = [e for e in world["events"] if isinstance(e, LongSold) and e.side == "PUT"]
+    assert len(sold) == 1, "no duplicate LongSold on the next tick"
+    # EOD-03 audit: the floor order's own id remains journaled (LexOrderPlaced),
+    # and its terminal LongSold is now on the log -- the audit is not one event short.
+    floor_placed = [e for e in world["events"]
+                    if isinstance(e, LexOrderPlaced) and e.kind == "floor" and e.broker_order_id == FLOOR_OID]
+    assert len(floor_placed) == 1
+
+
+@then("a floor gone WITHOUT a fill takes the OWN external-cancel path instead")
+def _(world):
+    # Independent rig: floor absent from working orders AND never filled
+    # (externally cancelled). Boot must NOT synthesize a LongSold -- the side
+    # is left for _try_recover's OWN external-cancel/standdown path.
+    case = _downed_floor_comp(filled=False)
+    asyncio.run(readopt_resting_floors(case["comp"], case["broker"]))
+    sold = [e for e in case["events"] if isinstance(e, LongSold)]
+    assert sold == [], "no LongSold synthesized for a floor gone without a fill"
+    closed = [e for e in case["events"] if isinstance(e, SideClosed)]
+    assert closed == [], "the side is not closed by boot -- left for the OWN path"
+    assert (ENTRY_ID, "PUT") in _pending_lex_sides(case["events"]), \
+        "the side stays pending for the OWN external-cancel path to resolve"
+    assert (ENTRY_ID, "PUT") not in getattr(case["comp"], "_stop_fill_floor_orders", {}), \
+        "a gone-without-fill floor is never re-adopted"
