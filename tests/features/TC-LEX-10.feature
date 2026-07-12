@@ -11,3 +11,13 @@ Feature: TC-LEX-10
   Scenario: No bid and no spot defers honestly
     Given neither a bid nor a fresh underlying mark
     Then the side defers with the one-time critical alert and no price is ever invented
+
+  Scenario: A resting floor survives a restart (v1.64)
+    Given a resting intrinsic-floor sell and a bot restart
+    Then boot re-adopts the order via its lex-floor idempotency key
+    And a later usable quote supersedes it normally
+    And a fill after restart classifies LongSold, never OWN standdown
+
+  Scenario: Floor-filled sides report an honest gap
+    Given a side closed via the intrinsic floor with no bid at stop time
+    Then the long-recovery report shows "no mark (no bid)" and never a fabricated baseline

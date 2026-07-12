@@ -70,7 +70,10 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
   (LEX realized vs mark-at-stop and vs NLE estimate — NLE-06 calibration
   surfaced, feeding the stop_rebate_markup decision); closes (fill vs mark at
   initiation, by initiator); decay buybacks (fill vs ≤$0.05 target,
-  re-inflation re-arms).
+  re-inflation re-arms). A floor-filled side (EC-LEX-08) whose long had NO
+  bid at stop time shows the explicit sentinel **"no mark (no bid)"** in the
+  long-recovery family (v1.64) — a gap that explains itself, never a
+  fabricated baseline (D10).
 
 - **RPT-08 Operational health.** Skip-reason histogram; watchdog escalations
   (STP-03b calibration evidence); UNPROTECTED events with seconds naked;
