@@ -48,12 +48,13 @@ from meic.domain.events import (
 )
 from meic.domain.projection import fold
 from meic.reporting import slippage as slippage_mod
-from meic.reporting.corrections import corrections_for_day
+from meic.reporting.corrections import broker_reconciled_days, corrections_for_day
 from meic.reporting.folds import (
     contracts_of,
     core_results,
     entries_by_day,
     entry_credit_dollars,
+    entry_day,
     entry_dollars,
     entry_trading_fees_dollars,
     imported_day_fees,
@@ -122,6 +123,37 @@ def _s(d: Decimal | None) -> str | None:
 
 def _filled_entries(scoped: list[Event]):
     return [e for es in entries_by_day(scoped).values() for e in es if e.net_credit != 0]
+
+
+def _summary_settlement_pending(events: list[Event], scoped: list[Event]) -> bool:
+    """PNL-05 (EOD-01 v1.59 + PNL-04): is the period's HEADLINE P&L provisional?
+
+    True iff some filled entry in scope still has an uncaptured settlement
+    (`EntryProjection.settlement_pending`) AND its day has NOT been
+    broker-reconciled.
+
+    WHY the settlement half: a held-to-expiry short's loss arrives ONLY with
+    its broker settlement row. Until that row is captured, the bot's own fold
+    sees the entry credit and nothing else -- the real 2026-07-09 shape is a
+    fold saying +$360 on a day whose truth is -$13.88. A credit-only figure
+    must never read as final.
+
+    WHY the reconciliation half (the 2026-07-10 live-deploy fix): once RPT-15
+    has reconciled the day against the broker -- a `DayBrokerConfirmed`, or an
+    own-scoped `CorrectionRecord` -- the DISPLAYED figures ARE broker truth
+    (PNL-04), independently established, whatever the bot did or didn't capture
+    itself. The real 2026-07-10 day nets +43.68 broker-verified, and its entry's
+    `settlement_pending` is true only because the bot never bothered to capture
+    the WORTHLESS ($0) expiration rows. Flagging that day provisional would be a
+    false alarm -- and a warning that fires on correct days trains the operator
+    to ignore it, which is worse than no warning at all.
+
+    `events` (the WHOLE log, not `scoped`) supplies the reconciliation signals,
+    same convention as `_trust_payload`.
+    """
+    reconciled = broker_reconciled_days(events)
+    return any(e.settlement_pending and entry_day(e.entry_id) not in reconciled
+               for e in _filled_entries(scoped))
 
 
 def _summary_core(scoped: list[Event]) -> dict[str, Any]:
@@ -435,6 +467,10 @@ def build_reports_router(
         return {
             "mode": mode(), "period_days": list(days),
             "trust": _trust_payload(events, days),
+            # PNL-05: top-level, not inside `core` -- it qualifies the WHOLE
+            # period, not one metric. See _summary_settlement_pending for the
+            # rule and why an already-broker-reconciled day is NOT provisional.
+            "settlement_pending": _summary_settlement_pending(events, scoped),
             "core": _summary_core(scoped),
             "metrics": _summary_metrics(scoped, config),
             "taxonomy": _summary_taxonomy(scoped, config),

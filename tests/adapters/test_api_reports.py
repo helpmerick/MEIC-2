@@ -20,8 +20,10 @@ from meic.domain.events import (
     EntryMarkSample,
     EntrySkipped,
     ExternalFillImported,
+    FilledLeg,
     LongSaleStarted,
     LongSold,
+    SettlementRecorded,
     ShortStopped,
     StopPlaced,
 )
@@ -544,6 +546,176 @@ def test_backfill_requires_order_ids():
     client, _, _ = _client(backfill_broker_reads=_FakeBroker([]))
     r = client.post("/reports/backfill/2026-07-09", json={"order_ids": []})
     assert r.status_code == 400
+
+
+# --- PNL-05 (EOD-01 v1.59 + PNL-04): summary-level settlement_pending flag ---
+# TRUE iff a filled entry in scope has an uncaptured settlement AND its day is
+# NOT broker-reconciled. Two halves, two real incidents:
+#   * settlement half (2026-07-09): a held-to-expiry short's loss arrives ONLY
+#     with its settlement row -- the fold says +$360, truth is -$13.88. A
+#     credit-only figure must never read as final.
+#   * reconciliation half (2026-07-10, caught by the live deploy): once RPT-15
+#     has established broker truth for the day (DayBrokerConfirmed or an
+#     own-scoped CorrectionRecord), the DISPLAYED figures ARE broker truth
+#     (PNL-04) -- flagging them provisional is a false alarm, and a warning
+#     that fires on correct days trains the operator to ignore it.
+# The flag must say all this WITHOUT touching a single number (see the
+# byte-identical assertion below).
+
+def _real_condor_legs():
+    return (
+        FilledLeg(symbol="SPXW  260709P07535000", right="P", role="short", qty=1, price=D("2.20")),
+        FilledLeg(symbol="SPXW  260709P07510000", right="P", role="long", qty=1, price=D("0.40")),
+        FilledLeg(symbol="SPXW  260709C07540000", right="C", role="short", qty=1, price=D("2.15")),
+        FilledLeg(symbol="SPXW  260709C07565000", right="C", role="long", qty=1, price=D("0.35")),
+    )
+
+
+def _real_settlement_events(entry_id):
+    at = "2026-07-10T02:00:00+00:00"
+    return [
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709C07540000", sub_type="Cash Settled Assignment",
+                           quantity=1, price=D("7540.0"), value=D("-369.00"), fee=D("5.00")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709P07535000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709P07510000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+        SettlementRecorded(entry_id=entry_id, day="2026-07-09", at=at,
+                           symbol="SPXW  260709C07565000", sub_type="Expiration",
+                           quantity=1, price=None, value=D("0"), fee=D("0")),
+    ]
+
+
+def _unsettled_entry_events():
+    """The dangerous 2026-07-09 shape: a filled condor whose unstopped shorts
+    have NO captured settlement -- the fold sees the entry credit and nothing
+    of the held-to-expiry short's loss."""
+    return [
+        DayArmed(date="2026-07-09", entry_count=1),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), fee=D("0.0488"),
+                    legs=_real_condor_legs()),
+    ]
+
+
+def test_summary_settlement_pending_true_on_an_UNRECONCILED_day_awaiting_settlement():
+    """The 2026-07-09 shape: settlement uncaptured AND nothing has independently
+    established the day's truth -- the headline is credit-only, so provisional."""
+    client, _, _ = _client(_unsettled_entry_events())
+    body = client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is True
+
+
+def test_summary_settlement_pending_FALSE_on_a_day_rpt15_already_reconciled_own_scoped():
+    """THE 2026-07-10 LIVE-DEPLOY REGRESSION -- pin it hard.
+
+    The real 2026-07-10 day nets +43.68 broker-VERIFIED and FINAL: it carries
+    an own-scoped CorrectionRecord, so per PNL-04 the displayed figures ARE
+    broker truth. Its entry's `settlement_pending` is nonetheless true, merely
+    because the bot never captured the WORTHLESS ($0) expiration rows. The flag
+    must NOT fire: a "provisional -- not final" warning on a demonstrably final,
+    correct day is a false alarm, and a warning that fires on correct days
+    trains the operator to ignore it."""
+    events = _unsettled_entry_events() + [
+        CorrectionRecord(date="2026-07-09", field="cash_delta", bot_value="355.12",
+                         broker_value="43.68", diff="-311.44", at="2026-07-10T16:20:00-04:00",
+                         scope="own"),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is False
+    # ...and the headline it declines to flag really IS broker truth (PNL-04):
+    # the own-scoped record overrode the fold's credit-only 355.12.
+    assert body["core"]["net_pnl"] == "43.68"
+
+
+def test_summary_settlement_pending_false_on_a_day_with_a_DayBrokerConfirmed():
+    """The other reconciliation signal: the bot's own computation MATCHED broker
+    truth exactly (nothing to correct). Broker-authoritative, not provisional."""
+    events = _unsettled_entry_events() + [
+        DayBrokerConfirmed(date="2026-07-09", at="2026-07-09T16:20:00-04:00"),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is False
+
+
+def test_summary_settlement_pending_true_when_the_day_has_only_a_LEGACY_correction():
+    """A legacy CorrectionRecord (`scope` None/absent) is NOT a reconciliation:
+    it summed the whole shared account, the report already refuses to DISPLAY it
+    (reporting/corrections.corrected_value), so it establishes nothing. The day
+    still renders the bot's own unverified fold -- which is still credit-only."""
+    events = _unsettled_entry_events() + [
+        CorrectionRecord(date="2026-07-09", field="cash_delta", bot_value="355.12",
+                         broker_value="-534.46", diff="-889.58",
+                         at="2026-07-10T16:20:00-04:00"),  # scope absent == legacy
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is True
+    # The legacy record never reached the headline either -- the fold's own
+    # (credit-only, hence provisional) figure is what renders.
+    assert body["core"]["net_pnl"] == "355.1200"
+
+
+def test_summary_settlement_pending_false_once_every_short_is_settled():
+    events = [
+        DayArmed(date="2026-07-09", entry_count=1),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), fee=D("0.0488"),
+                    legs=_real_condor_legs()),
+        *_real_settlement_events("2026-07-09#1"),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is False
+
+
+def test_summary_settlement_pending_false_with_no_entries_or_all_settled():
+    # No entries at all in scope.
+    client, _, _ = _client([])
+    assert client.get("/reports/summary?period=all").json()["settlement_pending"] is False
+
+    # An entry that stopped out (no unresolved short left) is never pending.
+    stopped_events = [
+        DayArmed(date="2026-07-09", entry_count=1),
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#1", side="PUT", fill=D("3.90"), slippage=D("0.10")),
+    ]
+    stopped_client, _, _ = _client(stopped_events)
+    body = stopped_client.get("/reports/summary?period=all").json()
+    assert body["settlement_pending"] is False
+
+
+def test_summary_settlement_pending_flag_never_perturbs_the_core_numbers():
+    """PNL-05 adds a FLAG and a LABEL, never arithmetic.
+
+    `DayBrokerConfirmed` is the clean probe: it flips the flag from True to
+    False (the day is broker-authoritative) while overriding nothing at all, so
+    `core` must come back BYTE-IDENTICAL across the two.
+    """
+    base = _unsettled_entry_events()
+    pending_client, _, _ = _client(base)
+    confirmed_client, _, _ = _client(
+        base + [DayBrokerConfirmed(date="2026-07-09", at="2026-07-09T16:20:00-04:00")])
+
+    pending = pending_client.get("/reports/summary?period=all").json()
+    confirmed = confirmed_client.get("/reports/summary?period=all").json()
+
+    assert pending["settlement_pending"] is True
+    assert confirmed["settlement_pending"] is False
+    assert pending["core"] == confirmed["core"]          # byte-identical, flag or no flag
+    assert pending["core"]["net_pnl"] == "355.1200"      # arithmetic untouched
+    assert pending["core"]["gross_pnl"] == "360.0000"
+    assert pending["core"]["fees"] == "4.8800"
+
+    # And the settlement itself still moves the number exactly as EOD-01 says
+    # (that is the fold's job, not the flag's): once captured, the true net.
+    settled_client, _, _ = _client(base + _real_settlement_events("2026-07-09#1"))
+    settled = settled_client.get("/reports/summary?period=all").json()
+    assert settled["core"]["net_pnl"] == "-13.8800"
+    assert settled["settlement_pending"] is False
 
 
 def test_paper_and_live_events_are_never_commingled():

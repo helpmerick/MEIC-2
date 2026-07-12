@@ -324,6 +324,10 @@ export interface ReportSummary {
   mode: "paper" | "live";
   period_days: string[];
   trust: TrustBlock;
+  // PNL-05 (EOD-01 v1.59): true when ANY entry in the period's scope has an
+  // uncaptured broker settlement -- the headline net/gross/fees below are
+  // credit-only until then and must render as provisional, not final.
+  settlement_pending?: boolean;
   core: CoreResults;
   metrics: MetricsResult;
   taxonomy: TaxonomyResult;

@@ -123,6 +123,29 @@ describe("ResultsPage", () => {
     expect(links.querySelector('a[href="#/results/day/2026-07-08"]')).toBeInTheDocument();
     expect(links.querySelector('a[href="#/results/day/2026-07-09"]')).toBeInTheDocument();
   });
+
+  // PNL-05 (EOD-01 v1.59): the headline Performance card must flag itself
+  // provisional whenever ANY entry in scope still has an uncaptured broker
+  // settlement -- a held-to-expiry short's loss only arrives with that
+  // settlement, so until then net/gross/fees above are credit-only.
+  it("shows the provisional-settlement note when summary.settlement_pending is true (PNL-05)", async () => {
+    mockApis(baseSummary({ settlement_pending: true }));
+    render(<ResultsPage entries={[]} />);
+    const note = await screen.findByTestId("summary-provisional");
+    expect(note).toHaveTextContent(/provisional/i);
+    expect(note).toHaveTextContent(/settlement pending/i);
+  });
+
+  it("omits the provisional-settlement note when settlement_pending is false or absent (PNL-05)", async () => {
+    mockApis(baseSummary({ settlement_pending: false }));
+    render(<ResultsPage entries={[]} />);
+    await screen.findByTestId("results-page");
+    expect(screen.queryByTestId("summary-provisional")).not.toBeInTheDocument();
+
+    mockApis(baseSummary()); // settlement_pending absent entirely
+    render(<ResultsPage entries={[]} />);
+    await waitFor(() => expect(screen.queryAllByTestId("summary-provisional")).toHaveLength(0));
+  });
 });
 
 // UTC-safe month/year shift used only to compute expected values in these

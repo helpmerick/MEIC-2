@@ -266,6 +266,13 @@ export function ResultsPage({ entries }: { entries: EntryCard[] }) {
               <Stat label="Day win rate" value={summary.core.day_win_rate} kind="percent" />
             </div>
 
+            {summary.settlement_pending && (
+              <p className="gap-note" data-testid="summary-provisional">
+                provisional — settlement pending: a held-to-expiry short's broker settlement
+                hasn't posted yet, so this figure is credit-only and not final.
+              </p>
+            )}
+
             {summary.metrics.status === "unconfigured" ? (
               <p className="gap-note" data-testid="metrics-unconfigured">
                 Return/risk metrics need `reporting_capital_base` configured (RPT-04, doc 06) —

@@ -190,18 +190,53 @@ Backend **1284 passed**; spec lock **17/17**; traceability **220/152**.
 
 ---
 
-## 5. OPEN ITEM — not an accounting bug, and more important than one
+## 5. 2026-07-09 — RETRACTED claim, and the real hardening item it exposed
 
-**2026-07-09: no stop ever fired.** The broker's records for that day contain **no
-Buy-to-Close row at all** — the condor was held to expiration and the C7540 short was
-allowed to settle ITM. SPX settled 7543.64, just **3.64 points** through the short; the
-loss was only −$13.88 because the ITM amount ($364) barely exceeded the credit ($360).
-**Had SPX closed at 7560 the same unprotected short would have cost roughly $1,600.**
+### 5a. Retraction (agent error, operator-corrected)
+An earlier draft of this document claimed *"no stop ever fired ⇒ the short was
+unprotected."* **That claim is WRONG and is withdrawn.** It was inferred from the absence
+of a Buy-to-Close row in the broker's transaction history. **A resting stop that is never
+triggered produces no transaction** — so its absence proves the stop *was not hit*, not
+that it did not exist. The operator confirmed a stop was resting and its trigger was
+never reached. **The system behaved correctly on 2026-07-09.** No protection defect.
 
-This is consistent with the known 2026-07-09 fill-credit incident (the bot recorded the
-*limit* 3.50 rather than the actual fill credit 3.60, so stops were computed off the
-wrong basis — fixed in `dbc8115`). A correct 95% stop would have rested at **3.42**, and
-the short was worth ≥3.64 into the close, so it **should** have triggered.
+### 5b. What actually happened (for the record)
+The condor's body was 5 points wide (PUT short 7535 / CALL short 7540; wings 7510/7565),
+credit **3.60**. SPX settled **7543.64** — **3.64 points through the CALL short**. The
+long 7565 wing gives no protection at 7543 (it only bites above 7565), so the short's
+intrinsic was paid in full: **−$364**.
 
-**Recommend the reviewer treat this as a separate, higher-priority investigation:** the
-reporting bugs above cost accuracy; an unprotected short costs money.
+Upper gross breakeven = `7540 + 3.60` = **7543.60**. SPX settled **7543.64** — the trade
+expired **0.04 of an index point** past breakeven. Net breakeven (incl. fees) ≈ 7543.50.
+
+```
+ +360.00 credit  −364.00 ITM call short  −9.88 fees  =  −13.88
+```
+Not a bug, not a strategy failure: a trade that finished a fraction of a point the wrong
+side of its breakeven. Every mechanism — stop, fills, settlement — worked as designed.
+
+### 5c. THE REAL HARDENING ITEM (proposed: PNL-05)
+This day *is* the dangerous reporting shape, for a different reason. **When a stop is
+never hit, the short is held to expiry and its loss arrives ONLY as a settlement.** Until
+that broker settlement row is captured, the bot's own fold sees only the credit — i.e. it
+would report **+$360 profit on a day that actually lost $13.88.**
+
+EOD-01 v1.59 already says such a P&L is *"PROVISIONAL and labeled so"*, and the per-entry
+card and day drill-down DO render `provisional — settlement pending`. **But the Results
+headline band (NET P&L / GROSS / FEES) has no settlement-pending awareness at all** — it
+will present a credit-only figure as if final.
+
+**Proposed rule — PNL-05 (Provisional day):** *A period whose scope contains ANY entry with
+an uncaptured settlement (`settlement_pending`) MUST label its headline P&L PROVISIONAL.
+A held-to-expiry ITM short's loss arrives only with its settlement; until then the
+headline is a credit-only figure and MUST NOT be presented as final. This is the
+"stop never hit" shape and it must never masquerade as a profit.*
+
+**Proposed TC-PNL-03:** a day with one entry, stop not hit, short held to expiry, settlement
+NOT yet captured ⇒ the summary is flagged provisional; once the settlement is captured the
+flag clears and the day reports the true (loss) figure. *(The settled half is already pinned:
+`test_pinned_2026_07_09_vector_nets_minus_13_88_once_settled`.)*
+
+Backstop already in place: the now-own-scoped RPT-15 reconcile compares the bot's fold
+against broker truth at EOD and corrects it (PNL-04) — so the error is caught. PNL-05
+closes the window BEFORE that reconcile runs.
