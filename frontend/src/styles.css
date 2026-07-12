@@ -30,11 +30,11 @@
   /* spacing scale — every card/section/form rule below keys off these, so
      padding, gaps and margins line up consistently across the whole panel */
   --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 24px;
-  --field-h: 36px; /* common height for inputs, selects and buttons */
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 11px;
+  --sp-5: 15px;
+  --field-h: 30px; /* common height for inputs, selects and buttons */
 }
 
 /* light theme — variable overrides only; every rule keys off these vars */
@@ -75,8 +75,8 @@ body {
   margin: 0;
   color: var(--text);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   background:
     radial-gradient(1100px 600px at 15% -10%, rgba(124, 156, 255, 0.10), transparent 60%),
@@ -87,12 +87,14 @@ body {
 }
 :root { font-variant-numeric: tabular-nums; }
 
-.app { max-width: 1640px; margin: 0 auto; padding: var(--sp-5) var(--sp-4) 48px; }
+/* Contained, centred column — a modern max content width with visible side
+   gutters rather than edge-to-edge full-bleed (operator request 2026-07-12). */
+.app { max-width: 1200px; margin: 0 auto; padding: var(--sp-5) var(--sp-5) 44px; }
 
 /* header */
-.app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
+.app-header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .brand { display: flex; align-items: baseline; gap: 8px; }
-.brand h1 { font-size: 22px; margin: 0; font-weight: 800; letter-spacing: -0.02em; }
+.brand h1 { font-size: 19px; margin: 0; font-weight: 800; letter-spacing: -0.02em; }
 .brand .dot { color: var(--accent); }
 .muted { color: var(--muted); font-weight: 400; }
 .spacer { flex: 1; }
@@ -121,6 +123,10 @@ body {
 .grid > .next-entry        { grid-area: next; }
 .grid > .schedule-panel    { grid-area: sched; }
 .grid > .manual-trade-card { grid-area: manual; }
+/* STP-02b / UI-18: invalid long-recovery buffer gets the same red outline the
+   scheduled lane's invalid cells carry (parity with schedule.css). */
+.manual-trade-card input.invalid { border-color: var(--bad); background: var(--bad-dim); }
+.manual-trade-card input.invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 24%, transparent); }
 .grid > .report            { grid-area: report; }
 .grid > .entries-col       { grid-area: entries; }
 .grid > .feed-col          { grid-area: feed; }
@@ -166,7 +172,7 @@ body {
 }
 .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 1px; background: linear-gradient(90deg, transparent, var(--line-strong), transparent); }
 .card h2 {
-  margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
+  margin: 0 0 var(--sp-3); padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--line);
   font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
 }
@@ -178,16 +184,16 @@ body {
    spans the border — every card header reads at the same size/weight. */
 .card-head {
   display: flex; align-items: baseline; justify-content: space-between;
-  gap: var(--sp-3); margin: 0 0 var(--sp-4); padding-bottom: var(--sp-3);
+  gap: var(--sp-3); margin: 0 0 var(--sp-3); padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--line);
 }
 .card-head h2 { margin: 0; padding-bottom: 0; border-bottom: none; }
 
 /* status hero */
-.hero { display: flex; align-items: center; gap: 16px; padding: 15px 18px; border-radius: 12px; margin-bottom: 16px; border: 1px solid var(--line); transition: background .2s ease, border-color .2s ease; }
+.hero { display: flex; align-items: center; gap: 12px; padding: 9px 15px; border-radius: 12px; margin-bottom: 10px; border: 1px solid var(--line); transition: background .2s ease, border-color .2s ease; }
 .hero.good { background: linear-gradient(100deg, var(--good-dim), transparent 72%); border-color: rgba(52,211,153,0.28); }
 .hero.idle { background: linear-gradient(100deg, var(--warn-dim), transparent 78%); border-color: rgba(251,191,36,0.18); }
-.hero .hero-title { font-size: 16px; font-weight: 700; }
+.hero .hero-title { font-size: 15px; font-weight: 700; }
 .hero .hero-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
 /* status orb — a live "radar" ping when firing on schedule, a calm amber dot

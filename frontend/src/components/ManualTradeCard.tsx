@@ -12,7 +12,13 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError, DEFAULT_STOP_PCT, STOP_PCT_SET } from "../api";
-import { contractDollarsPlain } from "../money";
+import {
+  contractDollarsPlain,
+  isValidStopRebateMarkup,
+  normalizeMoneyInput,
+  stopRebateMarkupWorstCase,
+} from "../money";
+import { Tooltip } from "./Tooltip";
 import type { FireResult, FloorCandidateRow, FloorCandidates, ManualSimulation } from "../types";
 
 interface ManualParams {
@@ -20,10 +26,12 @@ interface ManualParams {
   target_premium: string | "";
   wing_width: string | "";
   stop_loss_pct: number | "";
+  stop_rebate_markup: string | "";
 }
 
 const BLANK: ManualParams = {
   contracts: "", target_premium: "", wing_width: "", stop_loss_pct: DEFAULT_STOP_PCT,
+  stop_rebate_markup: "",
 };
 
 /** Blank cells inherit the global (doc 06 section 37) — send only what's filled. */
@@ -33,7 +41,64 @@ function nonEmpty(params: ManualParams): Record<string, unknown> {
   if (params.target_premium !== "") out.target_premium = params.target_premium;
   if (params.wing_width !== "") out.wing_width = params.wing_width;
   if (params.stop_loss_pct !== "") out.stop_loss_pct = params.stop_loss_pct;
+  if (params.stop_rebate_markup !== "") out.stop_rebate_markup = params.stop_rebate_markup;
   return out;
+}
+
+// A locally-detectable bad stop_rebate_markup: outside $0.00-$5.00 or not a
+// $0.05 step (STP-02b). Backend (domain/schedule.py, via _adhoc_row) is
+// authoritative and re-checks on fire; this only outlines the box early.
+// Empty is "unfilled" (inherits the global default), never wrong. Mirrors
+// SchedulePanel.markupInvalid exactly.
+function markupInvalid(value?: string): boolean {
+  const raw = (value ?? "").trim();
+  if (!raw) return false;
+  return !isValidStopRebateMarkup(raw);
+}
+
+// UI-18 shortfall sentence, behind the same focus/tap-capable Tooltip the
+// scheduled lane uses (v1.63 UI-18a; wording unchanged). Undefined unless the
+// buffer is set, valid, and > 0.
+const MANUAL_MARKUP_TOOLTIP_ID = "manual-markup-tooltip-content";
+function manualMarkupTooltip(params: ManualParams): string | undefined {
+  const raw = (params.stop_rebate_markup ?? "").trim();
+  if (!raw || markupInvalid(raw)) return undefined;
+  const val = normalizeMoneyInput(raw);
+  if (!(Number(val) > 0)) return undefined;
+  const pct = params.stop_loss_pct || DEFAULT_STOP_PCT;
+  return `If the long recovers less than $${val}, your net loss exceeds ${pct}% by the shortfall.`;
+}
+
+// UI-18: whenever the buffer is set, valid, and > 0, disclose the exact
+// worst-case dollar increase (VISIBLE figure) with the shortfall sentence
+// behind a Tooltip — mirrors SchedulePanel.MarkupHint, same money.ts math.
+function ManualMarkupHint({ params }: { params: ManualParams }) {
+  const raw = (params.stop_rebate_markup ?? "").trim();
+  if (!raw) return null;
+  if (markupInvalid(raw)) {
+    return (
+      <span className="time-hint bad" data-testid="manual-markup-hint">
+        $0.00–$5.00, $0.05 steps
+      </span>
+    );
+  }
+  const val = normalizeMoneyInput(raw);
+  if (!(Number(val) > 0)) return null;
+  const contracts = Number(params.contracts) || 1;
+  const sentence = manualMarkupTooltip(params);
+  return (
+    <span className="time-hint" data-testid="manual-markup-hint">
+      worst case +${stopRebateMarkupWorstCase(val, contracts)}
+      {sentence && (
+        <Tooltip
+          id={MANUAL_MARKUP_TOOLTIP_ID}
+          content={sentence}
+          testId="manual-markup-tooltip"
+          label="shortfall detail, manual trade"
+        />
+      )}
+    </span>
+  );
 }
 
 // ENT-09b (v1.57): minimum short-strike floors. Toggle default OFF — the
@@ -200,6 +265,23 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
                 onChange={(e) => patch("contracts", e.target.value)}
               />
             </label>
+            <label className="field">
+              <span>Long-recovery buffer $</span>
+              {/* STP-02b / UI-18: operator-typed buffer added to the stop trigger to
+                  pre-credit expected long recovery; UI-18 requires the worst-case
+                  increase be disclosed (ManualMarkupHint below). Same field the
+                  scheduled lane carries; the backend validates $0.00-$5.00 / $0.05 step. */}
+              <input
+                aria-label="manual long recovery buffer"
+                value={params.stop_rebate_markup}
+                placeholder="0.00"
+                aria-describedby={manualMarkupTooltip(params) ? MANUAL_MARKUP_TOOLTIP_ID : undefined}
+                onChange={(e) => patch("stop_rebate_markup", e.target.value)}
+                onBlur={(e) => patch("stop_rebate_markup", normalizeMoneyInput(e.target.value))}
+                className={markupInvalid(params.stop_rebate_markup) ? "invalid" : undefined}
+              />
+              <ManualMarkupHint params={params} />
+            </label>
           </div>
 
           <div className="manual-floors">
@@ -347,6 +429,7 @@ function ManualFireDialog({
     ["Target premium", params.target_premium === "" ? "(default)" : `$${params.target_premium}`],
     ["Wing width", params.wing_width === "" ? "(default)" : params.wing_width],
     ["Stop", params.stop_loss_pct === "" ? "(default)" : `${params.stop_loss_pct}%`],
+    ["Long-recovery buffer", params.stop_rebate_markup === "" ? "(default)" : `$${params.stop_rebate_markup}`],
   ];
   if (floors.enabled) {
     rows.push(["Put floor", floors.put_floor === "" ? "(none)" : floors.put_floor]);

@@ -234,3 +234,92 @@ describe("validation errors surfaced from the backend (UI-03)", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
 });
+
+// STP-02b / UI-18: the ad-hoc card carries the same operator-typed
+// long-recovery buffer the scheduled lane carries (doc 06 section 60) —
+// same field, same money.ts math, same UI-18 disclosure, mirrored here.
+describe("STP-02b / UI-18 — manual long-recovery buffer", () => {
+  it("sends stop_rebate_markup with the typed value on Fire", async () => {
+    const fire = vi.spyOn(api, "manualFire").mockResolvedValue({ result: "filled", initiator: "manual_entry" });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.change(screen.getByLabelText("manual long recovery buffer"), { target: { value: "0.30" } });
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByText("OK"));
+    await waitFor(() => expect(fire).toHaveBeenCalled());
+
+    expect(fire.mock.calls[0][0].stop_rebate_markup).toBe("0.30");
+  });
+
+  it("sends stop_rebate_markup with the typed value on Simulate", async () => {
+    const sim = vi.spyOn(api, "manualSimulate").mockResolvedValue(SIM_OK);
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.change(screen.getByLabelText("manual long recovery buffer"), { target: { value: "0.30" } });
+    fireEvent.click(screen.getByText("Simulate trade"));
+    await waitFor(() => expect(sim).toHaveBeenCalled());
+
+    expect(sim.mock.calls[0][0].stop_rebate_markup).toBe("0.30");
+  });
+
+  it("leaves stop_rebate_markup out of the sent params when blank (inherits the default)", async () => {
+    const fire = vi.spyOn(api, "manualFire").mockResolvedValue({ result: "filled", initiator: "manual_entry" });
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByText("OK"));
+    await waitFor(() => expect(fire).toHaveBeenCalled());
+
+    expect(fire.mock.calls[0][0]).not.toHaveProperty("stop_rebate_markup");
+  });
+
+  it("discloses the UI-18 worst-case dollar figure for a valid buffer > 0", async () => {
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.change(screen.getByLabelText("manual contracts"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("manual long recovery buffer"), { target: { value: "0.30" } });
+
+    expect(screen.getByTestId("manual-markup-hint")).toHaveTextContent("+$60");
+  });
+
+  it("shows the range/step guidance and marks the input invalid for a bad step", async () => {
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    const input = screen.getByLabelText("manual long recovery buffer");
+    fireEvent.change(input, { target: { value: "0.33" } });
+
+    expect(screen.getByTestId("manual-markup-hint")).toHaveTextContent("$0.00–$5.00, $0.05 steps");
+    expect(input).toHaveClass("invalid");
+  });
+
+  it("shows the buffer in the confirm dialog", async () => {
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.change(screen.getByLabelText("manual long recovery buffer"), { target: { value: "0.30" } });
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    expect(screen.getByText("Long-recovery buffer")).toBeInTheDocument();
+    expect(screen.getByText("$0.30")).toBeInTheDocument();
+  });
+
+  it("shows (default) in the confirm dialog when blank", async () => {
+    render(<ManualTradeCard entriesEnabled />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    expect(screen.getByText("Long-recovery buffer")).toBeInTheDocument();
+    const row = screen.getByText("Long-recovery buffer").closest(".p-row");
+    expect(row).toHaveTextContent("(default)");
+  });
+});
