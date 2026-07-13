@@ -278,6 +278,32 @@ def _quote_stream_poll_seconds(env: dict[str, str]) -> float:
     return raw if 1 <= raw <= 60 else 5.0
 
 
+def _watchdog_grace_seconds(env: dict[str, str]) -> Decimal:
+    """STP-03b `watchdog_grace_seconds` (doc 06: range 3-60, default 10) — how
+    long a short's mark may sit at/above its trigger with the resting stop
+    unfilled before the STP-03b watchdog raises its critical alert. Out-of-
+    range falls back to the spec default (the same reject-the-dial convention
+    as `_chain_completeness_pct` above)."""
+    try:
+        raw = Decimal(env.get("MEIC_WATCHDOG_GRACE_SECONDS", "10"))
+    except (ArithmeticError, ValueError):
+        return Decimal("10")
+    return raw if Decimal("3") <= raw <= Decimal("60") else Decimal("10")
+
+
+def _watchdog_escalate_seconds(env: dict[str, str]) -> Decimal:
+    """STP-03b `watchdog_escalate_seconds` (doc 06: range 5-120, default 20) —
+    total elapsed time from the FIRST breach at which the watchdog fires its
+    own marketable buy-to-close and cancels the sleeping stop. Out-of-range
+    falls back to the spec default (the same reject-the-dial convention as
+    `_chain_completeness_pct` above)."""
+    try:
+        raw = Decimal(env.get("MEIC_WATCHDOG_ESCALATE_SECONDS", "20"))
+    except (ArithmeticError, ValueError):
+        return Decimal("20")
+    return raw if Decimal("5") <= raw <= Decimal("120") else Decimal("20")
+
+
 def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
     """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
     "required for return metrics"). Operator-set only: account net-liq is
@@ -1159,6 +1185,92 @@ async def _run_quote_stream_loop(comp, hub, feed, snaps, alerts, *, idle_seconds
             await asyncio.sleep(retry_seconds)
 
 
+async def _stop_watchdog_pass(comp, wd, hub, snaps, *, now, max_quote_age_ms: int,
+                              last_ticked: dict) -> None:
+    """STP-03b (2026-07-13): one pass of the stop watchdog over every OPEN
+    short with a resting stop placed -- `_open_short_legs`, the SAME EC-STP-06
+    frame the stop-fill catch-up loop (`stop_fill_watch.py`) already drives,
+    so this loop and that one agree on exactly what "open with a stop placed"
+    means. Feeds `StopWatchdog.observe` a LIVE QuoteHub mark, translated
+    through the SAME `_streamer_symbol` seam the P&L path uses
+    (`_resolve_leg_mid`) -- one mark source end to end, no drift.
+
+    `last_ticked` (owned by the caller, persists across passes) is this
+    function's own wall-clock bookkeeping: `seconds_since_last` is the REAL
+    time elapsed since the last observation of this (entry_id, side), whether
+    that prior observation was fresh or stale. DAT-02 pause/resume itself is
+    entirely `StopWatchdog.observe`'s job (it ignores the elapsed gap while
+    `stale=True`); this loop's only job is reporting the real gap honestly. A
+    side observed for the first time gets 0 elapsed seconds -- it is never
+    credited with breach time that occurred before the watchdog was watching.
+
+    The trigger and the resting stop's own broker order id come from the
+    JOURNALED `StopPlaced` (REC-02: the log is authoritative for intent) --
+    never recomputed. A short whose mark cannot be resolved this tick (no
+    streamer symbol yet, no hub tick at all, or one older than
+    `max_quote_age_ms`) is fed `stale=True`, pausing the breach clock exactly
+    as a stale chain-snapshot mark would (DAT-02)."""
+    from meic.application.stop_fill_watch import _open_short_legs
+
+    snap = getattr(snaps, "last", None)
+    seen: set[tuple[str, str]] = set()
+    for entry_id, side, leg, spec in _open_short_legs(comp.events):
+        key = (entry_id, side)
+        seen.add(key)
+        # REC-02: the resting stop's own broker order id, straight off the
+        # journaled StopPlaced -- the ORD-08 race pre-check inside escalate()
+        # re-checks THIS id against broker truth immediately before submitting.
+        wd.resting_stop_ids[key] = spec.broker_order_id
+        elapsed = now - last_ticked[key] if key in last_ticked else timedelta(0)
+        last_ticked[key] = now
+
+        streamer = _streamer_symbol(snap, leg.symbol, side)
+        quote = hub.mark(streamer) if streamer else None
+        stale = quote is None or quote.is_stale(now, max_quote_age_ms)
+        mark = quote.mid if quote is not None else Decimal("0")
+
+        action = wd.observe(
+            entry_id=entry_id, side=side, mark=mark, trigger=spec.trigger,
+            seconds_since_last=Decimal(str(elapsed.total_seconds())),
+            stop_filled=False, stale=stale)
+        if action == "escalate" and quote is not None:
+            await wd.escalate(entry_id=entry_id, side=side, mark_at_breach=mark,
+                              ask=quote.ask, symbol=leg.symbol, contracts=leg.qty)
+
+    # A side that left the open-short-with-a-stop frame (stopped/closed/
+    # expired, or the stop itself no longer on record) has nothing left to
+    # accumulate -- drop its bookkeeping so a LATER, unrelated short reusing
+    # the same (entry_id, side) key (impossible today, defensive regardless)
+    # never inherits a stale elapsed baseline.
+    for key in set(last_ticked) - seen:
+        last_ticked.pop(key, None)
+
+
+async def _run_stop_watchdog_loop(comp, wd, hub, snaps, alerts, *, clock,
+                                  max_quote_age_ms: int, idle_seconds: float = 5.0,
+                                  connected=lambda: True) -> None:
+    """STP-03b (2026-07-13): supervises `_stop_watchdog_pass` forever -- same
+    shape as `_run_quote_stream_loop` above (one supervised background task,
+    created unconditionally at startup, cancelled on shutdown). NEVER crashes
+    the app: any failure (a broker hiccup during `escalate()`, a momentarily
+    absent snapshot, anything) is alerted and the loop simply tries again next
+    tick -- a missed pass is never worse than the watchdog not existing at
+    all, and the resting broker stop stays PRIMARY and bot-independent
+    regardless of this loop's health."""
+    last_ticked: dict[tuple[str, str], datetime] = {}
+    while True:
+        if not connected():
+            await asyncio.sleep(idle_seconds)
+            continue
+        try:
+            await _stop_watchdog_pass(comp, wd, hub, snaps, now=clock.now(),
+                                      max_quote_age_ms=max_quote_age_ms,
+                                      last_ticked=last_ticked)
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            alerts.alert("warning", f"STP-03b stop watchdog pass failed: {exc!r}")
+        await asyncio.sleep(idle_seconds)
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -1470,6 +1582,7 @@ def live_app():
     from meic.adapters.api.app import create_app
     from meic.adapters.persistence.event_store import SqliteStateStore
     from meic.application.clocks import SystemClock
+    from meic.application.watchdog import StopWatchdog
     from meic.composition.live import LiveComposition
     from meic.composition.panel_commands import PanelCommands
 
@@ -1852,6 +1965,42 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_quote_stream_loop() -> None:
         task = getattr(app.state, "quote_stream_task", None)
+        if task:
+            task.cancel()
+
+    # STP-03b (2026-07-13): the stop watchdog -- a SECOND, bot-side trigger
+    # layer over the resting broker stop, which stays PRIMARY and bot-
+    # independent (the tastytrade adapter's own trigger-source verdict is
+    # indeterminate -- adapters/tastytrade/adapter.py's own docstring line 8).
+    # `StopWatchdog` (application/watchdog.py) was fully written and unit-
+    # tested but never constructed, ticked, or wired into the live app --
+    # grep confirmed the only references anywhere were a health-panel counter
+    # and an activity-feed icon. Fed the SAME live QuoteHub the quote-stream
+    # loop above keeps ticking, translated through the SAME streamer-symbol
+    # seam the P&L path uses (`_resolve_leg_mid`) -- one mark source, no
+    # drift. Same shape as every other supervised background task here (one
+    # task, created unconditionally at startup, cancelled on shutdown); polls
+    # on the SAME cadence as the quote-stream loop it reads from -- ticking
+    # faster than the hub itself refreshes would gain nothing, so this reuses
+    # `quote_stream_poll_s` rather than inventing a new infra dial.
+    watchdog_grace_s = _watchdog_grace_seconds(env)
+    watchdog_escalate_s = _watchdog_escalate_seconds(env)
+    app.state.watchdog_grace_seconds = watchdog_grace_s
+    app.state.watchdog_escalate_seconds = watchdog_escalate_s
+    stop_watchdog = StopWatchdog(broker=comp.broker, alerts=alerts, events=comp.events,
+                                 grace_seconds=watchdog_grace_s, escalate_seconds=watchdog_escalate_s)
+    app.state.stop_watchdog = stop_watchdog
+
+    @app.on_event("startup")
+    async def _start_stop_watchdog_loop() -> None:
+        app.state.stop_watchdog_task = asyncio.create_task(_run_stop_watchdog_loop(
+            comp, stop_watchdog, hub, live["snapshots"], alerts, clock=comp.clock,
+            max_quote_age_ms=max_quote_age_ms, idle_seconds=quote_stream_poll_s,
+            connected=lambda: app.state.broker_connected))
+
+    @app.on_event("shutdown")
+    async def _stop_stop_watchdog_loop() -> None:
+        task = getattr(app.state, "stop_watchdog_task", None)
         if task:
             task.cancel()
 

@@ -446,6 +446,79 @@ def test_stop_fill_poll_seconds_is_read_from_config_not_hardcoded():
     assert _stop_fill_poll_seconds({"MEIC_STOP_FILL_POLL_S": "junk"}) == 15.0
 
 
+def test_watchdog_grace_seconds_is_read_from_config_not_hardcoded():
+    """STP-03b `watchdog_grace_seconds` (doc 06: range 3-60, default 10)."""
+    from decimal import Decimal as D
+
+    from meic.adapters.api.server import _watchdog_grace_seconds
+
+    assert _watchdog_grace_seconds({}) == D("10")                                        # default
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "15"}) == D("15")      # operator value
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "3"}) == D("3")        # low edge
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "60"}) == D("60")      # high edge
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "2"}) == D("10")       # < 3 -> default
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "61"}) == D("10")      # > 60 -> default
+    assert _watchdog_grace_seconds({"MEIC_WATCHDOG_GRACE_SECONDS": "junk"}) == D("10")
+
+
+def test_watchdog_escalate_seconds_is_read_from_config_not_hardcoded():
+    """STP-03b `watchdog_escalate_seconds` (doc 06: range 5-120, default 20)."""
+    from decimal import Decimal as D
+
+    from meic.adapters.api.server import _watchdog_escalate_seconds
+
+    assert _watchdog_escalate_seconds({}) == D("20")                                        # default
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "30"}) == D("30")   # operator value
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "5"}) == D("5")     # low edge
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "120"}) == D("120") # high edge
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "4"}) == D("20")    # < 5 -> default
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "121"}) == D("20")  # > 120 -> default
+    assert _watchdog_escalate_seconds({"MEIC_WATCHDOG_ESCALATE_SECONDS": "junk"}) == D("20")
+
+
+def test_live_app_wires_a_real_stop_watchdog_task_with_env_thresholds(monkeypatch, tmp_path):
+    """STP-03b wiring capstone: `StopWatchdog` (application/watchdog.py) was
+    fully written and unit-tested but never constructed anywhere outside its
+    own tests (grep confirmed the only references were a health-panel counter
+    and an activity-feed icon). This proves live_app() actually constructs a
+    REAL StopWatchdog with the env-configured grace/escalate thresholds and
+    starts a REAL supervised background task for it — not merely a config
+    value nobody reads (the exact 'looks wired, does nothing' class the
+    2026-07-10 review finding caught elsewhere in this file)."""
+    from decimal import Decimal as D
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.watchdog import StopWatchdog
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_WATCHDOG_GRACE_SECONDS", "12")
+    monkeypatch.setenv("MEIC_WATCHDOG_ESCALATE_SECONDS", "25")
+
+    app = live_app()
+    comp = app.state.composition
+
+    wd = app.state.stop_watchdog
+    assert isinstance(wd, StopWatchdog)
+    assert wd.grace_seconds == D("12"), "grace threshold must come from MEIC_WATCHDOG_GRACE_SECONDS"
+    assert wd.escalate_seconds == D("25"), "escalate threshold must come from MEIC_WATCHDOG_ESCALATE_SECONDS"
+    # the SAME broker/events every other real service is wired against — never
+    # a second, disconnected copy of either.
+    assert wd.broker is comp.broker
+    assert wd.events is comp.events
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        task = getattr(app.state, "stop_watchdog_task", None)
+        assert task is not None and not task.done(), (
+            "live_app must actually start the STP-03b watchdog loop at startup")
+
+
 # --- REC-01 / REC-07(8): the live event log must be DURABLE ---------------------
 
 def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_path):
