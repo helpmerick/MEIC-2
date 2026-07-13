@@ -308,7 +308,12 @@ body {
 .ec-placed { font-size: 11px; color: var(--faint); margin-top: 6px; }
 .ec-legs { font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .ec-leg { line-height: 1.5; }
-.ec-livepnl { font-size: 12px; font-weight: 700; margin-top: 6px; color: var(--faint); }
+/* Live mark-to-market P&L — sits beside the premium received, prominent and
+   green/red (operator request 2026-07-13). Declares NO colour on purpose: the
+   `.pos`/`.neg` classes on the same element supply it. It previously set
+   `color: var(--faint)` here, which (same specificity, declared later) SILENTLY
+   CANCELLED .pos/.neg and rendered every live P&L grey. */
+.ec-livepnl { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
 .ec-profitpct { font-size: 11px; color: var(--faint); margin-top: 2px; }
 
 /* --- v1.58 TPF/TPT exit controls ------------------------------------------ */

@@ -156,6 +156,14 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
       </div>
       <div className="ec-meta">
         <span>credit ${contractDollarsPlain(e.net_credit, contracts)}</span>
+        {/* Live mark-to-market P&L sits RIGHT BESIDE the premium received, big and
+            green/red (operator request 2026-07-13): it is the number that says how
+            the trade is actually doing NOW, so it must not be buried in small grey
+            text below the legs. `.ec-livepnl` deliberately sets NO colour — that
+            lets `.pos`/`.neg` win (they were previously cancelled by an
+            `.ec-livepnl { color: var(--faint) }` of equal specificity declared
+            later, which is why this always rendered grey). */}
+        <span className={`ec-livepnl ${live.cls}`}>{live.text}</span>
         {e.sides_stopped.length > 0 && <span className="tag stop">{e.sides_stopped.join("+")} stopped</span>}
         {e.recovered && <span className="tag lex">LEX</span>}
         {e.sides_expired.length > 0 && <span className="tag exp">{e.sides_expired.length} exp</span>}
@@ -172,7 +180,6 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
           {callLine && <div className="ec-leg">{callLine}</div>}
         </div>
       )}
-      <div className={`ec-livepnl ${live.cls}`}>{live.text}</div>
       <div className="ec-profitpct">Profit: {profitPct(e)}</div>
       {exitControlsAvailable && (
         <div className="ec-exits">
