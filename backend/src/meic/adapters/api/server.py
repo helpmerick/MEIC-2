@@ -304,6 +304,24 @@ def _watchdog_escalate_seconds(env: dict[str, str]) -> Decimal:
     return raw if Decimal("5") <= raw <= Decimal("120") else Decimal("20")
 
 
+def _settlement_lookback_days(env: dict[str, str]) -> int:
+    """EOD-01 v1.59 follow-up (2026-07-13): how many RECENT prior trading days
+    `_maybe_eod_reconcile_once`'s look-back re-checks for a settlement that
+    posted LATE (the root cause this dial fixes -- an SPX 0DTE settlement
+    posts to the broker's Receive-Deliver ledger the day AFTER the trading
+    day, so the ordinary same-day 16:15 capture can legitimately find nothing
+    yet; without a look-back that settlement is NEVER captured again once the
+    day's `already` gate seals it). Infra polling dial, same class as
+    `MEIC_QUOTE_STREAM_POLL_S` / `MEIC_WATCHDOG_GRACE_SECONDS` above -- range
+    1-30, default 5. Out-of-range falls back to the default (the same
+    reject-the-dial convention as `_chain_completeness_pct` above)."""
+    try:
+        raw = int(env.get("MEIC_SETTLEMENT_LOOKBACK_DAYS", "5"))
+    except ValueError:
+        return 5
+    return raw if 1 <= raw <= 30 else 5
+
+
 def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
     """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
     "required for return metrics"). Operator-set only: account net-liq is
@@ -552,7 +570,23 @@ class _BrokerReadFacade:
 EOD_RECONCILE_TIME = dtime(16, 15)  # RPT-15: after EOD-01 settlement each trading day
 
 
-async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_reads=None) -> None:
+def _has_settlement_pending(events, day: str) -> bool:
+    """Cheap, log-only "does `day` still need a settlement capture?" check --
+    NO broker call. Reuses `domain.projection.fold`'s existing
+    `EntryProjection.settlement_pending` (never a new notion of pending-ness):
+    True iff at least one of `day`'s own entries (by the `"{day}#{n}"` id
+    prefix, `reporting.folds.entry_day`'s convention) still has an unresolved
+    short leg with no `SettlementRecorded` captured for its symbol."""
+    from meic.domain.projection import fold
+    from meic.reporting.folds import entry_day
+
+    state = fold(events)
+    return any(entry_day(entry_id) == day and entry.settlement_pending
+              for entry_id, entry in state.entries.items())
+
+
+async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_reads=None,
+                                    *, lookback_days: int = 5) -> None:
     """RPT-15: after `EOD_RECONCILE_TIME` ET on a trading day (RPT-01: any ET
     day with >= 1 entry attempt), run the reconciler ONCE for that day.
     Idempotent by construction: a day already carrying a `DayBrokerConfirmed`
@@ -586,7 +620,29 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
     entirely -- unchanged behavior. A capture failure is swallowed exactly
     like the reconciler's own broker-unreachable case: it must never crash
     this tick, and the day simply stays uncaptured/unreconciled to retry
-    next tick."""
+    next tick.
+
+    2026-07-13 look-back fix (root cause: SPX 0DTE settlements post the day
+    AFTER the trading day -- see settlement_capture.py's module docstring --
+    so the ordinary same-day 16:15 capture above routinely finds nothing yet,
+    and the `already` gate then seals the day FOREVER before its settlement
+    ever posts). Above, the ordinary today-path is unchanged and still gated
+    by `already`. Below, INDEPENDENTLY of that gate -- because the gate
+    exists to stop redundant reconciles of a day whose facts haven't changed,
+    never to freeze a day whose facts just changed -- every tick with
+    `broker_reads` also re-checks the `lookback_days` (default 5, capped so
+    this can never walk the whole journal, see `_settlement_lookback_days`)
+    most recent PRIOR trading days. A prior day is only re-fetched from the
+    broker at all if `_has_settlement_pending` (log-only, no broker call)
+    says it still has an unresolved short with no captured settlement --
+    a fully-settled prior day costs nothing here. `capture_settlements` is
+    itself idempotent (keyed on `(at, symbol, sub_type)`), so re-running a
+    day that still has nothing new simply reports zero captured and is left
+    alone: only a day whose look-back capture actually appended a NEW
+    `SettlementRecorded` gets re-reconciled, since that is the one whose
+    bot-computed numbers just changed. Each prior day is captured/reconciled
+    independently, under its own broad except, so one day's broker failure
+    never blocks another's nor crashes the tick."""
     from meic.domain.events import CorrectionRecord, DayBrokerConfirmed
     from meic.reporting.folds import trading_days
 
@@ -594,23 +650,47 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
     if now.time() < EOD_RECONCILE_TIME:
         return
     day = now.date().isoformat()
-    if day not in trading_days(comp.events):
-        return  # RPT-15 only reconciles days with real activity
-    already = any((isinstance(e, DayBrokerConfirmed) and e.date == day)
-                  or (isinstance(e, CorrectionRecord) and e.date == day
-                      and e.scope == "own")
-                  for e in comp.events)
-    if already:
-        return
-    if broker_reads is not None:
-        from meic.application.settlement_capture import capture_settlements
+    all_days = trading_days(comp.events)
 
+    if day in all_days:
+        already = any((isinstance(e, DayBrokerConfirmed) and e.date == day)
+                      or (isinstance(e, CorrectionRecord) and e.date == day
+                          and e.scope == "own")
+                      for e in comp.events)
+        if not already:
+            if broker_reads is not None:
+                from meic.application.settlement_capture import capture_settlements
+
+                try:
+                    await capture_settlements(comp.events, broker_reads, day,
+                                              now_iso=lambda: now_fn().isoformat())
+                except Exception:  # noqa: BLE001 -- never let a capture failure crash the tick
+                    pass
+            await reconciler.reconcile_day(day)
+
+    if broker_reads is None:
+        return  # pre-v1.59 caller / offline test -- no look-back possible either
+
+    from meic.application.settlement_capture import capture_settlements
+
+    prior_days = [d for d in all_days if d < day][-lookback_days:]
+    for prior_day in prior_days:
+        if not _has_settlement_pending(comp.events, prior_day):
+            continue  # nothing outstanding for this day -- no broker call at all
         try:
-            await capture_settlements(comp.events, broker_reads, day,
-                                      now_iso=lambda: now_fn().isoformat())
-        except Exception:  # noqa: BLE001 -- never let a capture failure crash the tick
-            pass
-    await reconciler.reconcile_day(day)
+            result = await capture_settlements(comp.events, broker_reads, prior_day,
+                                               now_iso=lambda: now_fn().isoformat())
+        except Exception:  # noqa: BLE001 -- one day's broker failure must not sink the tick
+            continue
+        if result.get("captured", 0) > 0:
+            # This prior day's bot-computed numbers just changed (a real
+            # settlement landed) -- re-reconcile it against broker truth,
+            # deliberately bypassing the `already` gate above: that gate
+            # guards the ORDINARY case (nothing changed), not this one.
+            try:
+                await reconciler.reconcile_day(prior_day)
+            except Exception:  # noqa: BLE001 -- never let a re-reconcile crash the tick
+                pass
 
 
 def _journaled_own_order_ids(events) -> set[str]:
@@ -1743,6 +1823,7 @@ def live_app():
     # shape as the reconciler's) for settlement capture, run BEFORE the
     # reconcile compare in `_probe_once` below.
     settlement_broker_reads = _BrokerReadFacade(comp.broker)
+    settlement_lookback_days = _settlement_lookback_days(env)
     # EOD-03 (2026-07-11): the sweep's half-day calendar — the SAME algorithmic
     # exchange facts the DAY-01/02 gates use (nyse_holidays), a decade out, so
     # a 13:00 half-day close sweeps at 13:00 (DAY-02), never a hardcoded 16:00.
@@ -1821,7 +1902,8 @@ def live_app():
             # NOT an error (RPT-15: retries next tick/boot, never a crash).
             await _maybe_eod_reconcile_once(app.state, comp, report_reconciler,
                                             lambda: datetime.now(ET),
-                                            broker_reads=settlement_broker_reads)
+                                            broker_reads=settlement_broker_reads,
+                                            lookback_days=settlement_lookback_days)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
 

@@ -20,7 +20,12 @@ import types
 from datetime import datetime, time as dtime, timezone
 from decimal import Decimal as D
 
-from meic.adapters.api.server import EOD_RECONCILE_TIME, _BrokerReadFacade, _maybe_eod_reconcile_once
+from meic.adapters.api.server import (
+    EOD_RECONCILE_TIME,
+    _BrokerReadFacade,
+    _maybe_eod_reconcile_once,
+    _settlement_lookback_days,
+)
 from meic.application.report_reconciler import ReportReconciler
 from meic.domain.events import (
     CondorFilled,
@@ -290,3 +295,215 @@ def test_a_capture_failure_never_crashes_the_tick():
     assert events == before
     assert not any(isinstance(e, SettlementRecorded) for e in events)
     assert not any(isinstance(e, DayBrokerConfirmed) for e in events)
+
+
+# --- 2026-07-13 look-back fix: a late settlement must NEVER be lost forever --
+#
+# Root cause: SPX 0DTE settlements post to the broker's Receive-Deliver
+# ledger the day AFTER the trading day (settlement_capture.py's own module
+# docstring). The ordinary 16:15 same-day capture above therefore routinely
+# finds nothing, `capture_settlements` appends zero rows, and the day still
+# gets sealed by a `DayBrokerConfirmed`/own-scoped `CorrectionRecord` at that
+# same tick (or an earlier one). With no look-back, `already` then blocks
+# that day FOREVER and the settlement that posts tomorrow is never captured.
+# These tests drive `_maybe_eod_reconcile_once` directly (never a real
+# broker), so a fake reconciler that only RECORDS which days it was asked to
+# reconcile is precise about exactly what this trigger orchestrates, leaving
+# `ReportReconciler`'s own compare logic (covered above) out of scope here.
+
+DAY0 = "2026-07-06"  # oldest prior day used below
+DAY1 = "2026-07-07"
+DAY2 = "2026-07-08"
+TODAY = "2026-07-10"  # the tick's "now" -- strictly after DAY/DAY0-2
+
+
+class _SpyReconciler:
+    """Records every day it is asked to reconcile -- lets these tests assert
+    exactly which days got re-reconciled without depending on
+    `ReportReconciler`'s own broker-truth compare semantics."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def reconcile_day(self, day: str) -> None:
+        self.calls.append(day)
+
+
+class _MultiDaySettlementBroker(_StubBroker):
+    """`day_settlements` keyed per-day, with per-day call tracking and the
+    ability to make specific days raise -- everything the look-back tests
+    below need that `_SettlementBroker` (single-day) doesn't give them."""
+
+    def __init__(self, *, settlements_by_day=None, raise_days=frozenset(), **kw):
+        super().__init__(**kw)
+        self._settlements_by_day = settlements_by_day or {}
+        self._raise_days = frozenset(raise_days)
+        self.day_settlements_calls: list[str] = []
+
+    async def day_settlements(self, day):
+        self.day_settlements_calls.append(day)
+        if day in self._raise_days:
+            raise ConnectionError("down")
+        return list(self._settlements_by_day.get(day, ()))
+
+
+def _unresolved_short_entry(day: str, *, symbol: str) -> list:
+    """A day whose only entry has a short leg never stopped/closed --
+    `EntryProjection.settlement_pending` is True until a `SettlementRecorded`
+    lands for `symbol` (see domain/projection.py)."""
+    leg = FilledLeg(symbol=symbol, right="C", role="short", qty=1, price=D("2.15"))
+    return [DayArmed(date=day, entry_count=1),
+            CondorFilled(entry_id=f"{day}#1", net_credit=D("4.00"), fee=D("0.05"),
+                        legs=(leg,), broker_order_id=f"order-{day}")]
+
+
+def _settlement_row(symbol: str, *, value=D("-2.00"), net_value=D("-2.05")):
+    return types.SimpleNamespace(
+        symbol=symbol, transaction_sub_type="Cash Settled Assignment",
+        value=value, net_value=net_value, price=D("7540.0"), quantity=D("1"),
+        executed_at=datetime(2026, 7, 8, 2, 0, tzinfo=timezone.utc))
+
+
+def test_the_real_bug_a_late_settlement_is_captured_and_the_day_re_reconciled():
+    """THE BUG, reproduced: DAY's entry is still `settlement_pending` (short
+    leg never stopped, no `SettlementRecorded` yet) but an EARLIER tick
+    already sealed the day with a `DayBrokerConfirmed` -- exactly the state
+    every entry in the real journal is stuck in. A LATER tick, whose broker
+    NOW has DAY's settlement row available, must capture it (append a
+    `SettlementRecorded`) AND re-reconcile DAY -- the `already` gate must not
+    freeze it forever. Against pre-fix code this fails: the look-back does
+    not exist, so nothing ever looks back at DAY again."""
+    symbol = "SPXW  260707C07540000"
+    events = [*_unresolved_short_entry(DAY1, symbol=symbol),
+             DayBrokerConfirmed(date=DAY1, at="2026-07-07T16:20:00-04:00")]
+    broker = _MultiDaySettlementBroker(settlements_by_day={DAY1: [_settlement_row(symbol)]})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 8, 20, 0, tzinfo=timezone.utc)  # a LATER tick, DAY1's "tomorrow"
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+
+    assert any(isinstance(e, SettlementRecorded) and e.day == DAY1 for e in events)
+    assert DAY1 in reconciler.calls
+
+
+def test_look_back_idempotency_second_tick_appends_nothing_and_does_not_reconcile():
+    """Running the look-back twice must append the settlement only once
+    (`capture_settlements`'s own idempotency) and must NOT re-reconcile the
+    second time -- nothing new landed, so there is nothing to re-check."""
+    symbol = "SPXW  260707C07540000"
+    events = [*_unresolved_short_entry(DAY1, symbol=symbol),
+             DayBrokerConfirmed(date=DAY1, at="2026-07-07T16:20:00-04:00")]
+    broker = _MultiDaySettlementBroker(settlements_by_day={DAY1: [_settlement_row(symbol)]})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 8, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+    assert reconciler.calls.count(DAY1) == 1
+    assert sum(1 for e in events if isinstance(e, SettlementRecorded)) == 1
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+    assert sum(1 for e in events if isinstance(e, SettlementRecorded)) == 1  # still just one
+    assert reconciler.calls.count(DAY1) == 1  # not re-reconciled a second time
+
+
+def test_a_day_with_no_settlement_pending_entries_is_not_re_fetched_at_all():
+    """A prior day whose entry already closed some other way (no unresolved
+    short) has nothing outstanding -- `_has_settlement_pending` says so from
+    the log alone, and the broker's `day_settlements` must never even be
+    called for it (no wasted broker round-trip, no stamp churn)."""
+    events = [DayArmed(date=DAY1, entry_count=1),
+             CondorFilled(entry_id=f"{DAY1}#1", net_credit=D("4.00"), fee=D("0"),
+                          broker_order_id="order-closed"),
+             EntryClosed(entry_id=f"{DAY1}#1", initiator="eod"),  # flat by EOD -- nothing pending
+             DayBrokerConfirmed(date=DAY1, at="2026-07-07T16:20:00-04:00")]
+    broker = _MultiDaySettlementBroker(settlements_by_day={})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 8, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+
+    assert DAY1 not in broker.day_settlements_calls
+    assert reconciler.calls == []
+
+
+def test_the_ordinary_case_is_unchanged_no_stamp_churn_every_tick():
+    """A prior day that has ALREADY been fully captured (its settlement is
+    already journaled) must not be re-reconciled on every subsequent tick --
+    only a NEWLY captured settlement earns a re-reconcile."""
+    symbol = "SPXW  260707C07540000"
+    events = [*_unresolved_short_entry(DAY1, symbol=symbol),
+             SettlementRecorded(entry_id=f"{DAY1}#1", day=DAY1, at="2026-07-08T02:00:00+00:00",
+                                symbol=symbol, sub_type="Cash Settled Assignment",
+                                quantity=1, price=D("7540.0"), value=D("-2.05"), fee=None,
+                                source="tastytrade_receive_deliver"),
+             DayBrokerConfirmed(date=DAY1, at="2026-07-07T16:20:00-04:00")]
+    broker = _MultiDaySettlementBroker(settlements_by_day={DAY1: [_settlement_row(symbol)]})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 8, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+
+    assert reconciler.calls == []  # already settled -- no stamp churn, no alert spam
+
+
+def test_look_back_is_bounded_never_walks_the_whole_journal():
+    """Three prior days all have an outstanding settlement, but `lookback_days`
+    is pinned to 2 -- only the two MOST RECENT prior days may be re-fetched;
+    the oldest (DAY0) is never touched, proving the walk is bounded."""
+    events = []
+    for day in (DAY0, DAY1, DAY2):
+        events += _unresolved_short_entry(day, symbol=f"SPXW  26070{day[-1]}C07540000")
+        events.append(DayBrokerConfirmed(date=day, at=f"{day}T16:20:00-04:00"))
+    broker = _MultiDaySettlementBroker(settlements_by_day={
+        day: [_settlement_row(f"SPXW  26070{day[-1]}C07540000")] for day in (DAY0, DAY1, DAY2)})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=2))
+
+    assert DAY0 not in broker.day_settlements_calls
+    assert DAY1 in broker.day_settlements_calls
+    assert DAY2 in broker.day_settlements_calls
+
+
+def test_a_look_back_capture_failure_for_one_day_does_not_block_others_or_crash():
+    """DAY1's broker read is down; DAY2's is fine. DAY1's failure must not
+    prevent DAY2 from being captured and reconciled, and must not crash."""
+    symbol1 = "SPXW  260707C07540000"
+    symbol2 = "SPXW  260708C07540000"
+    events = [*_unresolved_short_entry(DAY1, symbol=symbol1),
+             DayBrokerConfirmed(date=DAY1, at="2026-07-07T16:20:00-04:00"),
+             *_unresolved_short_entry(DAY2, symbol=symbol2),
+             DayBrokerConfirmed(date=DAY2, at="2026-07-08T16:20:00-04:00")]
+    broker = _MultiDaySettlementBroker(
+        settlements_by_day={DAY2: [_settlement_row(symbol2)]}, raise_days={DAY1})
+    reconciler = _SpyReconciler()
+    comp = types.SimpleNamespace(events=events)
+    later_now_fn = lambda: datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc)
+
+    asyncio.run(_maybe_eod_reconcile_once(_app_state(), comp, reconciler, later_now_fn,
+                                          broker_reads=broker, lookback_days=5))
+
+    assert not any(isinstance(e, SettlementRecorded) and e.day == DAY1 for e in events)
+    assert any(isinstance(e, SettlementRecorded) and e.day == DAY2 for e in events)
+    assert DAY1 not in reconciler.calls
+    assert DAY2 in reconciler.calls
+
+
+def test_settlement_lookback_days_dial_default_and_bounds():
+    assert _settlement_lookback_days({}) == 5
+    assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "3"}) == 3
+    assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "0"}) == 5  # out of range
+    assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "31"}) == 5  # out of range
+    assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "not-a-number"}) == 5
