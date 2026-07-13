@@ -36,6 +36,30 @@ def breached(floor: Decimal, current_profit: Decimal) -> bool:
     return current_profit <= floor
 
 
+def entry_profit_amount(
+    *, net_credit: Decimal, fees: Decimal, stop_fills: Decimal,
+    recoveries: Decimal, open_side_costs: dict,
+) -> Decimal:
+    """TPF-01's per-share realized+unrealized P&L quantity — the single
+    formula BOTH the profit% evaluator below and the live P&L display
+    (server.py `_live_pnl_enricher`) derive from, so the two figures agree BY
+    CONSTRUCTION and can never diverge (RPT-12/TPF-01: "one formula, both
+    consumers").
+
+    realized + unrealized = (realized P&L of closed sides) − (cost to close
+    every still-OPEN side at its current mid). `open_side_costs` maps each
+    still-OPEN side to its current cost-to-close (short mid − long mid); an
+    already-stopped/closed side contributes nothing here — its realized
+    effect already lives in `stop_fills`/`recoveries` (TPF-05). All money here
+    is PER-SHARE (the same scale `net_credit`/`EntryProjection.pnl` already
+    use) — the caller multiplies by 100 x contracts for a dollar figure, or
+    divides by `net_credit` for a percentage.
+    """
+    realized = net_credit - fees - stop_fills + recoveries
+    open_cost = sum(open_side_costs.values(), Decimal("0"))
+    return realized - open_cost
+
+
 def entry_profit_pct(
     *, net_credit: Decimal, fees: Decimal, stop_fills: Decimal,
     recoveries: Decimal, open_side_costs: dict,
@@ -44,19 +68,14 @@ def entry_profit_pct(
     ("Entry profit% uses the TPF-01 definition verbatim ... one evaluator").
 
     profit% = (realized P&L of closed sides + unrealized P&L of open sides at
-    mid) / total net credit. `open_side_costs` maps each still-OPEN side to
-    its current cost-to-close (short mid − long mid); an already-stopped/
-    closed side contributes nothing here — its realized effect already lives
-    in `stop_fills`/`recoveries` (TPF-05). All money here is PER-SHARE
-    (the same scale `net_credit`/`EntryProjection.pnl` already use) — contracts
-    cancel out of a percentage, so this needs no contract count.
+    mid) / total net credit — `entry_profit_amount` above computes that
+    per-share quantity; this just expresses it as a percentage of the credit.
 
     Returns None when `net_credit` is zero — nothing to express a % of (an
     unfilled/never-credited entry has no floor/target math to speak of).
     """
     if net_credit == 0:
         return None
-    realized = net_credit - fees - stop_fills + recoveries
-    open_cost = sum(open_side_costs.values(), Decimal("0"))
-    profit = realized - open_cost
+    profit = entry_profit_amount(net_credit=net_credit, fees=fees, stop_fills=stop_fills,
+                                 recoveries=recoveries, open_side_costs=open_side_costs)
     return profit / net_credit * 100

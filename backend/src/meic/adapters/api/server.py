@@ -778,66 +778,70 @@ def _resolve_leg_mid(occ_symbol: str | None, side: str, snapshot, strike: Decima
     return _leg_mid(side_chain, strike), None
 
 
-def _live_pnl_enricher(snaps, hub=None, *, clock=None, max_quote_age_ms: int = 3000):
+def _live_pnl_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms: int = 3000):
     """FEATURE 3: live P/L on OPEN entry cards, from the chain snapshot already
     held for selection/DAT-02 — no new subscription. Reads `snaps.last`, so it
     updates on the same ~60s health-loop cadence that refreshes it (see
     `_wire_live_day`/`_probe_once`); a mark outside the ATM band, or a stale/
     absent snapshot, yields an honest null ("—" in the UI) rather than a guess.
 
-    NFR-04 (2026-07-13): `hub`/`clock`, when supplied, let each leg's mid
-    resolve to a LIVE QuoteHub tick instead of the snapshot's (up to ~60s
-    old) value — see `_resolve_leg_mid`. `live_pnl_asof` only claims the
-    live/hub timestamp when EVERY leg resolved live this tick (the freshest
-    of the four hub stamps); if even one leg fell back to the snapshot, the
-    whole card's `asof` stays the snapshot's own `taken_at` — exactly today's
-    behaviour, never a misleading "live" stamp on a partly-stale card. `hub`
-    absent/empty/sick (no marks land) reduces byte-for-byte to the pre-NFR-04
-    snapshot-only path.
+    BUG FIX (2026-07-13, live incident): this used to re-mark ALL FOUR legs as
+    if the whole condor were still open, ignoring `stop_fills`/`recoveries`/
+    `fees` entirely — so the instant a side was stopped and closed, the number
+    priced a spread the bot no longer owned (observed: a stopped+LEX-recovered
+    PUT side re-marked at its now-meaningless price, once even on options that
+    had EXPIRED a week earlier). The correct figure already existed in the
+    shared TPF/TPT evaluator (`_entry_profit_pct_now`/`domain.tpf`), which
+    folds `stop_fills`/`recoveries`/`fees` and marks ONLY the still-open
+    sides. This enricher now derives `live_pnl` from the SAME per-share
+    quantity (`domain.tpf.entry_profit_amount`) fed by the SAME open-side
+    costing (`_open_side_costs`) that evaluator uses — one formula, two
+    consumers (RPT-12/TPF-01), so `live_pnl` and `profit_pct` can never
+    diverge again. A fully-closed entry (every side stopped/closed/expired)
+    needs no mark at all and still produces a real number; only a STILL-OPEN
+    side with no available mark yields the honest null.
+
+    NFR-04 (2026-07-13): `hub`/`clock`, when supplied, let each open side's
+    mid resolve to a LIVE QuoteHub tick instead of the snapshot's (up to ~60s
+    old) value — see `_resolve_leg_mid` (via `_open_side_costs`). `live_pnl_asof`
+    only claims the live/hub timestamp when EVERY mark that actually
+    contributed (i.e. every still-open side's legs) resolved live this tick;
+    if even one fell back to the snapshot — or nothing needed a mark at all —
+    the card's `asof` stays the snapshot's own `taken_at`, exactly today's
+    behaviour, never a misleading "live" stamp. `hub` absent/empty/sick (no
+    marks land) reduces byte-for-byte to the pre-NFR-04 snapshot-only path.
     """
+    from meic.domain.projection import fold
+    from meic.domain.tpf import entry_profit_amount
 
     def enrich(cards: list[dict]) -> list[dict]:
         snap = getattr(snaps, "last", None)
         now = clock.now() if clock is not None else None
+        day = fold(comp.events)
         for card in cards:
             card["live_pnl"] = None
             card["live_pnl_asof"] = None
-            legs = card.get("legs")
-            if card.get("status") in _TERMINAL_STATUSES or not legs:
+            if card.get("status") in _TERMINAL_STATUSES:
                 continue
             if snap is None or snap.stale:
                 continue
-            by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
-            for leg in legs:
-                by_side.setdefault(leg["side"], {})[leg["role"]] = leg
-            put_short, put_long = by_side["PUT"].get("short"), by_side["PUT"].get("long")
-            call_short, call_long = by_side["CALL"].get("short"), by_side["CALL"].get("long")
-            if not (put_short and put_long and call_short and call_long):
+            e = day.entries.get(card["entry_id"])
+            if e is None or not e.legs:
                 continue
-            put_short_mid, ps_at = _resolve_leg_mid(
-                put_short.get("symbol"), "PUT", snap, Decimal(put_short["strike"]),
-                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-            put_long_mid, pl_at = _resolve_leg_mid(
-                put_long.get("symbol"), "PUT", snap, Decimal(put_long["strike"]),
-                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-            call_short_mid, cs_at = _resolve_leg_mid(
-                call_short.get("symbol"), "CALL", snap, Decimal(call_short["strike"]),
-                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-            call_long_mid, cl_at = _resolve_leg_mid(
-                call_long.get("symbol"), "CALL", snap, Decimal(call_long["strike"]),
-                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-            if None in (put_short_mid, put_long_mid, call_short_mid, call_long_mid):
-                continue  # a mark outside the band/no quote -> honest null, never a guess
-            current_value = (put_short_mid - put_long_mid) + (call_short_mid - call_long_mid)
-            contracts = int(put_short["qty"])
-            net_credit = Decimal(card["net_credit"])
-            live_pnl = (net_credit - current_value) * 100 * contracts
-            card["live_pnl"] = str(live_pnl)
-            hub_stamps = (ps_at, pl_at, cs_at, cl_at)
-            if all(s is not None for s in hub_stamps):
-                card["live_pnl_asof"] = max(hub_stamps).isoformat()  # all four legs LIVE
+            stamps: dict[str, tuple] = {}
+            open_costs = _open_side_costs(e, snap, hub=hub, now=now,
+                                          max_quote_age_ms=max_quote_age_ms, stamps=stamps)
+            if open_costs is None:
+                continue  # a still-open side's mark is unavailable -> honest null, never a guess
+            contracts = next((leg.qty for leg in e.legs if leg.role == "short"), 1)
+            profit = entry_profit_amount(net_credit=e.net_credit, fees=e.fees, stop_fills=e.stop_fills,
+                                         recoveries=e.recoveries, open_side_costs=open_costs)
+            card["live_pnl"] = str(profit * 100 * contracts)
+            hub_stamps = [s for pair in stamps.values() for s in pair]
+            if hub_stamps and all(s is not None for s in hub_stamps):
+                card["live_pnl_asof"] = max(hub_stamps).isoformat()  # every contributing mark LIVE
             else:
-                card["live_pnl_asof"] = snap.taken_at.isoformat()    # any fallback -> today's stamp
+                card["live_pnl_asof"] = snap.taken_at.isoformat()    # any fallback (or nothing open) -> today's stamp
         return cards
 
     return enrich
@@ -868,19 +872,28 @@ def _profit_pct_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms:
     return enrich
 
 
-def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000) -> dict[str, Decimal] | None:
+def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000,
+                     stamps: dict[str, tuple] | None = None) -> dict[str, Decimal] | None:
     """The current cost-to-close (short mid − long mid) for each still-OPEN
-    side of entry `e` — the per-share input `domain.tpf.entry_profit_pct`
-    needs for its "unrealized P&L of open sides at mid" term. Shares the same
-    per-leg mid derivation as `_live_pnl_enricher`/`_sample_marks_once` above,
-    restricted to sides not yet stopped/closed/expired (TPF-05: a resolved
-    side contributes its REALIZED effect only, already inside
-    stop_fills/recoveries — never re-marked here).
+    side of entry `e` — the per-share input `domain.tpf.entry_profit_pct`/
+    `entry_profit_amount` needs for their "unrealized P&L of open sides at
+    mid" term. Shares the same per-leg mid derivation as
+    `_live_pnl_enricher`/`_sample_marks_once` above, restricted to sides not
+    yet stopped/closed/expired (TPF-05: a resolved side contributes its
+    REALIZED effect only, already inside stop_fills/recoveries — never
+    re-marked here).
 
     NFR-04 (2026-07-13): each leg resolves through `_resolve_leg_mid` —
     hub-first, snapshot-fallback — instead of `_leg_mid` directly. `hub`/`now`
     default to None, which skips the hub step entirely (byte-identical to the
     pre-NFR-04 snapshot-only behaviour).
+
+    `stamps`, if supplied, is filled in-place with `side -> (short_hub_stamp,
+    long_hub_stamp)` for every OPEN side actually costed — so a caller that
+    needs to know whether those marks came from a live hub tick (e.g.
+    `_live_pnl_enricher`'s `live_pnl_asof`) can ask without a second,
+    drifting mark-resolution pass. Optional and additive: every existing
+    caller that doesn't pass it is unaffected.
 
     Returns None (an honest gap, DAT-02) when any open side cannot be FULLY
     marked (missing legs, or a leg outside the ATM band with no quote) — the
@@ -897,15 +910,17 @@ def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int =
         short_leg, long_leg = by_side[side].get("short"), by_side[side].get("long")
         if short_leg is None or long_leg is None:
             return None
-        short_mid, _ = _resolve_leg_mid(
+        short_mid, short_at = _resolve_leg_mid(
             short_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(short_leg.symbol)),
             hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-        long_mid, _ = _resolve_leg_mid(
+        long_mid, long_at = _resolve_leg_mid(
             long_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(long_leg.symbol)),
             hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         if short_mid is None or long_mid is None:
             return None
         out[side] = short_mid - long_mid
+        if stamps is not None:
+            stamps[side] = (short_at, long_at)
     return out
 
 
@@ -1557,7 +1572,7 @@ def live_app():
     # snapshot exactly as before when the hub has nothing fresh). paper_app
     # passes no enricher at all (SIM-01 marks are synthetic, nothing honest to
     # show for either).
-    live_pnl_enricher = _live_pnl_enricher(live["snapshots"], hub, clock=comp.clock,
+    live_pnl_enricher = _live_pnl_enricher(comp, live["snapshots"], hub, clock=comp.clock,
                                            max_quote_age_ms=max_quote_age_ms)
     profit_pct_enricher = _profit_pct_enricher(comp, live["snapshots"], hub, clock=comp.clock,
                                                max_quote_age_ms=max_quote_age_ms)

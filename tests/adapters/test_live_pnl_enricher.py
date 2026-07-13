@@ -2,6 +2,17 @@
 snapshot (no DXLink, no broker). server.py wires this over the SAME snapshot
 selection already takes (`_Snapshots.last`) — no new subscription.
 
+BUG FIX (2026-07-13, live incident): `_live_pnl_enricher` used to re-mark ALL
+FOUR legs as if the whole condor were still open, ignoring `stop_fills`/
+`recoveries`/`fees` — so a stopped-and-closed side priced a spread the bot no
+longer owned. It now derives `live_pnl` from the SAME per-share quantity
+(`domain.tpf.entry_profit_amount`) and the SAME open-side costing
+(`_open_side_costs`) that the shared TPF/TPT evaluator (`_entry_profit_pct_now`)
+uses — one formula, two consumers — so `live_pnl` and `profit_pct` can never
+diverge. That means the enricher now needs the projection entry itself (for
+`stop_fills`/`recoveries`/`fees`/`sides_stopped`/etc.), read the SAME way
+`_profit_pct_enricher` already does: `fold(comp.events).entries[entry_id]`.
+
 NFR-04 (2026-07-13): the hub-first / snapshot-fallback resolution tests below
 prove the "strictly no worse than today" safety property -- a fresh QuoteHub
 mark is preferred and stamps `live_pnl_asof` with its OWN timestamp; a stale
@@ -14,7 +25,9 @@ from decimal import Decimal as D
 from meic.adapters.api.server import _live_pnl_enricher
 from meic.adapters.dxlink.chain_snapshot import ChainSnapshot
 from meic.domain.chain import ChainSide, Mark
+from meic.domain.events import CondorFilled, FilledLeg, LongSold, ShortStopped
 from meic.domain.staleness import StampedQuote
+from meic.domain.tpf import entry_profit_pct
 
 TAKEN_AT = datetime(2026, 7, 9, 14, 35, tzinfo=timezone.utc)
 
@@ -51,6 +64,14 @@ class _Snaps:
         self.last = last
 
 
+class _Comp:
+    """Minimal stand-in for the composition object: just enough for
+    `fold(comp.events)` -- the SAME shape `_profit_pct_enricher` reads."""
+
+    def __init__(self, events):
+        self.events = events
+
+
 class _FakeHub:
     """Minimal stand-in for `QuoteHub.mark` -- a symbol -> StampedQuote map."""
 
@@ -80,23 +101,26 @@ def _snapshot(put_marks: dict, call_marks: dict, *, stale: bool = False,
         streamer_symbols=STREAMER_MAP if streamer_symbols is None else streamer_symbols)
 
 
-def _leg(side, role, strike, price, qty=1, symbol=None):
-    leg = {"side": side, "role": role, "strike": strike, "price": price, "qty": qty}
-    if symbol is not None:
-        leg["symbol"] = symbol
-    return leg
+def _leg(side, role, symbol, price, qty=1):
+    return FilledLeg(symbol=symbol, right="P" if side == "PUT" else "C", role=role,
+                     qty=qty, price=D(price))
 
 
-def _card(legs, *, status="PROTECTED", net_credit="3.60"):
-    return {"status": status, "net_credit": net_credit, "legs": legs}
+FULL_LEGS = (
+    _leg("PUT", "short", PUT_SHORT_SYM, "1.80"),
+    _leg("PUT", "long", PUT_LONG_SYM, "0.08"),
+    _leg("CALL", "short", CALL_SHORT_SYM, "1.95"),
+    _leg("CALL", "long", CALL_LONG_SYM, "0.07"),
+)
 
 
-FULL_LEGS = [
-    _leg("PUT", "short", "7535", "1.80"),
-    _leg("PUT", "long", "7510", "0.08"),
-    _leg("CALL", "short", "7540", "1.95"),
-    _leg("CALL", "long", "7565", "0.07"),
-]
+def _filled(entry_id, *, net_credit="3.60", legs=FULL_LEGS, fee="0"):
+    return CondorFilled(at=TAKEN_AT.isoformat(), entry_id=entry_id, net_credit=D(net_credit),
+                        fee=D(fee), legs=legs)
+
+
+def _card(entry_id, *, status="PROTECTED"):
+    return {"entry_id": entry_id, "status": status}
 
 
 def test_live_pnl_computed_when_every_mark_is_present():
@@ -105,9 +129,10 @@ def test_live_pnl_computed_when_every_mark_is_present():
     call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.00")),  # mid 1.95
                  D("7565"): Mark(bid=D("0.06"), ask=D("0.08"))}  # mid 0.07
     snap = _snapshot(put_marks, call_marks)
-    enrich = _live_pnl_enricher(_Snaps(snap))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
 
-    cards = enrich([_card(FULL_LEGS)])
+    cards = enrich([_card("e1")])
 
     # current_value = (1.70-0.08) + (1.95-0.07) = 1.62 + 1.88 = 3.50
     # live_pnl = (3.60 - 3.50) x 100 x 1 = 10.00
@@ -122,9 +147,10 @@ def test_live_pnl_is_null_when_one_mark_is_missing():
     call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.00")),
                  D("7565"): Mark(bid=D("0.06"), ask=D("0.08"))}
     snap = _snapshot(put_marks, call_marks)
-    enrich = _live_pnl_enricher(_Snaps(snap))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
 
-    cards = enrich([_card(FULL_LEGS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] is None
     assert cards[0]["live_pnl_asof"] is None
@@ -134,17 +160,19 @@ def test_live_pnl_is_null_when_the_snapshot_is_stale():
     put_marks = {D("7535"): Mark(bid=D("1.65"), ask=D("1.75")), D("7510"): Mark(bid=D("0.07"), ask=D("0.09"))}
     call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.00")), D("7565"): Mark(bid=D("0.06"), ask=D("0.08"))}
     snap = _snapshot(put_marks, call_marks, stale=True)
-    enrich = _live_pnl_enricher(_Snaps(snap))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
 
-    cards = enrich([_card(FULL_LEGS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] is None and cards[0]["live_pnl_asof"] is None
 
 
 def test_live_pnl_is_null_when_no_snapshot_has_ever_been_taken():
-    enrich = _live_pnl_enricher(_Snaps(None))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(None))
 
-    cards = enrich([_card(FULL_LEGS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] is None and cards[0]["live_pnl_asof"] is None
 
@@ -153,26 +181,138 @@ def test_live_pnl_skips_terminal_and_legless_cards():
     put_marks = {D("7535"): Mark(bid=D("1.65"), ask=D("1.75")), D("7510"): Mark(bid=D("0.07"), ask=D("0.09"))}
     call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.00")), D("7565"): Mark(bid=D("0.06"), ask=D("0.08"))}
     snap = _snapshot(put_marks, call_marks)
-    enrich = _live_pnl_enricher(_Snaps(snap))
+    # "e1" is CLOSED; "e2" has no CondorFilled event at all (no legs ever
+    # recorded) -- both must yield an honest null, never a guess.
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
 
-    closed = _card(FULL_LEGS, status="CLOSED")
-    legless = _card([], status="PROTECTED")
+    closed = _card("e1", status="CLOSED")
+    legless = _card("e2", status="PROTECTED")
     cards = enrich([closed, legless])
 
     assert cards[0]["live_pnl"] is None and cards[1]["live_pnl"] is None
 
 
+# --- THE REGRESSION: a stopped+recovered side must not be re-marked --------
+
+def test_stopped_and_recovered_put_side_is_not_remarked_call_side_only_priced():
+    """THE LIVE BUG (2026-07-13): the PUT side stopped (fill 2.95) and was
+    LEX-recovered (0.65); the CALL side is still open, credit 2.80. The old
+    formula re-marked ALL FOUR legs including the closed PUT spread -- pure
+    fiction, since the bot no longer owns those legs. The fix must price
+    ONLY the open CALL side and fold the PUT side's REALIZED fills."""
+    call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.10")),   # mid 2.00
+                 D("7565"): Mark(bid=D("1.10"), ask=D("1.30"))}   # mid 1.20
+    # PUT marks are present in the snapshot but must be COMPLETELY IGNORED --
+    # the side is closed, so re-marking it would be exactly the bug.
+    put_marks = {D("7535"): Mark(bid=D("50.00"), ask=D("60.00")),
+                D("7510"): Mark(bid=D("0.01"), ask=D("0.02"))}
+    snap = _snapshot(put_marks, call_marks)
+    comp = _Comp([
+        _filled("e1", net_credit="2.80"),
+        ShortStopped(entry_id="e1", side="PUT", fill=D("2.95"), slippage=D("0")),
+        LongSold(entry_id="e1", side="PUT", recovery=D("0.65")),
+    ])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
+
+    cards = enrich([_card("e1", status="LEX_RECOVERED")])
+
+    # call cost-to-close = 2.00 - 1.20 = 0.80
+    # realized = net_credit - fees - stop_fills + recoveries = 2.80 - 0 - 2.95 + 0.65 = 0.50
+    # profit (per-share) = realized - open_cost = 0.50 - 0.80 = -0.30
+    # live_pnl = -0.30 * 100 * 1 = -30.00
+    assert cards[0]["live_pnl"] == "-30.00"
+
+    # THE BUGGY all-four-legs re-mark would have been:
+    #   current_value = (50.00-put-short-mid=55 - 0.015) + (2.00 - 1.20)
+    # -- wildly different and not what's asserted above; this pins the fix
+    # never falls back to that computation.
+    buggy_current_value = (D("55.00") - D("0.015")) + (D("2.00") - D("1.20"))
+    buggy_live_pnl = (D("2.80") - buggy_current_value) * 100 * 1
+    assert D(cards[0]["live_pnl"]) != buggy_live_pnl
+
+
+def test_live_pnl_and_profit_pct_agree_by_construction_stopped_and_recovered():
+    """`live_pnl` and `profit_pct` must derive from the SAME formula: dividing
+    `live_pnl` back down to a percentage must equal `profit_pct` exactly, for
+    every combination of nothing-closed / one-side-stopped / stopped+recovered."""
+    call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.10")), D("7565"): Mark(bid=D("1.10"), ask=D("1.30"))}
+    put_marks = {D("7535"): Mark(bid=D("1.65"), ask=D("1.75")), D("7510"): Mark(bid=D("0.07"), ask=D("0.09"))}
+    snap = _snapshot(put_marks, call_marks)
+    net_credit = D("2.80")
+
+    scenarios = [
+        ("nothing_closed", []),
+        ("one_side_stopped", [ShortStopped(entry_id="e1", side="PUT", fill=D("2.95"), slippage=D("0"))]),
+        ("one_side_stopped_and_recovered", [
+            ShortStopped(entry_id="e1", side="PUT", fill=D("2.95"), slippage=D("0")),
+            LongSold(entry_id="e1", side="PUT", recovery=D("0.65")),
+        ]),
+    ]
+    for _name, extra_events in scenarios:
+        comp = _Comp([_filled("e1", net_credit=str(net_credit)), *extra_events])
+        enrich = _live_pnl_enricher(comp, _Snaps(snap))
+        cards = enrich([_card("e1")])
+
+        live_pnl = D(cards[0]["live_pnl"])
+        contracts = 1
+        computed_pct = live_pnl / (net_credit * 100 * contracts) * 100
+
+        e = comp.events  # re-derive profit_pct the same way the app does
+        from meic.domain.projection import fold
+        entry = fold(e).entries["e1"]
+        from meic.adapters.api.server import _open_side_costs
+        open_costs = _open_side_costs(entry, snap)
+        expected_pct = entry_profit_pct(net_credit=entry.net_credit, fees=entry.fees,
+                                        stop_fills=entry.stop_fills, recoveries=entry.recoveries,
+                                        open_side_costs=open_costs)
+        assert computed_pct == expected_pct, _name
+
+
+def test_live_pnl_is_a_real_number_when_both_sides_are_closed():
+    """Both sides stopped -- nothing left open, so NO mark is required at
+    all; the entry still produces a live P&L purely from realized fills."""
+    snap = _snapshot({}, {})  # no chain marks at all
+    comp = _Comp([
+        _filled("e1", net_credit="2.80"),
+        ShortStopped(entry_id="e1", side="PUT", fill=D("2.95"), slippage=D("0")),
+        LongSold(entry_id="e1", side="PUT", recovery=D("0.65")),
+        ShortStopped(entry_id="e1", side="CALL", fill=D("1.50"), slippage=D("0")),
+        LongSold(entry_id="e1", side="CALL", recovery=D("0.20")),
+    ])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
+
+    cards = enrich([_card("e1", status="LEX_RECOVERED")])
+
+    # realized = 2.80 - 0 - (2.95+1.50) + (0.65+0.20) = 2.80 - 4.45 + 0.85 = -0.80
+    assert cards[0]["live_pnl"] == "-80.00"
+    assert cards[0]["live_pnl_asof"] == TAKEN_AT.isoformat()
+
+
+def test_live_pnl_is_null_when_one_side_closed_and_the_open_sides_mark_is_missing():
+    """One side stopped+recovered; the remaining OPEN side has NO quote in
+    either the hub or the snapshot -- honest null, not a guess."""
+    put_marks = {}  # PUT is closed anyway, irrelevant
+    call_marks = {D("7540"): Mark(bid=D("1.90"), ask=D("2.10"))}  # 7565 (call long) UNMARKED
+    snap = _snapshot(put_marks, call_marks)
+    comp = _Comp([
+        _filled("e1", net_credit="2.80"),
+        ShortStopped(entry_id="e1", side="PUT", fill=D("2.95"), slippage=D("0")),
+        LongSold(entry_id="e1", side="PUT", recovery=D("0.65")),
+    ])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
+
+    cards = enrich([_card("e1", status="LEX_RECOVERED")])
+
+    assert cards[0]["live_pnl"] is None
+    assert cards[0]["live_pnl_asof"] is None
+
+
 # --- NFR-04: QuoteHub live-first / snapshot-fallback resolution -------------
 
-# Same strikes/prices as FULL_LEGS above, PLUS the broker OCC symbol each leg
-# carries (ORD-09). The hub, however, is keyed by STREAMER symbol -- the
-# enricher must translate. This asymmetry IS the bug these tests pin.
-FULL_LEGS_WITH_SYMBOLS = [
-    _leg("PUT", "short", "7535", "1.80", symbol=PUT_SHORT_SYM),
-    _leg("PUT", "long", "7510", "0.08", symbol=PUT_LONG_SYM),
-    _leg("CALL", "short", "7540", "1.95", symbol=CALL_SHORT_SYM),
-    _leg("CALL", "long", "7565", "0.07", symbol=CALL_LONG_SYM),
-]
+# Same strikes/prices as FULL_LEGS above -- the hub, however, is keyed by
+# STREAMER symbol -- the enricher must translate. This asymmetry IS the bug
+# these tests pin.
 
 # The SAME snapshot-only marks/result as test_live_pnl_computed_when_every_mark_is_present
 # above (mid 1.70/0.08/1.95/0.07 -> current_value 3.50 -> live_pnl "10.00") --
@@ -215,9 +355,10 @@ def test_nfr04_fresh_hub_marks_are_used_and_asof_reflects_the_hub_stamp():
     hub_at = TAKEN_AT + timedelta(seconds=45)   # long after the snapshot was taken
     now = hub_at + timedelta(milliseconds=200)  # well within the freshness bar
     hub = _streamer_keyed_hub(hub_at)
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL
     assert cards[0]["live_pnl_asof"] == hub_at.isoformat()
@@ -241,10 +382,11 @@ def test_nfr04_hub_lookup_uses_the_streamer_symbol_not_the_occ_symbol():
         PUT_SHORT_SYM: StampedQuote(PUT_SHORT_SYM, D("9.00"), D("9.10"), hub_at),
         CALL_SHORT_SYM: StampedQuote(CALL_SHORT_SYM, D("9.00"), D("9.10"), hub_at),
     }
-    enrich = _live_pnl_enricher(_Snaps(snap), _FakeHub(marks),
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), _FakeHub(marks),
                                 clock=_FakeClock(now), max_quote_age_ms=3000)
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL   # streamer-keyed marks, never the OCC poison
     assert cards[0]["live_pnl_asof"] == hub_at.isoformat()
@@ -259,9 +401,10 @@ def test_nfr04_leg_strike_absent_from_the_streamer_map_falls_back_to_snapshot():
     hub_at = TAKEN_AT + timedelta(seconds=30)
     now = hub_at + timedelta(milliseconds=100)
     hub = _streamer_keyed_hub(hub_at)
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     # Three legs live + the call long off the snapshot -> same pinned total,
     # and (a mixed-source card) the snapshot's own asof.
@@ -276,9 +419,10 @@ def test_nfr04_no_streamer_map_at_all_falls_back_to_snapshot():
     snap = _snapshot(_SNAPSHOT_PUT_MARKS, _SNAPSHOT_CALL_MARKS, streamer_symbols={})
     hub_at = TAKEN_AT + timedelta(seconds=30)
     hub = _streamer_keyed_hub(hub_at)
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(hub_at + timedelta(milliseconds=100)))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(hub_at + timedelta(milliseconds=100)))
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL
     assert cards[0]["live_pnl_asof"] == TAKEN_AT.isoformat()
@@ -295,9 +439,10 @@ def test_nfr04_stale_hub_mark_falls_back_to_the_snapshot_value():
     # streamer-keyed (as the live hub is) AND deliberately mispriced: if a stale
     # mark were ever used, the total would be visibly wrong.
     hub = _streamer_keyed_hub(stale_at, put_short=("9.00", "9.10"))
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL   # snapshot mids used, not the stale/corrupt hub ones
     assert cards[0]["live_pnl_asof"] == snap.taken_at.isoformat()
@@ -310,9 +455,10 @@ def test_nfr04_empty_hub_is_byte_identical_to_the_pre_wiring_snapshot_path():
     regression is possible."""
     snap = _snapshot(_SNAPSHOT_PUT_MARKS, _SNAPSHOT_CALL_MARKS)
     hub = _FakeHub({})   # nothing landed
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(TAKEN_AT + timedelta(seconds=30)))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(TAKEN_AT + timedelta(seconds=30)))
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL
     assert cards[0]["live_pnl_asof"] == TAKEN_AT.isoformat()
@@ -323,9 +469,10 @@ def test_nfr04_no_hub_at_all_is_byte_identical_to_the_pre_wiring_snapshot_path()
     call shape every pre-NFR-04 caller uses -- so an un-migrated caller (or a
     hub never constructed) is unaffected."""
     snap = _snapshot(_SNAPSHOT_PUT_MARKS, _SNAPSHOT_CALL_MARKS)
-    enrich = _live_pnl_enricher(_Snaps(snap))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap))
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL
     assert cards[0]["live_pnl_asof"] == TAKEN_AT.isoformat()
@@ -337,9 +484,10 @@ def test_nfr04_neither_hub_nor_snapshot_mark_is_an_honest_none():
     put_marks = {D("7535"): Mark(bid=D("1.65"), ask=D("1.75"))}   # 7510 UNMARKED in the snapshot too
     snap = _snapshot(put_marks, _SNAPSHOT_CALL_MARKS)
     hub = _FakeHub({})  # and nothing in the hub either
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(TAKEN_AT + timedelta(seconds=5)))
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(TAKEN_AT + timedelta(seconds=5)))
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] is None
     assert cards[0]["live_pnl_asof"] is None
@@ -356,9 +504,10 @@ def test_nfr04_mixed_sources_do_not_claim_a_fully_live_asof():
     now = hub_at + timedelta(milliseconds=100)
     # the call long never ticked -> must fall back to the snapshot mid
     hub = _streamer_keyed_hub(hub_at, omit=(CALL_LONG_STREAMER,))
-    enrich = _live_pnl_enricher(_Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
+    comp = _Comp([_filled("e1")])
+    enrich = _live_pnl_enricher(comp, _Snaps(snap), hub, clock=_FakeClock(now), max_quote_age_ms=3000)
 
-    cards = enrich([_card(FULL_LEGS_WITH_SYMBOLS)])
+    cards = enrich([_card("e1")])
 
     assert cards[0]["live_pnl"] == _BASELINE_LIVE_PNL
     assert cards[0]["live_pnl_asof"] == snap.taken_at.isoformat()
