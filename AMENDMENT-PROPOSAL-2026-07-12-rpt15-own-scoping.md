@@ -190,6 +190,58 @@ Backend **1284 passed**; spec lock **17/17**; traceability **220/152**.
 
 ---
 
+## 4b. STP-02b buffer — CORRECT but UNPINNED (2026-07-13, operator-requested)
+
+**Operator concern (2026-07-13, before a live trade with `stop_rebate_markup = 0.30`):**
+*"I want to make sure when the buffer is $0.30 then that's what happens, not $0."*
+
+**Finding: the behaviour is CORRECT. The GUARANTEE was missing.**
+
+Traced and executed against production code:
+```
+live_runtime.stop -> StopParams(markup = entry.stop_rebate_markup)   # the ROW's value
+  execute.attempt(..., stop=row.stop)  ->  comp._on_filled(..., row.stop, ...)
+live._on_filled   -> protect(markup = stop.markup)
+stop_policy       -> trigger = floor_to_tick(pct% x net_credit + markup)
+```
+Real function, real tick table: credit 5.20 / 95% / markup 0.00 -> **4.90** (byte-matches the
+2026-07-10 journal's recorded trigger); markup 0.30 -> **5.20**. The buffer is applied.
+
+**But NOTHING pinned it end-to-end.** `TC-STP-14` exercises only the PURE FUNCTION
+(`stop_trigger(markup=0.50)`); `test_protect_position` passes `markup=` in BY HAND. No test
+proved a **schedule row's** `stop_rebate_markup` survives `row -> fire -> fill -> protect ->
+placed stop`. It could have silently regressed to **$0.00** at the broker with a fully green
+suite — a real-money stop resting at the wrong level, invisibly.
+
+**Built (tests only — ZERO production change; `git diff` on production files is empty):**
+`tests/application/test_stop_buffer_reaches_the_broker.py` drives a real `LiveComposition`
+(only the network-facing broker faked) end-to-end:
+1. the operator's exact live vector (credit 5.20, 95%, buffer 0.30) lands the raised trigger at
+   the broker, on BOTH shorts, with `StopPlaced.markup == 0.30`;
+2. zero-buffer control (same row) -> 4.90;
+3. the delta is exactly the buffer at this credit — with the invariant stated correctly:
+   *"markup is applied BEFORE flooring"*, never *"delta always equals markup"* (flooring can
+   absorb part of it at other credits — cf. TC-STP-14 scenario 1);
+4. the MANUAL/ad-hoc fire path (a SEPARATE call site, `manual_entry._stop`) pinned independently.
+
+**Fail-first proof:** forcing `markup=Decimal("0")` in `composition/live.py::_on_filled` makes the
+0.30 tests FAIL (the zero-buffer control keeps passing, as it must) — proving they would catch a
+silent regression to $0. Production line restored byte-for-byte.
+
+**Proposed TC-STP-14a (for the reviewer):** *a schedule row's `stop_rebate_markup` MUST reach the
+placed broker stop — pinned end-to-end through the scheduled AND manual fire paths, not merely at
+the pure-function level.* Rule text unchanged (STP-02b is correct); this closes a COVERAGE hole,
+which is the class of hole that lets correct code silently rot.
+
+**Calibration note for the operator (not a defect, an observation):** the buffer pre-credits the
+expected long recovery. The only real recovery observed (2026-07-10, per the broker) was **$0.10**
+(the orphaned C7595 long sold at 0.10), against a buffer set to **$0.30** — a ~$0.20/side shortfall
+if it repeats. RPT-07's long-recovery report shows **zero rows** for that day because the bot never
+journaled the `LongSold`, so the system cannot yet calibrate this from its own data. Worth the
+reviewer's attention: the buffer is only sound if the recovery it pre-credits actually arrives.
+
+---
+
 ## 5. 2026-07-09 — RETRACTED claim, and the real hardening item it exposed
 
 ### 5a. Retraction (agent error, operator-corrected)
