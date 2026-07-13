@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-07-10T12:35:00.610150+00:00",
+  "recorded_at": "2026-07-11T09:18:42.904583+00:00",
   "observation": {
     "exception": "TastytradeError('tif_no_after_hours_market_orders: Market orders with a time in force of Day cannot be placed when the market is closed.\\n')"
   }

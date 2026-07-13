@@ -1,90 +1,50 @@
 {
-  "recorded_at": "2026-07-10T12:35:08.737528+00:00",
+  "recorded_at": "2026-07-13T15:44:26.428997+00:00",
   "observation": {
-    "filled": true,
+    "filled": false,
     "order_final": {
       "account_number": "5WZ67393",
       "time_in_force": "Day",
       "order_type": "Limit",
       "underlying_symbol": "SPX",
       "underlying_instrument_type": "Equity",
-      "status": "Filled",
-      "cancellable": false,
-      "editable": false,
+      "status": "Live",
+      "cancellable": true,
+      "editable": true,
       "edited": false,
-      "updated_at": "2026-07-10 12:35:04.683000+00:00",
+      "updated_at": "2026-07-13 15:43:21.353000+00:00",
       "legs": [
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260710P06775000",
+          "symbol": "SPXW  260713P07010000",
           "action": "Buy to Open",
           "quantity": 1,
-          "remaining_quantity": "0",
-          "fills": [
-            {
-              "fill_id": "41924",
-              "quantity": "1",
-              "fill_price": "0.05",
-              "filled_at": "2026-07-10 12:35:04.102000+00:00",
-              "destination_venue": "MARKET_SIMULATOR_A",
-              "ext_group_fill_id": null,
-              "ext_exec_id": null
-            }
-          ]
+          "remaining_quantity": "1",
+          "fills": []
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260710P06780000",
+          "symbol": "SPXW  260713P07020000",
           "action": "Sell to Open",
           "quantity": 1,
-          "remaining_quantity": "0",
-          "fills": [
-            {
-              "fill_id": "41925",
-              "quantity": "1",
-              "fill_price": "0.0",
-              "filled_at": "2026-07-10 12:35:04.103000+00:00",
-              "destination_venue": "MARKET_SIMULATOR_A",
-              "ext_group_fill_id": null,
-              "ext_exec_id": null
-            }
-          ]
+          "remaining_quantity": "1",
+          "fills": []
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260710C07560000",
+          "symbol": "SPXW  260713C07615000",
           "action": "Sell to Open",
           "quantity": 1,
-          "remaining_quantity": "0",
-          "fills": [
-            {
-              "fill_id": "41926",
-              "quantity": "1",
-              "fill_price": "6.7",
-              "filled_at": "2026-07-10 12:35:04.103000+00:00",
-              "destination_venue": "MARKET_SIMULATOR_A",
-              "ext_group_fill_id": null,
-              "ext_exec_id": null
-            }
-          ]
+          "remaining_quantity": "1",
+          "fills": []
         },
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260710C07565000",
+          "symbol": "SPXW  260713C07620000",
           "action": "Buy to Open",
           "quantity": 1,
-          "remaining_quantity": "0",
-          "fills": [
-            {
-              "fill_id": "41927",
-              "quantity": "1",
-              "fill_price": "5.4",
-              "filled_at": "2026-07-10 12:35:04.104000+00:00",
-              "destination_venue": "MARKET_SIMULATOR_A",
-              "ext_group_fill_id": null,
-              "ext_exec_id": null
-            }
-          ]
+          "remaining_quantity": "1",
+          "fills": []
         }
       ],
       "size": "1",
@@ -101,18 +61,18 @@
       "replaces_order_id": null,
       "in_flight_at": null,
       "live_at": null,
-      "received_at": "2026-07-10 12:35:02.675000+00:00",
+      "received_at": "2026-07-13 15:43:20.388000+00:00",
       "reject_reason": null,
       "user_id": null,
       "username": null,
-      "terminal_at": "2026-07-10 12:35:04.673000+00:00",
+      "terminal_at": null,
       "complex_order_id": null,
       "complex_order_tag": null,
       "preflight_id": null,
       "order_rule": null,
       "source": "tastyware/tastytrade:v13.0.0",
       "external_identifier": null,
-      "id": 1215613
+      "id": 1221895
     },
     "note": "per-leg fill prices vs net: evidence for the STP-02 per_side allocation caveat"
   }

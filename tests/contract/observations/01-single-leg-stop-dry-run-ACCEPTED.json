@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-07-09T19:18:10.365019+00:00",
+  "recorded_at": "2026-07-13T15:41:35.215360+00:00",
   "observation": {
     "order": {
       "account_number": "5WZ67393",
@@ -15,7 +15,7 @@
       "legs": [
         {
           "instrument_type": "Equity Option",
-          "symbol": "SPXW  260709P03000000",
+          "symbol": "SPXW  260713P03000000",
           "action": "Buy to Open",
           "quantity": 1,
           "remaining_quantity": "1",
