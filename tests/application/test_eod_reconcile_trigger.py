@@ -23,6 +23,7 @@ from decimal import Decimal as D
 from meic.adapters.api.server import (
     EOD_RECONCILE_TIME,
     _BrokerReadFacade,
+    _mark_expired_sides,
     _maybe_eod_reconcile_once,
     _settlement_lookback_days,
 )
@@ -35,7 +36,11 @@ from meic.domain.events import (
     EntryClosed,
     FilledLeg,
     SettlementRecorded,
+    ShortStopped,
+    SideClosed,
+    SideExpired,
 )
+from meic.domain.projection import fold
 
 DAY = "2026-07-09"
 ORDER_ID = "482621396"  # the bot's own entry order id (OWN-01/OWN-03)
@@ -507,3 +512,169 @@ def test_settlement_lookback_days_dial_default_and_bounds():
     assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "0"}) == 5  # out of range
     assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "31"}) == 5  # out of range
     assert _settlement_lookback_days({"MEIC_SETTLEMENT_LOOKBACK_DAYS": "not-a-number"}) == 5
+
+
+# --- EOD-01 v1.59: `_mark_expired_sides` -- mark remaining sides EXPIRED, --
+# --- but ONLY after the broker's own SettlementRecorded lands --------------
+#
+# THE REAL BUG (2026-07-13): the ONLY `SideExpired` emitter in the whole
+# codebase was the demo simulator (composition/runtime.py) -- zero
+# `SideExpired` events ever landed in the live journal. A held-to-expiry
+# condor (both sides worthless -- the most common, most desirable MEIC
+# outcome) never reached EntryProjection.status == "EXPIRED": it fell
+# through to "PROTECTED" forever, and the frontend's TERMINAL list keeps a
+# live Close button armed on a position that no longer exists.
+
+DAY_X = "2026-07-09"
+
+
+def _condor_legs():
+    return (
+        FilledLeg(symbol="SPXW  260709P07535000", right="P", role="short", qty=1, price=D("2.20")),
+        FilledLeg(symbol="SPXW  260709P07510000", right="P", role="long", qty=1, price=D("0.40")),
+        FilledLeg(symbol="SPXW  260709C07540000", right="C", role="short", qty=1, price=D("2.15")),
+        FilledLeg(symbol="SPXW  260709C07565000", right="C", role="long", qty=1, price=D("0.35")),
+    )
+
+
+def _settled(entry_id, symbol, *, value=D("0"), sub_type="Expiration"):
+    return SettlementRecorded(entry_id=entry_id, day=DAY_X, at="2026-07-10T02:00:00+00:00",
+                              symbol=symbol, sub_type=sub_type, quantity=1, price=None,
+                              value=value, fee=None, source="tastytrade_receive_deliver")
+
+
+def test_the_real_bug_untouched_condor_both_settled_shorts_become_expired():
+    """TC-EOD-01's shape: an untouched condor (neither side stopped/closed)
+    whose four legs ALL get `SettlementRecorded` -- both sides must be
+    marked `SideExpired` and `EntryProjection.status` must become
+    `EXPIRED`. Against the pre-fix code (no `_mark_expired_sides` at all)
+    this fails: status stays `PROTECTED` forever."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000"),
+             _settled(entry_id, "SPXW  260709C07540000"),
+             _settled(entry_id, "SPXW  260709C07565000")]
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert set(entry.sides_expired) == {"PUT", "CALL"}
+    assert entry.status == "EXPIRED"
+
+
+def test_a_stopped_side_is_never_marked_expired_the_surviving_side_is():
+    """Pins the real 2026-07-10 shape: CALL stopped, PUT settled -> only PUT
+    is marked expired, and status checks `sides_stopped` first so it stays
+    STOPPED (never EXPIRED) even though one side genuinely expired."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             ShortStopped(entry_id=entry_id, side="CALL", fill=D("3.00"), slippage=D("0.10")),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000")]
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert entry.sides_expired == ("PUT",)
+    assert entry.status == "STOPPED"
+
+
+def test_never_guess_a_short_with_no_settlement_is_not_marked_expired():
+    """The whole point of EOD-01 v1.59: no `SettlementRecorded` for the CALL
+    short leg's symbol -> the CALL side is NOT marked expired, no matter how
+    far past expiration it is. Never a guess from a clock or moneyness."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000")]
+    # No settlement at all for the CALL short (SPXW 260709C07540000).
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert entry.sides_expired == ("PUT",)
+    assert "CALL" not in entry.sides_expired
+    assert entry.status == "PROTECTED"  # still provisional -- never guessed
+
+
+def test_idempotent_two_passes_append_side_expired_exactly_once_each():
+    """Two EOD passes (e.g. two health ticks) over the same log must append
+    `SideExpired` exactly once per side -- never a duplicate."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000"),
+             _settled(entry_id, "SPXW  260709C07540000"),
+             _settled(entry_id, "SPXW  260709C07565000")]
+
+    _mark_expired_sides(events, DAY_X)
+    _mark_expired_sides(events, DAY_X)  # second pass -- must be a no-op
+
+    put_expired = [e for e in events if isinstance(e, SideExpired) and e.side == "PUT"]
+    call_expired = [e for e in events if isinstance(e, SideExpired) and e.side == "CALL"]
+    assert len(put_expired) == 1
+    assert len(call_expired) == 1
+
+
+def test_decay_closed_entry_is_never_marked_expired():
+    """A whole entry closed by decay (`EntryClosed(initiator="decay")`) has
+    a `close_initiator` -- not "remaining" at all, even if its shorts'
+    symbols happen to carry a settlement row."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             EntryClosed(entry_id=entry_id, initiator="decay"),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000"),
+             _settled(entry_id, "SPXW  260709C07540000"),
+             _settled(entry_id, "SPXW  260709C07565000")]
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert entry.sides_expired == ()
+    assert entry.status == "DECAY_CLOSED"
+
+
+def test_operator_closed_side_is_never_marked_expired():
+    """A per-side operator close (`SideClosed`) takes that side out of
+    "remaining" even though its short leg's symbol later settles."""
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             SideClosed(entry_id=entry_id, side="CALL"),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000"),
+             _settled(entry_id, "SPXW  260709C07540000")]
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert entry.sides_expired == ("PUT",)
+    assert "CALL" not in entry.sides_expired
+
+
+def test_lex_recovered_stopped_side_is_never_marked_expired():
+    """A LEX-recovered side (`ShortStopped` + `LongSold`) is still a stopped
+    side -- excluded the same way a plain stop is, never double-classified
+    as expired."""
+    from meic.domain.events import LongSold
+
+    entry_id = f"{DAY_X}#1"
+    events = [CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.05"),
+                          legs=_condor_legs()),
+             ShortStopped(entry_id=entry_id, side="CALL", fill=D("3.00"), slippage=D("0.10")),
+             LongSold(entry_id=entry_id, side="CALL", recovery=D("0.20")),
+             _settled(entry_id, "SPXW  260709P07535000"),
+             _settled(entry_id, "SPXW  260709P07510000")]
+
+    _mark_expired_sides(events, DAY_X)
+
+    entry = fold(events).entries[entry_id]
+    assert entry.sides_expired == ("PUT",)
+    assert entry.status == "LEX_RECOVERED"

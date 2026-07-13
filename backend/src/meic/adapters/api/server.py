@@ -585,6 +585,53 @@ def _has_settlement_pending(events, day: str) -> bool:
               for entry_id, entry in state.entries.items())
 
 
+def _mark_expired_sides(events, day: str) -> None:
+    """EOD-01 v1.59: "After settlement, the bot marks all remaining sides
+    EXPIRED." Runs AFTER settlement capture for `day` (both the same-day
+    path and the look-back path in `_maybe_eod_reconcile_once` below) --
+    log-only, no broker call, so it is cheap and safe to attempt every tick.
+
+    For each of `day`'s own entries, a side is marked `SideExpired` iff ALL
+    of:
+      - REMAINING: not in `sides_stopped`, not in `sides_closed`, and the
+        entry has no `close_initiator` at all -- a stopped/LEX'd/decay
+        -closed/operator-closed side never expires; the OTHER (surviving)
+        side of the SAME entry still can.
+      - SETTLED: the side's SHORT leg symbol is already in
+        `EntryProjection.settled_symbols` -- i.e. the broker has actually
+        journaled a `SettlementRecorded` for it. This is the per-side
+        inverse of `EntryProjection.settlement_pending` (domain/projection.py):
+        the SAME broker-truth predicate, never a new notion of expiry, never
+        a guess from a clock or computed moneyness. Marks a side regardless
+        of whether it finished OTM or ITM -- the cash effect either way is
+        already carried in `settlements`; EOD-01 marks ALL remaining sides
+        EXPIRED, not just the worthless ones.
+      - NOT ALREADY MARKED: idempotent, never appends a second `SideExpired`
+        for the same (entry_id, side).
+    """
+    from meic.domain.events import SideExpired
+    from meic.domain.projection import fold
+    from meic.reporting.folds import entry_day
+
+    state = fold(events)
+    for entry_id, entry in state.entries.items():
+        if entry_day(entry_id) != day:
+            continue
+        if entry.close_initiator is not None:
+            continue
+        for leg in entry.legs:
+            if leg.role != "short":
+                continue
+            side = leg.side
+            if side in entry.sides_stopped or side in entry.sides_closed:
+                continue
+            if side in entry.sides_expired:
+                continue
+            if leg.symbol not in entry.settled_symbols:
+                continue
+            events.append(SideExpired(entry_id=entry_id, side=side))
+
+
 async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_reads=None,
                                     *, lookback_days: int = 5) -> None:
     """RPT-15: after `EOD_RECONCILE_TIME` ET on a trading day (RPT-01: any ET
@@ -666,6 +713,10 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
                                               now_iso=lambda: now_fn().isoformat())
                 except Exception:  # noqa: BLE001 -- never let a capture failure crash the tick
                     pass
+            try:
+                _mark_expired_sides(comp.events, day)
+            except Exception:  # noqa: BLE001 -- never let marking crash the tick
+                pass
             await reconciler.reconcile_day(day)
 
     if broker_reads is None:
@@ -675,22 +726,29 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
 
     prior_days = [d for d in all_days if d < day][-lookback_days:]
     for prior_day in prior_days:
-        if not _has_settlement_pending(comp.events, prior_day):
-            continue  # nothing outstanding for this day -- no broker call at all
-        try:
-            result = await capture_settlements(comp.events, broker_reads, prior_day,
-                                               now_iso=lambda: now_fn().isoformat())
-        except Exception:  # noqa: BLE001 -- one day's broker failure must not sink the tick
-            continue
-        if result.get("captured", 0) > 0:
-            # This prior day's bot-computed numbers just changed (a real
-            # settlement landed) -- re-reconcile it against broker truth,
-            # deliberately bypassing the `already` gate above: that gate
-            # guards the ORDINARY case (nothing changed), not this one.
+        if _has_settlement_pending(comp.events, prior_day):
             try:
-                await reconciler.reconcile_day(prior_day)
-            except Exception:  # noqa: BLE001 -- never let a re-reconcile crash the tick
-                pass
+                result = await capture_settlements(comp.events, broker_reads, prior_day,
+                                                   now_iso=lambda: now_fn().isoformat())
+            except Exception:  # noqa: BLE001 -- one day's broker failure must not sink the tick
+                continue
+            if result.get("captured", 0) > 0:
+                # This prior day's bot-computed numbers just changed (a real
+                # settlement landed) -- re-reconcile it against broker truth,
+                # deliberately bypassing the `already` gate above: that gate
+                # guards the ORDINARY case (nothing changed), not this one.
+                try:
+                    await reconciler.reconcile_day(prior_day)
+                except Exception:  # noqa: BLE001 -- never let a re-reconcile crash the tick
+                    pass
+        # EOD-01: mark any remaining side whose settlement has now landed --
+        # log-only, so this runs whether the settlement was captured just
+        # above THIS tick, or already sat captured (and unmarked) in the log
+        # from before this marking step existed / from an earlier tick.
+        try:
+            _mark_expired_sides(comp.events, prior_day)
+        except Exception:  # noqa: BLE001 -- never let marking crash the tick
+            pass
 
 
 def _journaled_own_order_ids(events) -> set[str]:
