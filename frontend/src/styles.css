@@ -301,12 +301,12 @@ body {
 .ec-badge.s-expired { background: var(--good-dim); color: var(--good); }
 .ec-badge.s-decay { background: var(--warn-dim); color: var(--warn); }
 .ec-pnl { font-size: 26px; font-weight: 800; letter-spacing: -0.03em; margin: 8px 0 6px; }
-.ec-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.ec-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
 .ec-meta .tag { margin-left: 0; }
 .tag.lex { background: rgba(168,85,247,0.16); color: var(--accent-2); }
 .tag.exp { background: var(--good-dim); color: var(--good); }
-.ec-placed { font-size: 11px; color: var(--faint); margin-top: 6px; }
-.ec-legs { font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.ec-placed { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 6px; }
+.ec-legs { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .ec-leg { line-height: 1.5; }
 /* Live mark-to-market P&L — sits beside the premium received, prominent and
    green/red (operator request 2026-07-13). Declares NO colour on purpose: the
@@ -314,7 +314,7 @@ body {
    `color: var(--faint)` here, which (same specificity, declared later) SILENTLY
    CANCELLED .pos/.neg and rendered every live P&L grey. */
 .ec-livepnl { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
-.ec-profitpct { font-size: 11px; color: var(--faint); margin-top: 2px; }
+.ec-profitpct { font-size: 15px; font-weight: 800; color: var(--text); margin-top: 4px; letter-spacing: -0.01em; }
 
 /* --- v1.58 TPF/TPT exit controls ------------------------------------------ */
 .ec-exits { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
