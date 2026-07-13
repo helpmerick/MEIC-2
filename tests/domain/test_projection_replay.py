@@ -8,12 +8,13 @@ from meic.domain.events import (
     DayCompleted,
     EntryClosed,
     EntryCompleted,
+    EntrySkipped,
     FilledLeg,
     LongSold,
     ShortStopped,
     SideExpired,
 )
-from meic.domain.projection import DayState, fold
+from meic.domain.projection import DayState, day_report, fold
 
 
 def canonical_day():
@@ -212,3 +213,68 @@ def test_settlement_pending_false_once_the_entry_is_closed_some_other_way():
 def test_settlement_pending_false_with_no_recorded_legs():
     events = [CondorFilled(entry_id="e", net_credit=D("4.00"))]  # no legs (paper/schema gap)
     assert fold(events).entries["e"].settlement_pending is False
+
+
+# --- 2026-07-13 fix: day_report must be DAY-SCOPED --------------------------
+#
+# day_report used to fold the ENTIRE log with no day filter at all -- so a
+# prior day's entry that never reached a terminal state (its settlement never
+# captured) counted toward every later day's totals forever. Pinned to the
+# real vector observed live: 2026-07-10#1 (credit 5.20, fee 4.80 -> pnl 0.40,
+# still lingering unsettled) + 2026-07-13#2 (credit 2.80, fee 2.30 -> pnl
+# 0.50, today's actual fill).
+
+def _two_day_log():
+    return [
+        DayArmed(date="2026-07-10", entry_count=1),
+        CondorFilled(entry_id="2026-07-10#1", net_credit=D("5.20"), fee=D("4.80")),
+        DayArmed(date="2026-07-13", entry_count=2),
+        CondorFilled(entry_id="2026-07-13#2", net_credit=D("2.80"), fee=D("2.30")),
+    ]
+
+
+def test_day_report_explicit_day_scopes_to_only_that_days_entries():
+    events = _two_day_log()
+
+    today = day_report(events, "2026-07-13")
+    assert today.entries_filled == 1
+    assert today.total_credit == D("2.80")
+    assert today.day_pnl == D("0.50")
+    assert today.per_entry_pnl == {"2026-07-13#2": D("0.50")}
+
+    prior = day_report(events, "2026-07-10")
+    assert prior.entries_filled == 1
+    assert prior.total_credit == D("5.20")
+    assert prior.day_pnl == D("0.40")
+    assert prior.per_entry_pnl == {"2026-07-10#1": D("0.40")}
+
+
+def test_day_report_with_no_day_arg_defaults_to_state_date_not_the_whole_log():
+    """A caller that doesn't pass `day` (get_report in app.py) still gets
+    "today" -- state.date, the most recent DayArmed -- never the whole log."""
+    events = _two_day_log()
+    default = day_report(events)
+    assert default.date == "2026-07-13"
+    assert default.entries_filled == 1
+    assert default.total_credit == D("2.80")
+    assert default.day_pnl == D("0.50")
+
+
+def test_day_report_skips_scope_to_the_requested_day_too():
+    events = [
+        DayArmed(date="2026-07-10", entry_count=1),
+        EntrySkipped(date="2026-07-10", entry_number=1, reason="max_entries"),
+        DayArmed(date="2026-07-13", entry_count=1),
+        EntrySkipped(date="2026-07-13", entry_number=1, reason="stale_clock"),
+    ]
+    assert day_report(events, "2026-07-13").skips == ((1, "stale_clock"),)
+    assert day_report(events, "2026-07-10").skips == ((1, "max_entries"),)
+
+
+def test_day_report_with_no_date_anywhere_stays_unscoped():
+    """No DayArmed at all in this log (e.g. TC-CLS-02's synthetic "e1" fixture,
+    which never arms a day) -- there is no day concept to scope by, so every
+    entry is still reported, matching the only behaviour such a log ever had."""
+    events = [EntryClosed(entry_id="e1", initiator="manual")]
+    rpt = day_report(events)
+    assert rpt.date is None

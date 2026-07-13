@@ -12,7 +12,7 @@ from meic.adapters.api.app import create_app
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.application.persistent_state import PersistentState
 from meic.config.validation import ConfigRejected, validate_bind
-from meic.domain.events import CondorFilled, FilledLeg
+from meic.domain.events import CondorFilled, DayArmed, FilledLeg
 
 PANEL = "http://127.0.0.1"
 
@@ -241,6 +241,23 @@ def test_get_entries_placed_at_and_legs_are_null_empty_when_absent():
     assert c["placed_at"] is None
     assert c["legs"] == []
     assert c["premium_received"] == {"PUT": None, "CALL": None}
+
+
+def test_get_entries_only_shows_todays_cards_2026_07_13_day_scope_fix():
+    """2026-07-13 fix: /entries used to show every entry EVER logged, no day
+    filter at all -- so a prior day's entry that never reached a terminal
+    state (its settlement never captured) lingered on the board forever.
+    `commands` isn't wired here, so the fallback source of "today" is the
+    fold's own `state.date` (the most recent DayArmed) -- 2026-07-13 below."""
+    client, _state, events = _client()
+    events.append(DayArmed(date="2026-07-10", entry_count=1))
+    events.append(CondorFilled(entry_id="2026-07-10#1", net_credit=D("5.20")))
+    events.append(DayArmed(date="2026-07-13", entry_count=2))
+    events.append(CondorFilled(entry_id="2026-07-13#2", net_credit=D("2.80")))
+
+    cards = client.get("/entries").json()
+
+    assert [c["entry_id"] for c in cards] == ["2026-07-13#2"]
 
 
 # --- FEATURE 3: the entries_enricher hook, and that /ws reuses it -------------

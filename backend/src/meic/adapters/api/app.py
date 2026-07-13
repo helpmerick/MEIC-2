@@ -24,6 +24,7 @@ from meic.domain import tpt as tpt_domain
 from meic.domain.events import CondorFilled, EntrySkipped
 from meic.domain.projection import day_report, fold
 from meic.domain.schedule import ScheduleDefaults, resolve, validate_entry
+from meic.reporting.folds import entry_day
 
 
 def _strike_from_symbol(symbol: str) -> str:
@@ -309,10 +310,25 @@ def create_app(
     @app.get("/entries")
     def get_entries() -> list[dict[str, Any]]:
         """Per-entry cards (doc 05 §8): one card per armed entry with its
-        lifecycle status and running P&L. Pure read model — no logic."""
+        lifecycle status and running P&L. Pure read model — no logic.
+
+        Scoped to TODAY (2026-07-13 fix — this used to show every entry EVER
+        logged, so a prior day's entry that never reached a terminal state
+        lingered on the board forever). `commands.day()` is the SAME "today"
+        source the fire path itself stamps entry_ids with (ENT-11(3) already
+        routes the /schedule and /manual/fire endpoints through it for the
+        identical reason) — never a second, potentially-drifting notion of
+        "today". `commands` can be None before it's wired (same guard already
+        used by `save_schedule` above); the fold's own `state.date` (the most
+        recent `DayArmed`) is the next best source. If neither is available
+        (no `DayArmed` at all yet) every entry is shown, same as always.
+        """
         day = fold(events)
+        today = commands.day() if commands is not None else day.date
         cards = []
         for e in day.entries.values():
+            if today is not None and entry_day(e.entry_id) != today:
+                continue
             floor_level = state.tpf_floors.get(e.entry_id)
             target_level = state.tp_targets.get(e.entry_id)
             card = {

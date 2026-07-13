@@ -269,8 +269,14 @@ class ManualEntry:
         return await asyncio.shield(attempt_task)
 
     def _filled_today(self) -> int:
-        """ENT-05 counts FILLS, not attempts — the same rule day_report uses."""
-        return day_report(self._comp.events).entries_filled
+        """ENT-05 counts FILLS, not attempts — the same rule day_report uses.
+        Explicit `self.today()` (2026-07-13 fix): a manual gate must count
+        TODAY's fills only — never every fill ANY entry has ever logged. A
+        prior day's entry that never reached a terminal state (its settlement
+        never captured) lingers in the fold forever; without this day scope it
+        would count toward every future day's cap too, and once the cap is
+        reached once it would block manual fires permanently."""
+        return day_report(self._comp.events, self.today()).entries_filled
 
 
 def _selection(row):

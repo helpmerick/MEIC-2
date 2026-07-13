@@ -212,19 +212,48 @@ class DayReport:
     total_short_premium: Decimal = Decimal("0")  # UI-14: shown apart from net credit
 
 
-def day_report(events: list[Event]) -> DayReport:
+def _entry_day(entry_id: str) -> str:
+    """The day-bucket prefix of an entry id, `"{day}#{n}"` -- the SAME
+    convention as `reporting/folds.py`'s `entry_day`, mirrored here rather than
+    imported: the domain layer must never depend on the reporting layer above
+    it, exactly the reason `reporting/periods.py` already keeps its own private
+    `_entry_day` as a peer of `folds.py` instead of importing it."""
+    return entry_id.split("#", 1)[0]
+
+
+def day_report(events: list[Event], day: str | None = None) -> DayReport:
+    """EOD-05 day report, SCOPED to one trading day (2026-07-13 fix — this used
+    to fold the entire log with no day filter at all, so a prior day's entry
+    that never reached a terminal state would count toward every later day's
+    totals AND toward ENT-05's max_entries_per_day gate forever).
+
+    `day` explicit -> scope to that day. `day=None` -> default to the fold's
+    own `state.date` (the date the log's most recent `DayArmed` stamped), so a
+    caller that doesn't pass one still gets "today" rather than the whole log.
+    If there is no date to scope by either way (no `DayArmed` at all in this
+    log -- e.g. a synthetic fixture whose entry ids carry no day prefix),
+    every entry is reported unscoped: there is no day concept to filter by,
+    so this matches the only behaviour such a log ever had.
+    """
     state = fold(events)
-    entries = state.entries.values()
+    scope_day = day if day is not None else state.date
+    if scope_day is None:
+        entries = list(state.entries.values())
+        skips = state.skipped
+    else:
+        entries = [e for e in state.entries.values() if _entry_day(e.entry_id) == scope_day]
+        skips = tuple((ev.entry_number, ev.reason) for ev in events
+                       if isinstance(ev, EntrySkipped) and ev.date == scope_day)
     return DayReport(
-        date=state.date,
+        date=scope_day,
         entries_filled=sum(1 for e in entries if e.net_credit != 0),
         stops_hit=sum(1 for e in entries for i in e.stop_initiators if i != "decay"),
         lex_recoveries=sum(1 for e in entries if e.recoveries != 0),
         decay_closes=sum(1 for e in entries if e.close_initiator == "decay"),
         total_credit=sum((e.net_credit for e in entries), Decimal("0")),
         total_fees=sum((e.fees for e in entries), Decimal("0")),
-        day_pnl=state.day_pnl,
-        skips=state.skipped,
+        day_pnl=sum((e.pnl for e in entries), Decimal("0")),
+        skips=skips,
         per_entry_pnl={e.entry_id: e.pnl for e in entries},
         total_short_premium=sum((e.short_premium for e in entries), Decimal("0")),
     )

@@ -454,6 +454,8 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
     appended in one process must be visible after "restarting" — building a
     fresh live_app() over the SAME MEIC_DATA_DIR/state.db — and still show up
     through the ordinary read path (/entries), not just in comp.events."""
+    from datetime import datetime, timezone
+
     from fastapi.testclient import TestClient
 
     from meic.adapters.api.server import live_app
@@ -463,12 +465,20 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
     _cert_env(monkeypatch, tmp_path)
     monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
 
+    # 2026-07-13 fix: /entries is now scoped to TODAY (commands.day(), which
+    # here falls back to the real SystemClock's UTC date since live_app()'s
+    # composition wires no fake `day` provider) — so the entry stamped here
+    # must fall on that same real day, or the day-scope filter would (rightly)
+    # hide it, and this durability check would fail for a reason unrelated to
+    # durability.
+    today = datetime.now(timezone.utc).date().isoformat()
+
     app1 = live_app()
     comp1 = app1.state.composition
     assert isinstance(comp1.events, DurableEventLog)
 
-    comp1.events.append(DayArmed(date="2026-07-09", entry_count=1))
-    comp1.events.append(CondorFilled(entry_id="2026-07-09#1", net_credit=Decimal("4.00")))
+    comp1.events.append(DayArmed(date=today, entry_count=1))
+    comp1.events.append(CondorFilled(entry_id=f"{today}#1", net_credit=Decimal("4.00")))
 
     app2 = live_app()  # a fresh composition over the SAME db file
     comp2 = app2.state.composition
@@ -476,7 +486,7 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
     assert comp2.events[1].net_credit == Decimal("4.00")
 
     cards = TestClient(app2).get("/entries").json()
-    assert any(c["entry_id"] == "2026-07-09#1" and c["net_credit"] == "4.00" for c in cards)
+    assert any(c["entry_id"] == f"{today}#1" and c["net_credit"] == "4.00" for c in cards)
 
 
 # --- UC-12 v1.56: outage-drill LIVE wiring capstone ----------------------------
