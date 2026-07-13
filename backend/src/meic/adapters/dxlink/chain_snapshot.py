@@ -22,7 +22,7 @@ STK-10 no longer reads them).
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -43,9 +43,24 @@ class ChainSnapshot:
     call_side: ChainSide
     put_band: tuple[Decimal, ...]   # diagnostics: strikes SUBSCRIBED, not the STK-10 gate
     call_band: tuple[Decimal, ...]  # diagnostics: strikes SUBSCRIBED, not the STK-10 gate
-    symbols: dict[Decimal, tuple[str, str]]  # strike -> (put_symbol, call_symbol)
+    # strike -> (put_symbol, call_symbol) in OCC form -- what ORDERS name (`occ_pair`).
+    # NOT subscribable on DXLink; see `streamer_symbols` below.
+    symbols: dict[Decimal, tuple[str, str]]
     taken_at: datetime
     stale: bool = False
+    # NFR-04 (2026-07-13): strike -> (put_symbol, call_symbol) in DXFEED STREAMER
+    # form (`streamer_pair`) -- the ONLY namespace DXLink will accept on a
+    # subscription. `snapshot_chain` already computed this map to collect its own
+    # quotes and then THREW IT AWAY; the live quote-stream loop (server.py
+    # `_open_leg_symbols`/`_streamer_symbol`) needs it to translate a journaled
+    # OCC leg symbol into something subscribable. Without it, subscribing by the
+    # broker's OCC symbol makes DXLink silently return NO quotes -- identical on
+    # the wire to "no market data" (the exact trap `streamer_pair`'s docstring
+    # and tests/application/test_live_selection.py already warn about).
+    # Defaulted so every existing constructor (and any snapshot restored from an
+    # older shape) stays valid: an empty map means "cannot translate" -> the
+    # caller declines to subscribe and falls back to the snapshot marks.
+    streamer_symbols: dict[Decimal, tuple[str, str]] = field(default_factory=dict)
 
 
 def _valid_mark(bid, ask) -> Mark | None:
@@ -186,4 +201,8 @@ async def snapshot_chain(
         spot=spot, expiration=expiration.expiration_date,
         put_side=put_side, call_side=call_side,
         put_band=put_band, call_band=call_band, symbols=strike_occ,
-        taken_at=taken_at, stale=elapsed > max_age_seconds)
+        taken_at=taken_at, stale=elapsed > max_age_seconds,
+        # NFR-04: the streamer map this function already built for its OWN
+        # subscription above -- now published rather than discarded, so the live
+        # quote-stream loop can subscribe in the same (only valid) namespace.
+        streamer_symbols=strike_streamers)

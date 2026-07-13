@@ -36,10 +36,16 @@ def _strike_from_symbol(symbol: str) -> str:
 def _card_legs(legs) -> list[dict[str, Any]]:
     """FEATURE 2 (v1.46 card): per-side strikes + the broker-allocated fill price,
     Decimals kept as strings in JSON. `qty` rides along so the live-P&L enricher
-    (server.py) can size its estimate without re-deriving contracts elsewhere."""
+    (server.py) can size its estimate without re-deriving contracts elsewhere.
+
+    `symbol` (NFR-04, 2026-07-13): the leg's own broker-reported instrument
+    symbol (ORD-09), added so `_live_pnl_enricher` can look the leg up directly
+    in the QuoteHub (`hub.mark(leg["symbol"])`) instead of only the chain
+    snapshot's strike-keyed marks -- see server.py `_resolve_leg_mid`."""
     return [{
         "side": leg.side, "role": leg.role,
         "strike": _strike_from_symbol(leg.symbol),
+        "symbol": leg.symbol,
         "price": None if leg.price is None else str(leg.price),
         "qty": leg.qty,
     } for leg in legs]

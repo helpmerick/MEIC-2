@@ -249,6 +249,35 @@ def _stop_fill_poll_seconds(env: dict[str, str]) -> float:
     return raw if 5 <= raw <= 120 else 15.0
 
 
+def _max_quote_age_ms(env: dict[str, str]) -> int:
+    """DAT-02 `max_quote_age_ms` (doc 06: range 500-15000, default 3000) — NFR-04
+    (2026-07-13): the freshness bar a QuoteHub mark must clear to be used LIVE
+    (`_resolve_leg_mid`); a mark older than this is treated as ABSENT and falls
+    through to the existing chain-snapshot path, never used stale. Out-of-range
+    falls back to the spec default (the same reject-the-dial convention as
+    `_chain_completeness_pct` above)."""
+    try:
+        raw = int(env.get("MEIC_MAX_QUOTE_AGE_MS", "3000"))
+    except ValueError:
+        return 3000
+    return raw if 500 <= raw <= 15000 else 3000
+
+
+def _quote_stream_poll_seconds(env: dict[str, str]) -> float:
+    """NFR-04 (2026-07-13) quote-stream loop cadence: range 1-60, default 5 --
+    how long the loop idles between checks when there are no open entries to
+    subscribe to, and how long it backs off after a stream failure before
+    retrying. An infra polling dial, same class as `MEIC_HEALTH_INTERVAL_S` /
+    `MEIC_STOP_FILL_POLL_S` above, not a doc-06 strategy config. Out-of-range
+    falls back to the default (the same reject-the-dial convention as
+    `_stop_fill_poll_seconds` above)."""
+    try:
+        raw = float(env.get("MEIC_QUOTE_STREAM_POLL_S", "5"))
+    except ValueError:
+        return 5.0
+    return raw if 1 <= raw <= 60 else 5.0
+
+
 def _reporting_capital_base(env: dict[str, str]) -> Decimal | None:
     """RPT-04/doc 06 `reporting_capital_base` ($ > 0, no spec default --
     "required for return metrics"). Operator-set only: account net-liq is
@@ -638,20 +667,138 @@ _TERMINAL_STATUSES = {"CLOSED", "EXPIRED", "DECAY_CLOSED"}
 def _leg_mid(side_chain, strike: Decimal):
     """The current mid mark for `strike` on one ChainSide, or None if unmarked
     (far-OTM/no quote — the honest '—' case, never a fabricated number)."""
+    if side_chain is None:
+        return None
     mark = side_chain.marks.get(strike)
     return None if mark is None else mark.mid
 
 
-def _live_pnl_enricher(snaps):
+def _streamer_symbol(snapshot, occ_symbol: str | None, side: str) -> str | None:
+    """NFR-04 (2026-07-13, second pass): translate a journaled OCC leg symbol
+    into the DXFEED STREAMER symbol DXLink actually speaks.
+
+    THE BUG THIS FIXES (found live, 2026-07-13): the first cut of this wiring
+    subscribed with the leg's OWN broker symbol (ORD-09 OCC form, e.g.
+    "SPXW  260713C07575000"). DXLink does not know that namespace — it accepts
+    the subscription, then silently sends NOTHING, which on the wire is
+    indistinguishable from "no market data". The hub stayed permanently empty,
+    `_resolve_leg_mid` correctly fell through to the snapshot every time, and
+    the operator's mark went on ageing exactly as before. `streamer_pair`'s own
+    docstring (adapters/dxlink/chain_snapshot.py) and
+    tests/application/test_live_selection.py already record this trap; the
+    subscription must use `.SPXW260713C7575`-form streamer symbols.
+
+    The translation table is `ChainSnapshot.streamer_symbols` (strike ->
+    (put, call), added alongside this fix — `snapshot_chain` already built it
+    for its OWN quote collection and discarded it). NOTE for anyone tempted by
+    `ChainSnapshot.symbols`: that map is the OCC pair (`occ_pair`, "what ORDERS
+    name") — translating through it would be OCC->OCC, a silent no-op.
+
+    Returns None — meaning "cannot translate, do not subscribe, do not look up"
+    — when there is no snapshot yet, no streamer map, or the leg's strike is
+    outside the subscribed span. The caller then falls back to the snapshot
+    path exactly as it does today. A symbol string is NEVER guessed or
+    reconstructed here: a wrong symbol is a silent no-quote, not an error."""
+    if snapshot is None or not occ_symbol:
+        return None
+    table = getattr(snapshot, "streamer_symbols", None)
+    if not table:
+        return None
+    try:
+        strike = Decimal(_strike_from_symbol(occ_symbol))
+    except (ArithmeticError, ValueError, IndexError):
+        return None
+    pair = table.get(strike)
+    if pair is None:
+        return None  # strike outside the subscribed span -> snapshot fallback
+    put_sym, call_sym = pair
+    return call_sym if side == "CALL" else put_sym
+
+
+def _open_leg_symbols(events, snapshot) -> set[str]:
+    """NFR-04 (2026-07-13): the STREAMER symbols (never OCC — see
+    `_streamer_symbol`) of every leg on every currently-open entry: the
+    QuoteHub stream task's subscription universe, and the SAME namespace the
+    hub is keyed by, so a tick written by the stream is findable by the
+    enricher. Reuses the SAME open/terminal test `_live_pnl_enricher` already
+    applies (`_TERMINAL_STATUSES`) so the two never drift.
+
+    A leg whose streamer symbol cannot be resolved (no snapshot yet, or a
+    strike outside the subscribed span) is simply OMITTED — never guessed —
+    so it keeps resolving off the snapshot, exactly as today."""
+    from meic.domain.projection import fold
+
+    day = fold(events)
+    symbols: set[str] = set()
+    for e in day.entries.values():
+        if e.status in _TERMINAL_STATUSES or not e.legs:
+            continue
+        for leg in e.legs:
+            streamer = _streamer_symbol(snapshot, leg.symbol, leg.side)
+            if streamer:
+                symbols.add(streamer)
+    return symbols
+
+
+def _resolve_leg_mid(occ_symbol: str | None, side: str, snapshot, strike: Decimal, *,
+                     hub, now, max_quote_age_ms: int):
+    """NFR-04 (2026-07-13): live-first mid resolution for one leg. `QuoteHub`
+    and `DXLinkAdapter.quotes()` (doc 05 NFR-04) existed but were never wired
+    into the live app, so `_live_pnl_enricher` and the shared TPF/TPT evaluator
+    (`_open_side_costs`/`_entry_profit_pct_now`) both read marks off the chain
+    snapshot refreshed only on the ~60s health-loop cadence — measured live
+    2026-07-13 with the mark frozen while ageing past 50s.
+
+    The hub is keyed by STREAMER symbol (the only namespace DXLink will send),
+    so the leg's journaled OCC symbol is translated through `_streamer_symbol`
+    before the lookup — one namespace end to end, no translation drift.
+
+    STRICTLY NO WORSE than before: a fresh hub tick for this leg is preferred
+    (LIVE, sub-second; `apply_tick`'s generation guard protects it from a
+    zombie socket). A stale hub mark, an absent one, or a leg whose streamer
+    symbol cannot be resolved at all, is treated as ABSENT — it falls through
+    to the EXACT snapshot path this replaces (`_leg_mid`); if that is also
+    unmarked, the result is an honest None, never a guess. If `hub` or `now`
+    is not supplied (paper mode, or any caller that predates this wiring), the
+    hub step is skipped entirely and behaviour is byte-identical to before.
+
+    Returns `(mid, hub_stamp)` — `hub_stamp` is the HUB quote's own
+    `stamped_at` when the mark came from the hub, else `None` (the caller
+    uses this to decide whether `live_pnl_asof` may honestly claim a live
+    timestamp)."""
+    side_chain = None
+    if snapshot is not None:
+        side_chain = snapshot.put_side if side == "PUT" else snapshot.call_side
+    if hub is not None and now is not None:
+        streamer = _streamer_symbol(snapshot, occ_symbol, side)
+        if streamer:
+            q = hub.mark(streamer)
+            if q is not None and not q.is_stale(now, max_quote_age_ms):
+                return q.mid, q.stamped_at
+    return _leg_mid(side_chain, strike), None
+
+
+def _live_pnl_enricher(snaps, hub=None, *, clock=None, max_quote_age_ms: int = 3000):
     """FEATURE 3: live P/L on OPEN entry cards, from the chain snapshot already
     held for selection/DAT-02 — no new subscription. Reads `snaps.last`, so it
     updates on the same ~60s health-loop cadence that refreshes it (see
     `_wire_live_day`/`_probe_once`); a mark outside the ATM band, or a stale/
     absent snapshot, yields an honest null ("—" in the UI) rather than a guess.
+
+    NFR-04 (2026-07-13): `hub`/`clock`, when supplied, let each leg's mid
+    resolve to a LIVE QuoteHub tick instead of the snapshot's (up to ~60s
+    old) value — see `_resolve_leg_mid`. `live_pnl_asof` only claims the
+    live/hub timestamp when EVERY leg resolved live this tick (the freshest
+    of the four hub stamps); if even one leg fell back to the snapshot, the
+    whole card's `asof` stays the snapshot's own `taken_at` — exactly today's
+    behaviour, never a misleading "live" stamp on a partly-stale card. `hub`
+    absent/empty/sick (no marks land) reduces byte-for-byte to the pre-NFR-04
+    snapshot-only path.
     """
 
     def enrich(cards: list[dict]) -> list[dict]:
         snap = getattr(snaps, "last", None)
+        now = clock.now() if clock is not None else None
         for card in cards:
             card["live_pnl"] = None
             card["live_pnl_asof"] = None
@@ -667,10 +814,18 @@ def _live_pnl_enricher(snaps):
             call_short, call_long = by_side["CALL"].get("short"), by_side["CALL"].get("long")
             if not (put_short and put_long and call_short and call_long):
                 continue
-            put_short_mid = _leg_mid(snap.put_side, Decimal(put_short["strike"]))
-            put_long_mid = _leg_mid(snap.put_side, Decimal(put_long["strike"]))
-            call_short_mid = _leg_mid(snap.call_side, Decimal(call_short["strike"]))
-            call_long_mid = _leg_mid(snap.call_side, Decimal(call_long["strike"]))
+            put_short_mid, ps_at = _resolve_leg_mid(
+                put_short.get("symbol"), "PUT", snap, Decimal(put_short["strike"]),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+            put_long_mid, pl_at = _resolve_leg_mid(
+                put_long.get("symbol"), "PUT", snap, Decimal(put_long["strike"]),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+            call_short_mid, cs_at = _resolve_leg_mid(
+                call_short.get("symbol"), "CALL", snap, Decimal(call_short["strike"]),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+            call_long_mid, cl_at = _resolve_leg_mid(
+                call_long.get("symbol"), "CALL", snap, Decimal(call_long["strike"]),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
             if None in (put_short_mid, put_long_mid, call_short_mid, call_long_mid):
                 continue  # a mark outside the band/no quote -> honest null, never a guess
             current_value = (put_short_mid - put_long_mid) + (call_short_mid - call_long_mid)
@@ -678,32 +833,42 @@ def _live_pnl_enricher(snaps):
             net_credit = Decimal(card["net_credit"])
             live_pnl = (net_credit - current_value) * 100 * contracts
             card["live_pnl"] = str(live_pnl)
-            card["live_pnl_asof"] = snap.taken_at.isoformat()
+            hub_stamps = (ps_at, pl_at, cs_at, cl_at)
+            if all(s is not None for s in hub_stamps):
+                card["live_pnl_asof"] = max(hub_stamps).isoformat()  # all four legs LIVE
+            else:
+                card["live_pnl_asof"] = snap.taken_at.isoformat()    # any fallback -> today's stamp
         return cards
 
     return enrich
 
 
-def _profit_pct_enricher(comp, snaps):
+def _profit_pct_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms: int = 3000):
     """UI-13/14/15: the entry card's current profit% (TPF-01/TPT-01's shared
     evaluator), off the SAME held snapshot `_live_pnl_enricher` reads — live
     only; paper cards get `profit_pct: None` (no live chain marks, honest
-    absence rather than a guess, matching FEATURE 3's own convention)."""
+    absence rather than a guess, matching FEATURE 3's own convention).
+
+    NFR-04 (2026-07-13): `hub`/`clock`, passed through to `_entry_profit_pct_now`,
+    let the SAME evaluator TPF/TPT uses prefer a live QuoteHub mark per leg —
+    see `_resolve_leg_mid`."""
     from meic.domain.projection import fold
 
     def enrich(cards: list[dict]) -> list[dict]:
         snap = getattr(snaps, "last", None)
+        now = clock.now() if clock is not None else None
         day = fold(comp.events)
         for card in cards:
             e = day.entries.get(card["entry_id"])
-            pct = None if e is None else _entry_profit_pct_now(e, snap)
+            pct = None if e is None else _entry_profit_pct_now(
+                e, snap, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
             card["profit_pct"] = None if pct is None else str(pct)
         return cards
 
     return enrich
 
 
-def _open_side_costs(e, snapshot) -> dict[str, Decimal] | None:
+def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000) -> dict[str, Decimal] | None:
     """The current cost-to-close (short mid − long mid) for each still-OPEN
     side of entry `e` — the per-share input `domain.tpf.entry_profit_pct`
     needs for its "unrealized P&L of open sides at mid" term. Shares the same
@@ -711,6 +876,11 @@ def _open_side_costs(e, snapshot) -> dict[str, Decimal] | None:
     restricted to sides not yet stopped/closed/expired (TPF-05: a resolved
     side contributes its REALIZED effect only, already inside
     stop_fills/recoveries — never re-marked here).
+
+    NFR-04 (2026-07-13): each leg resolves through `_resolve_leg_mid` —
+    hub-first, snapshot-fallback — instead of `_leg_mid` directly. `hub`/`now`
+    default to None, which skips the hub step entirely (byte-identical to the
+    pre-NFR-04 snapshot-only behaviour).
 
     Returns None (an honest gap, DAT-02) when any open side cannot be FULLY
     marked (missing legs, or a leg outside the ATM band with no quote) — the
@@ -727,50 +897,67 @@ def _open_side_costs(e, snapshot) -> dict[str, Decimal] | None:
         short_leg, long_leg = by_side[side].get("short"), by_side[side].get("long")
         if short_leg is None or long_leg is None:
             return None
-        side_chain = snapshot.put_side if side == "PUT" else snapshot.call_side
-        short_mid = _leg_mid(side_chain, Decimal(_strike_from_symbol(short_leg.symbol)))
-        long_mid = _leg_mid(side_chain, Decimal(_strike_from_symbol(long_leg.symbol)))
+        short_mid, _ = _resolve_leg_mid(
+            short_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(short_leg.symbol)),
+            hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+        long_mid, _ = _resolve_leg_mid(
+            long_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(long_leg.symbol)),
+            hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         if short_mid is None or long_mid is None:
             return None
         out[side] = short_mid - long_mid
     return out
 
 
-def _entry_profit_pct_now(e, snapshot):
+def _entry_profit_pct_now(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000):
     """The shared TPF-01/TPT-01 evaluator, fed live marks — None (stale/
-    unmarked/no-credit-yet) means "unknown", never a guess."""
+    unmarked/no-credit-yet) means "unknown", never a guess.
+
+    NFR-04 (2026-07-13): the OUTER snapshot-presence/staleness gate below is
+    UNCHANGED from before this wiring — whether evaluation is attempted AT ALL
+    still depends only on the chain snapshot, exactly as today. `hub`/`now`
+    only change the SOURCE of each leg's mid once evaluation proceeds (see
+    `_open_side_costs` -> `_resolve_leg_mid`), so a hub that is absent, empty
+    or sick leaves this function byte-identical to before."""
     from meic.domain.tpf import entry_profit_pct
 
     if snapshot is None or snapshot.stale:
         return None
-    open_costs = _open_side_costs(e, snapshot)
+    open_costs = _open_side_costs(e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
     if open_costs is None:
         return None
     return entry_profit_pct(net_credit=e.net_credit, fees=e.fees, stop_fills=e.stop_fills,
                             recoveries=e.recoveries, open_side_costs=open_costs)
 
 
-def _profit_pct_provider(comp, snapshots):
+def _profit_pct_provider(comp, snapshots, hub=None, *, clock=None, max_quote_age_ms: int = 3000):
     """PanelCommands' TPF-02/TPT-03 gap-validation hook: current profit% for
     one entry, off the SAME evaluator and the SAME held snapshot the health
-    tick reads — never a second, drifting computation."""
+    tick reads — never a second, drifting computation. NFR-04: same hub-aware
+    resolution as `_profit_pct_enricher` above."""
     from meic.domain.projection import fold
 
     def provider(entry_id: str):
         e = fold(comp.events).entries.get(entry_id)
         if e is None:
             return None
-        return _entry_profit_pct_now(e, snapshots.last)
+        now = clock.now() if clock is not None else None
+        return _entry_profit_pct_now(e, snapshots.last, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
 
     return provider
 
 
-async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands) -> None:
+async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
+                               hub=None, clock=None, max_quote_age_ms: int = 3000) -> None:
     """TPF/TPT health-tick evaluation (TPF-03/TPT-04): bot-side only, NEVER
     broker-resting. Stale marks (or an unmarked open side) pause evaluation
     (DAT-02) — the confirmation counters reset rather than fire on a gap.
     TPT-05: any stop fill on the entry disarms its target PERMANENTLY, so the
-    target is never evaluated once `e.sides_stopped` is non-empty."""
+    target is never evaluated once `e.sides_stopped` is non-empty.
+
+    NFR-04 (2026-07-13): `hub`/`clock` let `_entry_profit_pct_now` prefer a
+    live mark per leg; the top-level `stale` gate below (whether evaluation is
+    attempted at all) is UNCHANGED."""
     from meic.domain.projection import fold
 
     floors, targets = comp.state.tpf_floors, comp.state.tp_targets
@@ -778,6 +965,7 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands) -> None:
         return
     day = fold(comp.events)
     stale = snapshot is None or snapshot.stale
+    now = clock.now() if clock is not None else None
     for entry_id, e in day.entries.items():
         level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
         if level_floor is None and level_target is None:
@@ -785,7 +973,8 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands) -> None:
         if e.status in _TERMINAL_STATUSES:
             exit_monitor.forget(entry_id)
             continue
-        profit_pct = None if stale else _entry_profit_pct_now(e, snapshot)
+        profit_pct = None if stale else _entry_profit_pct_now(
+            e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         entry_stale = stale or profit_pct is None
 
         if level_floor is not None:
@@ -802,7 +991,8 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands) -> None:
                 await commands.close_as(entry_id, "take_profit_target")
 
 
-async def _recover_exits_once(comp, snapshot, commands) -> None:
+async def _recover_exits_once(comp, snapshot, commands, *,
+                              hub=None, clock=None, max_quote_age_ms: int = 3000) -> None:
     """TPF-08/TPT-07: on recovery (boot/reconnect), an already-breached floor
     or an already-reached target fires IMMEDIATELY — no confirmation streak,
     because the bot was down while it happened; the realized level may be
@@ -810,7 +1000,11 @@ async def _recover_exits_once(comp, snapshot, commands) -> None:
     monitoring and shown in the day report. Must only be called AFTER
     `_boot_reconcile()` has appended any synthesized stop events, so TPT-05's
     disarm applies BEFORE this check (TPT-07's recovery-order rule) — a
-    disarmed target here already reads `e.sides_stopped` non-empty."""
+    disarmed target here already reads `e.sides_stopped` non-empty.
+
+    NFR-04 (2026-07-13): `hub`/`clock` passed through to `_entry_profit_pct_now`
+    for the same live-first/snapshot-fallback resolution; the top-level
+    snapshot gate below is UNCHANGED."""
     from meic.domain.projection import fold
     from meic.domain.tpf import breached
     from meic.domain.tpt import reached
@@ -821,13 +1015,14 @@ async def _recover_exits_once(comp, snapshot, commands) -> None:
     if not floors and not targets:
         return
     day = fold(comp.events)
+    now = clock.now() if clock is not None else None
     for entry_id, e in day.entries.items():
         if e.status in _TERMINAL_STATUSES:
             continue
         level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
         if level_floor is None and level_target is None:
             continue
-        profit_pct = _entry_profit_pct_now(e, snapshot)
+        profit_pct = _entry_profit_pct_now(e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         if profit_pct is None:
             continue
         if level_floor is not None and breached(Decimal(level_floor), profit_pct):
@@ -885,6 +1080,70 @@ def _sample_marks_once(comp, snapshot) -> None:
             call_short_mid=call_short_mid, call_long_mid=call_long_mid))
 
 
+async def _stream_open_entry_quotes(comp, hub, feed, snaps, *, idle_seconds: float = 5.0) -> None:
+    """NFR-04 (2026-07-13): one subscribe-and-apply pass over the CURRENT open
+    entries' legs, feeding `hub.apply_tick` off the SAME `MarketDataFeed.quotes()`
+    seam the chain snapshot already uses under the hood —
+    `QuoteHub`/`DXLinkAdapter.quotes()` existed but were never wired together
+    before this change.
+
+    Subscribes by STREAMER symbol, never the journaled OCC one (see
+    `_streamer_symbol`: DXLink silently sends NOTHING for an OCC subscription,
+    which is exactly why the first cut of this loop left the hub permanently
+    empty). The translation needs the held chain snapshot, hence `snaps`.
+
+    Idles `idle_seconds` and returns (never raises) when there is nothing to
+    subscribe to yet — no open entries, or no snapshot to translate their
+    symbols through — since either can arrive at any moment and the caller
+    simply calls this again. Returns (without raising) as soon as the
+    subscribable set CHANGES (a new entry filled, one closed, or a refreshed
+    snapshot changed the strike->streamer map) so the caller re-subscribes with
+    the fresh set. Any streaming failure PROPAGATES to the caller, which owns
+    the try/except/backoff (`_run_quote_stream_loop` below) — kept thin here so
+    the subscribe/re-subscribe logic is unit-testable on its own with a fake
+    feed.
+    """
+    symbols = _open_leg_symbols(comp.events, getattr(snaps, "last", None))
+    if not symbols:
+        await asyncio.sleep(idle_seconds)
+        return
+    gen = hub.open_generation()
+    async for q in feed.quotes(sorted(symbols)):
+        hub.apply_tick(q, generation=gen)
+        # Recomputed against the CURRENT snapshot every tick: a refreshed
+        # snapshot can change the strike->streamer map, not just the open book.
+        if _open_leg_symbols(comp.events, getattr(snaps, "last", None)) != symbols:
+            return  # the subscribable set changed -- re-subscribe with the new one
+
+
+async def _run_quote_stream_loop(comp, hub, feed, snaps, alerts, *, idle_seconds: float = 5.0,
+                                 retry_seconds: float = 5.0, connected=lambda: True) -> None:
+    """NFR-04 (2026-07-13): supervises `_stream_open_entry_quotes` forever, so
+    live P/L (`_live_pnl_enricher`) and the shared TPF/TPT evaluator
+    (`_entry_profit_pct_now`) can read a QuoteHub mark that ticks live instead
+    of the chain snapshot's ~60s health-loop cadence — measured live
+    2026-07-13 with the mark frozen while ageing past 50s. Operator-requested,
+    deployed mid-session under supervision.
+
+    NEVER crashes the app or the health loop: any failure (including the feed
+    simply not being connected yet) marks the hub sick and backs off; the
+    enrichers' snapshot fallback (`_resolve_leg_mid`) keeps the panel exactly
+    as good as it was before this wiring existed. `connected` gates streaming
+    on the broker session being up (same shape as the other startup loops in
+    `live_app`); while not connected this just idles, same as the
+    nothing-to-subscribe-to case."""
+    while True:
+        if not connected():
+            await asyncio.sleep(idle_seconds)
+            continue
+        try:
+            await _stream_open_entry_quotes(comp, hub, feed, snaps, idle_seconds=idle_seconds)
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            hub.mark_sick()
+            alerts.alert("warning", f"NFR-04 quote stream failed: {exc!r}")
+            await asyncio.sleep(retry_seconds)
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -906,9 +1165,19 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         build_manual_entry,
         live_preflight_checks,
     )
+    from meic.domain.quote_hub import QuoteHub
 
     min_buying_power = Decimal(env.get("MEIC_MIN_BUYING_POWER", "5000"))
     max_drift_ms = float(env.get("MEIC_MAX_CLOCK_DRIFT_MS", "2000"))   # DAY-03 v1.48
+
+    # NFR-04 (2026-07-13): the persistent, generation-guarded marks table the
+    # live quote-stream loop (`_run_quote_stream_loop`, wired in `live_app`)
+    # writes and the enrichers below read live-first, snapshot-fallback. Built
+    # here (not in `live_app`) so `tests/composition/test_live_wiring.py` can
+    # assert on it directly, matching every other safety-relevant object this
+    # function returns.
+    quote_hub = QuoteHub()
+    max_quote_age_ms = _max_quote_age_ms(env)
 
     # DAY-03 (v1.48): drift is measured against the BROKER's Date header on the
     # ~60 s session probe — no env var, no NTP. Starts unverified (infinite drift),
@@ -1166,6 +1435,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
         # capstone (tests/application/test_live_app.py) can assert it is a
         # REAL callable, not None.
         "stop_fill_detector": _detect_stop_fills,
+        # NFR-04 (2026-07-13): the QuoteHub the live quote-stream loop writes
+        # and the enrichers/evaluator read live-first, snapshot-fallback.
+        "quote_hub": quote_hub,
+        "max_quote_age_ms": max_quote_age_ms,
     }
 
 
@@ -1259,22 +1532,35 @@ def live_app():
 
         return drill_guidance(near_trigger=near_trigger_status(shorts), entry_soon=entry_soon)
 
+    # NFR-04 (2026-07-13): the QuoteHub -- see `_wire_live_day` -- and its
+    # freshness bar, threaded into every consumer below so live P/L, TPF/TPT
+    # and the panel's own gap-validation provider all resolve marks off the
+    # SAME live-first/snapshot-fallback rule (`_resolve_leg_mid`).
+    hub = live["quote_hub"]
+    max_quote_age_ms = live["max_quote_age_ms"]
+
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],
                              # TPF-02/TPT-03: server-side gap validation off the
                              # SAME evaluator/snapshot the health-tick monitor uses.
-                             profit_pct_provider=_profit_pct_provider(comp, live["snapshots"]),
+                             profit_pct_provider=_profit_pct_provider(
+                                 comp, live["snapshots"], hub, clock=comp.clock,
+                                 max_quote_age_ms=max_quote_age_ms),
                              # ENT-09b v1.57: the ▶ dialog's floor dropdowns.
                              floor_candidates_provider=live["floor_candidates"],
                              # UC-12 v1.56: the outage-drill dialog's advisory warnings.
                              drill_guidance_provider=_drill_guidance_provider,
                              default_drill_outage_seconds=_drill_outage_seconds(env))
     # FEATURE 3 + UI-13/14/15: live P/L, then the shared TPF/TPT profit%, both
-    # off the already-held chain snapshot — no new subscription. paper_app
+    # off the already-held chain snapshot — no new subscription — PLUS the
+    # NFR-04 QuoteHub for a live-first mark per leg (falls back to the
+    # snapshot exactly as before when the hub has nothing fresh). paper_app
     # passes no enricher at all (SIM-01 marks are synthetic, nothing honest to
     # show for either).
-    live_pnl_enricher = _live_pnl_enricher(live["snapshots"])
-    profit_pct_enricher = _profit_pct_enricher(comp, live["snapshots"])
+    live_pnl_enricher = _live_pnl_enricher(live["snapshots"], hub, clock=comp.clock,
+                                           max_quote_age_ms=max_quote_age_ms)
+    profit_pct_enricher = _profit_pct_enricher(comp, live["snapshots"], hub, clock=comp.clock,
+                                               max_quote_age_ms=max_quote_age_ms)
 
     def entries_enricher(cards: list[dict]) -> list[dict]:
         return profit_pct_enricher(live_pnl_enricher(cards))
@@ -1307,6 +1593,9 @@ def live_app():
     # it (the wiring capstone's non-None check alone cannot catch a detector
     # that is wired but reads nothing — the 2026-07-10 review finding).
     app.state.chain_snapshots = live["snapshots"]
+    # NFR-04 (2026-07-13): the QuoteHub itself, exposed like `chain_snapshots`
+    # above so a test/operator can inspect `.healthy`/`.mark(symbol)` directly.
+    app.state.quote_hub = hub
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None
@@ -1371,9 +1660,11 @@ def live_app():
             app.state.broker_error = repr(exc)
         try:
             # TPF-03/TPT-04: the bot-side profit monitor, same cadence as the
-            # marks sample above (same snapshot, no new subscription).
+            # marks sample above (same snapshot, no new subscription). NFR-04:
+            # `hub` lets the evaluator prefer a live mark per leg.
             await _evaluate_exits_once(comp, live["snapshots"].last,
-                                       live["exit_monitor"], commands)
+                                       live["exit_monitor"], commands,
+                                       hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
         # EC-STP-06 (v1.60) stop-fill catch-up MOVED OFF this tick (operator
@@ -1420,8 +1711,10 @@ def live_app():
             # TPF-08/TPT-07: an already-breached floor/reached target fires
             # IMMEDIATELY on recovery — after boot reconcile (so a synthesized
             # stop event has already disarmed any TPT-05 target) and after the
-            # probe above (so a fresh snapshot exists to mark against).
-            await _recover_exits_once(comp, live["snapshots"].last, commands)
+            # probe above (so a fresh snapshot exists to mark against). NFR-04:
+            # same hub-aware resolution as the health tick above.
+            await _recover_exits_once(comp, live["snapshots"].last, commands,
+                                      hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
 
@@ -1518,6 +1811,35 @@ def live_app():
         if task:
             task.cancel()
 
+    # NFR-04 (2026-07-13): the live quote-stream loop -- same shape as the
+    # health loop and the stop-fill poll loop above (one supervised background
+    # task, created unconditionally at startup, cancelled on shutdown). Keeps
+    # `hub` ticking off the CURRENT open entries' leg symbols so
+    # `_live_pnl_enricher`/`_entry_profit_pct_now` can read a live mark instead
+    # of the chain snapshot's ~60s cadence; falls back to that exact snapshot
+    # path whenever the hub has nothing fresh (`_resolve_leg_mid`), so a
+    # disconnected/sick/never-started stream is byte-identical to before this
+    # wiring existed.
+    quote_stream_poll_s = _quote_stream_poll_seconds(env)
+    app.state.quote_stream_poll_s = quote_stream_poll_s
+
+    @app.on_event("startup")
+    async def _start_quote_stream_loop() -> None:
+        # `live["snapshots"]` is passed because the OCC->STREAMER translation
+        # (`_streamer_symbol`) reads its strike->streamer map: DXLink only
+        # speaks the streamer namespace. Until the first snapshot lands there is
+        # nothing subscribable, and the loop simply idles.
+        app.state.quote_stream_task = asyncio.create_task(_run_quote_stream_loop(
+            comp, hub, comp.feed, live["snapshots"], alerts,
+            idle_seconds=quote_stream_poll_s, retry_seconds=quote_stream_poll_s,
+            connected=lambda: app.state.broker_connected))
+
+    @app.on_event("shutdown")
+    async def _stop_quote_stream_loop() -> None:
+        task = getattr(app.state, "quote_stream_task", None)
+        if task:
+            task.cancel()
+
     @app.post("/broker/connect")
     async def broker_connect() -> dict:
         """Retry the broker session + boot reconcile (token-gated by middleware)."""
@@ -1527,7 +1849,9 @@ def live_app():
             app.state.broker_error = None
             await _boot_reconcile()
             await _probe_once()   # DAY-03: verify the clock on reconnect too
-            await _recover_exits_once(comp, live["snapshots"].last, commands)  # TPF-08/TPT-07
+            # TPF-08/TPT-07, NFR-04: same hub-aware resolution as the health tick.
+            await _recover_exits_once(comp, live["snapshots"].last, commands,
+                                      hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False
             app.state.broker_error = repr(exc)
