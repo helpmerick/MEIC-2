@@ -62,7 +62,7 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | `stop_rebate_markup` | $0.00–$5.00, step $0.05 | $0.00 | next-entry | STP-02b — added to trigger to pre-credit expected long recovery; UI must show worst-case increase (UI-18) |
 | `min_stop_distance_ticks` | 1–20 | 2 | next-entry | STP-02c — trigger must clear each short's price by this; else skip `infeasible_stop` / close post-fill |
 | ~~`stop_order_type`~~ | — | — | — | RETIRED v1.67 (stop_limit tombstoned, STP-03); config loader rejects the key |
-| `stop_limit_offset_ticks` | 1–20 (stop_limit only) | 4 | next-entry | STP-03 |
+| ~~`stop_limit_offset_ticks`~~ | — | — | — | RETIRED v1.68 (missed in the v1.67 tombstone sweep — agent-caught; config loader rejects the key) |
 | ~~`stop_limit_escalation_seconds`~~ | — | — | — | RETIRED v1.67 with EC-STP-08 |
 | `watchdog_grace_seconds` | 3–60 | 10 | immediate | STP-03b — mark at/above trigger this long with stop unfilled ⇒ critical alert |
 | `watchdog_escalate_seconds` | 5–120 | 20 | immediate | STP-03b — total from first breach; bot buys back + cancels the sleeping stop |
