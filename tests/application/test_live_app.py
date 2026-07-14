@@ -519,6 +519,60 @@ def test_live_app_wires_a_real_stop_watchdog_task_with_env_thresholds(monkeypatc
             "live_app must actually start the STP-03b watchdog loop at startup")
 
 
+def test_lex_ladder_watchdog_grace_seconds_is_read_from_config_not_hardcoded():
+    """LEX-07 invariant watchdog `lex_ladder_grace_seconds` (range 10-300, default 60)."""
+    from decimal import Decimal as D
+
+    from meic.adapters.api.server import _lex_ladder_watchdog_grace_seconds
+
+    assert _lex_ladder_watchdog_grace_seconds({}) == D("60")                                            # default
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "90"}) == D("90")        # operator
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "10"}) == D("10")        # low edge
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "300"}) == D("300")      # high edge
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "9"}) == D("60")         # < 10 -> default
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "301"}) == D("60")       # > 300 -> default
+    assert _lex_ladder_watchdog_grace_seconds({"MEIC_LEX_LADDER_GRACE_SECONDS": "junk"}) == D("60")
+
+
+def test_live_app_wires_a_real_lex_ladder_watchdog_task_with_env_threshold(monkeypatch, tmp_path):
+    """LEX-07 wiring capstone (2026-07-14): the invariant watchdog over the
+    JOURNAL -- 'once a side is ShortStopped, a LEX ladder must have started
+    within a bounded grace window' -- must be constructed and TICKING in
+    live_app(), exactly like the STP-03b stop watchdog above. This is the
+    fifth 'built, unit-tested, never wired' component found this week
+    (NFR-04 QuoteHub, STP-03b watchdog, EC-STP-08 escalation, live-path
+    SideExpired); an unwired detector would be the very bug it exists to
+    catch, so this test proves live_app() actually starts its background
+    task rather than merely defining the class."""
+    from decimal import Decimal as D
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.lex_ladder_watchdog import LexLadderWatchdog
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_LEX_LADDER_GRACE_SECONDS", "45")
+
+    app = live_app()
+
+    wd = app.state.lex_ladder_watchdog
+    assert isinstance(wd, LexLadderWatchdog)
+    assert wd.grace_seconds == D("45"), "grace threshold must come from MEIC_LEX_LADDER_GRACE_SECONDS"
+
+    comp = app.state.composition
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        task = getattr(app.state, "lex_ladder_watchdog_task", None)
+        assert task is not None and not task.done(), (
+            "live_app must actually start the LEX-07 ladder watchdog loop at startup")
+
+
 # --- REC-01 / REC-07(8): the live event log must be DURABLE ---------------------
 
 def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_path):

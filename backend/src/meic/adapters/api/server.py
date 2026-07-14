@@ -309,6 +309,25 @@ def _watchdog_escalate_seconds(env: dict[str, str]) -> Decimal:
     return raw if Decimal("5") <= raw <= Decimal("120") else Decimal("20")
 
 
+def _lex_ladder_watchdog_grace_seconds(env: dict[str, str]) -> Decimal:
+    """LEX-07 invariant watchdog (2026-07-14) `lex_ladder_grace_seconds`: how
+    long a side may sit `ShortStopped` (a genuine stop-out, DCY-03 decay
+    excepted) with no `LongSaleStarted` before the watchdog raises its
+    CRITICAL alert naming the entry+side -- the class-level fix for the
+    2026-07-10 incident (a LEX ladder that silently never ran). Range
+    10-300, default 60 -- a ladder legitimately takes a few seconds to start,
+    so this must never be so tight it fires on ordinary ladder-start latency.
+    Infra polling dial, same class as `MEIC_WATCHDOG_GRACE_SECONDS` /
+    `MEIC_SETTLEMENT_LOOKBACK_DAYS` above. Out-of-range falls back to the
+    default (the same reject-the-dial convention as `_chain_completeness_pct`
+    above)."""
+    try:
+        raw = Decimal(env.get("MEIC_LEX_LADDER_GRACE_SECONDS", "60"))
+    except (ArithmeticError, ValueError):
+        return Decimal("60")
+    return raw if Decimal("10") <= raw <= Decimal("300") else Decimal("60")
+
+
 def _settlement_lookback_days(env: dict[str, str]) -> int:
     """EOD-01 v1.59 follow-up (2026-07-13): how many RECENT prior trading days
     `_maybe_eod_reconcile_once`'s look-back re-checks for a settlement that
@@ -1421,6 +1440,35 @@ async def _run_stop_watchdog_loop(comp, wd, hub, snaps, alerts, *, clock,
         await asyncio.sleep(idle_seconds)
 
 
+async def _lex_ladder_watchdog_pass(comp, wd, *, now) -> None:
+    """LEX-07 (2026-07-14): one pass of the LEX-ladder invariant watchdog --
+    purely a fold over `comp.events` (see `application/lex_ladder_watchdog.py`
+    for the invariant and the DCY-03 exception). Deliberately NOT shaped like
+    `_stop_watchdog_pass` above: that pass needs a live QuoteHub mark and the
+    open-short-leg frame because it is a SECOND TRIGGER layer; this one needs
+    nothing but the journal and the wall clock, because it is a WATCHDOG OVER
+    THE JOURNAL ITSELF -- it must keep working even when every other live
+    service (QuoteHub, the LEX ladder, the broker connection) is unwired,
+    unreachable, or dead, which is exactly the blind spot it exists to close."""
+    wd.observe(comp.events, now=now)
+
+
+async def _run_lex_ladder_watchdog_loop(comp, wd, alerts, *, clock,
+                                        idle_seconds: float = 5.0) -> None:
+    """LEX-07 (2026-07-14): supervises `_lex_ladder_watchdog_pass` forever --
+    same shape as `_run_stop_watchdog_loop` above (one supervised background
+    task, created unconditionally at startup, cancelled on shutdown). NEVER
+    crashes the app: any failure is alerted and the loop simply tries again
+    next tick. Runs regardless of broker connectivity (unlike the stop
+    watchdog, this pass touches no broker/hub at all -- only the journal)."""
+    while True:
+        try:
+            await _lex_ladder_watchdog_pass(comp, wd, now=clock.now())
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            alerts.alert("warning", f"LEX-07 ladder watchdog pass failed: {exc!r}")
+        await asyncio.sleep(idle_seconds)
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -1746,6 +1794,7 @@ def live_app():
     from meic.adapters.api.app import create_app
     from meic.adapters.persistence.event_store import SqliteStateStore
     from meic.application.clocks import SystemClock
+    from meic.application.lex_ladder_watchdog import LexLadderWatchdog
     from meic.application.watchdog import StopWatchdog
     from meic.composition.live import LiveComposition
     from meic.composition.panel_commands import PanelCommands
@@ -2175,6 +2224,31 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_stop_watchdog_loop() -> None:
         task = getattr(app.state, "stop_watchdog_task", None)
+        if task:
+            task.cancel()
+
+    # LEX-07 (2026-07-14): the LEX-ladder invariant watchdog -- the CLASS fix
+    # for the 2026-07-10 incident (`ShortStopped` journaled, then NOTHING: no
+    # `LongSaleStarted`, the LEX ladder had silently never run, and the log
+    # itself was the only place that ever showed it -- no wrong events, only
+    # absent ones). Constructed and ticked unconditionally here, same as the
+    # stop watchdog above -- an unwired detector would be the very bug this
+    # closes. Purely journal-driven (application/lex_ladder_watchdog.py): it
+    # never touches the broker, the hub, or the LEX service, so it fires even
+    # when all three are unwired, unreachable, or dead.
+    lex_ladder_grace_s = _lex_ladder_watchdog_grace_seconds(env)
+    app.state.lex_ladder_watchdog_grace_seconds = lex_ladder_grace_s
+    lex_ladder_watchdog = LexLadderWatchdog(alerts=alerts, grace_seconds=lex_ladder_grace_s)
+    app.state.lex_ladder_watchdog = lex_ladder_watchdog
+
+    @app.on_event("startup")
+    async def _start_lex_ladder_watchdog_loop() -> None:
+        app.state.lex_ladder_watchdog_task = asyncio.create_task(_run_lex_ladder_watchdog_loop(
+            comp, lex_ladder_watchdog, alerts, clock=comp.clock, idle_seconds=quote_stream_poll_s))
+
+    @app.on_event("shutdown")
+    async def _stop_lex_ladder_watchdog_loop() -> None:
+        task = getattr(app.state, "lex_ladder_watchdog_task", None)
         if task:
             task.cancel()
 
