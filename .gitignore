@@ -9,3 +9,10 @@ tools/observations/
 # runtime state dirs (REC-07 SQLite volumes)
 /data/
 /data-*/
+
+# Server logs — a NEW timestamped file per boot (a restart must never truncate the
+# previous run: 2026-07-13 cert-day logs were lost because nothing was written at all).
+logs/
+
+# Build cache — churns on every frontend build; never a reviewable diff.
+frontend/tsconfig.tsbuildinfo
