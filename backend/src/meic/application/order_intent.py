@@ -22,9 +22,16 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-ORDER_TYPES = frozenset({"limit", "marketable_limit", "stop_market", "stop_limit"})
-STOP_TYPES = frozenset({"stop_market", "stop_limit"})
-PRICED_TYPES = frozenset({"limit", "marketable_limit", "stop_limit"})
+# STP-03 (v1.67, operator-ratified week-review ruling): stop_limit is
+# TOMBSTONED -- MUST NOT BE BUILT, not merely unused. It is deliberately
+# absent from every one of these sets so `OrderIntent(order_type="stop_limit",
+# ...)` raises IntentError at construction (below) rather than succeeding: a
+# stop-limit unfilled through a gap leaves a naked short with no guarantee the
+# bot is alive, and the marketable stop_market path is the only one this
+# system builds or proves. TC-NFR-07 scenario 2 pins this absence.
+ORDER_TYPES = frozenset({"limit", "marketable_limit", "stop_market"})
+STOP_TYPES = frozenset({"stop_market"})
+PRICED_TYPES = frozenset({"limit", "marketable_limit"})
 ACTIONS = frozenset({"buy_to_open", "sell_to_open", "buy_to_close", "sell_to_close"})
 RIGHTS = frozenset({"P", "C"})
 
@@ -63,8 +70,8 @@ class OrderIntent:
     idempotency_key: str = ""       # ORD-04
     underlying: str = "SPXW"
     expiration: date | None = None
-    price: Decimal | None = None        # limit / marketable_limit / stop_limit
-    stop_trigger: Decimal | None = None  # stop_market / stop_limit
+    price: Decimal | None = None        # limit / marketable_limit
+    stop_trigger: Decimal | None = None  # stop_market (STP-03: stop_limit tombstoned)
     replaced_from: str = ""         # DCY-04: the resting stop this one supersedes
 
     def __post_init__(self) -> None:

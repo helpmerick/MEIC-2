@@ -105,6 +105,7 @@ export interface ScheduleRow {
   stop_basis?: string;          // total_credit | short_premium (per_side is rejected)
   stop_rebate_markup?: string | "";
   worst_case_estimate?: string; // server-computed, read-only
+  effective_stop_pct_estimate?: string | null; // STP-02b (v1.67), server-computed, read-only
   id?: number;                   // ENT-10(4)/v1.53: durable entry id, assigned at Save.
                                  // Round-trips unedited through patch()'s row spread so a
                                  // re-save never renumbers a row the operator didn't touch.
@@ -155,6 +156,7 @@ export interface FirePreview {
   worst_case_estimate: string;
   worst_case_is_estimate: true;
   estimate_formula: string;
+  effective_stop_pct_estimate: string | null; // STP-02b (v1.67)
   can_fire: boolean;
 }
 

@@ -15,7 +15,7 @@ math divides by 100.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
 from .ticks import TickTable
@@ -81,6 +81,57 @@ def markup_worst_case_increase(markup: Decimal, *, contracts: int = 1) -> Decima
     raises each short's stop by `markup`, so a stop-out pays that much more per
     contract (×100); both sides stopping is the worst case (×2)."""
     return markup * 100 * contracts * 2
+
+
+def effective_stop_pct(trigger: Decimal, net_credit: Decimal) -> Decimal:
+    """STP-02b effective-percentage cage (v1.67): the ACTUAL stop trigger as a
+    percentage of the entry's net credit -- computed AFTER tick-flooring, not
+    from the raw pre-floor figure (the precision trap TC-STP-21 pins: credit
+    2.80, markup 0.30 -> raw 2.96 floors to 2.95 -> effective 105.4%, not the
+    raw 105.7%). A fixed-dollar markup's bite scales inversely with credit; this
+    is the number that makes that visible instead of discovered on a bad day.
+
+    Rounded to one decimal place (ROUND_HALF_UP) -- the precision the spec's
+    own examples are stated in (105.4, 110.0)."""
+    if net_credit <= 0:
+        raise ValueError("net_credit must be > 0 to compute an effective stop percentage")
+    pct = (trigger / net_credit) * 100
+    return pct.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def within_effective_cap(effective_pct: Decimal, cap_pct: Decimal) -> bool:
+    """STP-02b cage: the cap is inclusive of its own boundary (110 exactly is
+    ALLOWED, per TC-STP-21) -- only strictly exceeding it skips the entry."""
+    return effective_pct <= cap_pct
+
+
+def effective_cap_check(
+    basis: StopBasis,
+    *,
+    ticks: TickTable,
+    short_prices: dict[str, Decimal],
+    net_credit: Decimal,
+    pct: Decimal = Decimal("95"),
+    markup: Decimal = Decimal("0"),
+    side_long_fills: dict[str, Decimal] | None = None,
+    cap_pct: Decimal = Decimal("110"),
+) -> tuple[bool, Decimal]:
+    """STP-02b whole-entry cage: computes every short's trigger (identically to
+    `feasible()`), each side's effective stop % against the entry's OWN net
+    credit, and whether the WORST (highest) side clears `cap_pct`. One
+    computation feeds both the gate (`ok`) and the display (`worst_effective_pct`)
+    so they can never diverge -- the cage SKIPS (reason `markup_exceeds_cap`),
+    it never clamps the markup to fit."""
+    worst = Decimal("0")
+    for side, short_price in short_prices.items():
+        trigger = stop_trigger(
+            basis, ticks=ticks, pct=pct, markup=markup,
+            total_net_credit=net_credit, short_fill=short_price,
+            side_long_fill=(side_long_fills or {}).get(side),
+        )
+        eff = effective_stop_pct(trigger, net_credit)
+        worst = max(worst, eff)
+    return within_effective_cap(worst, cap_pct), worst
 
 
 def clears(trigger: Decimal, short_price: Decimal, *, ticks: TickTable, min_distance_ticks: int) -> bool:

@@ -15,6 +15,7 @@ from meic.application.preflight import run_preflight
 from meic.application.schedule_service import (
     ScheduleService,
     day_total_estimate,
+    effective_stop_pct_estimate,
     worst_case_estimate,
 )
 from meic.domain.schedule import ResolvedEntry
@@ -47,6 +48,39 @@ def test_worst_case_estimate_uses_target_premium_not_a_real_credit():
                         min_total_credit=D("2"), probe_down_max=25,
                         strike_method="premium", short_delta_target=D("0.10"))
     assert worst_case_estimate(row) == D("9400")     # (50 - 3) x 100 x 2
+
+
+# --- STP-02b (v1.67): the effective-percentage estimate, alongside worst-case ------
+
+def test_effective_stop_pct_estimate_uses_target_premium_as_the_credit_proxy():
+    """Same composition-time honesty stance as `worst_case_estimate`: no
+    strikes/fills exist yet, so `target_premium` stands in for the net credit.
+    Zero markup -> the proxy cancels out of trigger/credit, leaving exactly
+    stop_loss_pct as the effective percentage."""
+    from datetime import time as _t
+    row = ResolvedEntry(time=_t(10, 0), contracts=1, target_premium=D("2.80"),
+                        wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
+                        stop_rebate_markup=D("0.30"), min_short_premium=D("1"),
+                        min_total_credit=D("2"), probe_down_max=25,
+                        strike_method="premium", short_delta_target=D("0.10"))
+    # raw 0.95*2.80+0.30 = 2.96 floors to 2.95 -> 2.95/2.80 = 105.4% (TC-STP-21 vector)
+    assert effective_stop_pct_estimate(row) == D("105.4")
+
+
+def test_effective_stop_pct_estimate_is_none_without_a_target_premium():
+    from datetime import time as _t
+    row = ResolvedEntry(time=_t(10, 0), contracts=1, target_premium=D("0"),
+                        wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
+                        stop_rebate_markup=D("0"), min_short_premium=D("1"),
+                        min_total_credit=D("2"), probe_down_max=25,
+                        strike_method="premium", short_delta_target=D("0.10"))
+    assert effective_stop_pct_estimate(row) is None
+
+
+def test_view_carries_the_effective_stop_pct_estimate_per_row():
+    svc = _svc([_row("10:00", stop_rebate_markup="0.30", target_premium="2.80")])
+    rows = svc.view().to_dict()["rows"]
+    assert D(rows[0]["effective_stop_pct_estimate"]) == D("105.4")
 
 
 def test_day_total_sums_per_entry_estimates_never_n_times_max():

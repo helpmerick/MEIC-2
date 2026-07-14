@@ -124,6 +124,10 @@ def _(world):
     assert preview["worst_case_is_estimate"] is True
     assert D(preview["worst_case_estimate"]) == D("4700")     # (50 - 3) x 100 x 1
     assert preview["contracts"] == 1 and preview["stop_loss_pct"] == 95
+    # STP-02b (v1.67): alongside the worst-case disclosure, same dialog. Zero
+    # markup -> effective % is exactly stop_loss_pct (95.0), the proxy-credit
+    # (target_premium) cancelling out of trigger/credit.
+    assert D(preview["effective_stop_pct_estimate"]) == D("95.0")
 
     world["result"] = asyncio.run(manual.fire(
         press_id=world["press_id"], entry_number=1, row=_row(), confirmed=True))

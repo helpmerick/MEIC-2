@@ -137,7 +137,10 @@ class TastytradeAdapter:
 
         self.validate_stop_tif(intent)  # assumption 2 — before building anything
 
-        type_map = {"stop_market": OrderType.STOP, "stop_limit": OrderType.STOP_LIMIT,
+        # STP-03 (v1.67 tombstone): stop_limit is not a member of
+        # OrderIntent.ORDER_TYPES, so `intent.order_type` can never be
+        # "stop_limit" here -- no OrderType.STOP_LIMIT entry exists to build one.
+        type_map = {"stop_market": OrderType.STOP,
                     "limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT}
         action_map = {a.value.lower().replace(" ", "_"): a for a in OrderAction}
         tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
@@ -165,7 +168,7 @@ class TastytradeAdapter:
         """Assumption 2: reject an option stop that isn't Day-TIF before submit.
         (OrderIntent already refuses this at construction; kept as the adapter's
         own last line of defence against a hand-built intent.)"""
-        if intent.order_type in ("stop_market", "stop_limit") and intent.tif not in _OPTION_STOP_ALLOWED_TIF:
+        if intent.order_type == "stop_market" and intent.tif not in _OPTION_STOP_ALLOWED_TIF:
             raise ValueError(
                 f"option stop TIF {intent.tif!r} unsupported — Day only "
                 "(cert: tif_no_stop_market_gtc_options)")

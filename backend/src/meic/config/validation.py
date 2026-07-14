@@ -22,6 +22,21 @@ TOMBSTONE_KEYS = frozenset({"daily_max_loss", "daily_loss_also_flatten", "risk_e
 # Same "reject, never silently ignore" pattern as RSK-02 above.
 TOMBSTONE_KEYS_V151 = frozenset({"chain_atm_band_pts"})
 
+# STP-03 v1.67 tombstone: stop_limit is RETIRED -- MUST NOT BE BUILT (the
+# 07-13 week-review found `stop_order_type` pointed at no construction path
+# at all, plus dead EC-STP-08 escalation code; ruling: retire, don't build).
+# `stop_limit_escalation_seconds` only ever served that deleted watchdog.
+# Same "reject, never silently ignore" pattern as RSK-02/STK-10 above.
+#
+# NOTE: `stop_limit_offset_ticks` is NOT included here. spec/06-configuration.md
+# still lists it as a live (non-retired) row -- range 1-20, default 4 -- unlike
+# these two keys, which the spec's own table marks RETIRED with a strikethrough.
+# That row looks like a v1.67 update oversight (it is annotated "(stop_limit
+# only)" for a feature the same version tombstones), but this change follows
+# the spec's actual text rather than improvising a rejection the table does
+# not ask for; flagged to the operator for confirmation/amendment.
+TOMBSTONE_KEYS_V167 = frozenset({"stop_order_type", "stop_limit_escalation_seconds"})
+
 
 class ConfigRejected(ValueError):
     def __init__(self, key: str, reason: str) -> None:
@@ -32,6 +47,16 @@ class ConfigRejected(ValueError):
 def validate_stop_loss_pct(pct: int) -> None:
     if pct not in STOP_PCT_SET:
         raise ConfigRejected("stop_loss_pct", "out_of_range")  # reject, never clamp
+
+
+def validate_max_effective_stop_pct(pct) -> None:
+    """STP-02b effective-percentage cage (v1.67): 100-150, reject-never-clamp
+    (doc 06 §32). An out-of-range cap is refused outright -- the cap itself
+    must never be silently coerced into range any more than the markup it
+    gates may be silently reduced."""
+    from decimal import Decimal
+    if not (Decimal("100") <= Decimal(str(pct)) <= Decimal("150")):
+        raise ConfigRejected("max_effective_stop_pct", "out_of_range")
 
 
 def validate_bind(bind_host: str, api_token: str | None) -> None:
@@ -49,10 +74,14 @@ def validate_config(cfg: dict) -> None:
             raise ConfigRejected(key, "removed_rsk02")  # RSK-02 tombstone — must not be built
         if key in TOMBSTONE_KEYS_V151:
             raise ConfigRejected(key, "removed_v151")   # STK-10 v1.51 tombstone
+        if key in TOMBSTONE_KEYS_V167:
+            raise ConfigRejected(key, "removed_v167_stp03")  # STP-03 v1.67 tombstone
     if "stop_loss_pct" in cfg:
         validate_stop_loss_pct(int(cfg["stop_loss_pct"]))
     if "stop_basis" in cfg:
         validate_stop_basis(str(cfg["stop_basis"]))  # STP-02d gate (per_side rejected)
+    if "max_effective_stop_pct" in cfg:
+        validate_max_effective_stop_pct(cfg["max_effective_stop_pct"])  # STP-02b cage
     if "bind_host" in cfg:
         validate_bind(str(cfg["bind_host"]), cfg.get("api_token"))
     if "fee_model" in cfg:

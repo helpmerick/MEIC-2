@@ -53,6 +53,20 @@ def test_tc_stp_02_config_rejects_out_of_range_pct_and_gates_per_side():
     validate_stop_basis("short_premium")
 
 
+# --- STP-02b cage config: max_effective_stop_pct is reject-never-clamp ------
+
+def test_max_effective_stop_pct_rejects_out_of_range_never_clamps():
+    """doc 06 §32: 100-150, default 110. An out-of-range cap is refused
+    outright, the same reject-never-clamp stance as `stop_loss_pct` above --
+    never silently coerced into range."""
+    for bad in (99, 151, 0, 200):
+        with pytest.raises(ConfigRejected) as exc:
+            validate_config({"max_effective_stop_pct": bad})
+        assert exc.value.key == "max_effective_stop_pct"
+    for ok in (100, 110, 150):
+        validate_config({"max_effective_stop_pct": ok})  # no raise
+
+
 # --- TC-STP-03: intraday change is next-entry, never retroactive -------------
 
 def test_tc_stp_03_intraday_pct_change_leaves_entry1_uses_new_for_entry2():

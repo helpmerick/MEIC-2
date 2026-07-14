@@ -126,16 +126,19 @@ def test_acl_passes_through_already_resolved_symbols():
 
 
 def test_acl_maps_every_order_type():
+    # STP-03 (v1.67 tombstone): stop_limit is deliberately absent -- it is not
+    # a constructible OrderIntent.order_type at all (order_intent.py's
+    # ORDER_TYPES), so there is no ACL mapping to test here any more. See
+    # tests/bdd/test_tc_nfr_07_stp03_tombstone.py for the absence test.
     from tastytrade.order import OrderType
     put = lambda: OrderLeg(right="P", action="buy_to_close", qty=1, symbol="S")
     cases = {
         "limit": dict(price=D("1.00")),
         "marketable_limit": dict(price=D("1.00")),
         "stop_market": dict(stop_trigger=D("3.80")),
-        "stop_limit": dict(stop_trigger=D("3.80"), price=D("3.90")),
     }
     expected = {"limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT,
-                "stop_market": OrderType.STOP, "stop_limit": OrderType.STOP_LIMIT}
+                "stop_market": OrderType.STOP}
     for otype, extra in cases.items():
         order = _build(OrderIntent(order_type=otype, tif="Day", contracts=1,
                                    legs=(put(),), **extra))

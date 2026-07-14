@@ -35,7 +35,7 @@ from meic.domain.events import EntrySkipped
 from meic.domain.projection import day_report
 from meic.domain.walk import floor_inside_spot
 
-from .schedule_service import worst_case_estimate
+from .schedule_service import effective_stop_pct_estimate, worst_case_estimate
 
 MANUAL = "manual_entry"
 
@@ -77,6 +77,7 @@ class FirePreview:
     wing_width: Decimal
     stop_loss_pct: int
     worst_case_estimate: Decimal
+    effective_stop_pct_estimate: Decimal | None = None  # STP-02b (v1.67)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +93,12 @@ class FirePreview:
             # be known here. RSK-04 re-prices from real strikes and may still veto.
             "worst_case_is_estimate": True,
             "estimate_formula": "(width - target premium) x 100 x contracts",
+            # STP-02b (v1.67): alongside the worst-case disclosure, same dialog,
+            # same ESTIMATE honesty stance -- None when there is nothing to
+            # estimate from.
+            "effective_stop_pct_estimate": (
+                None if self.effective_stop_pct_estimate is None
+                else str(self.effective_stop_pct_estimate)),
         }
 
 
@@ -122,7 +129,8 @@ class ManualEntry:
             now=self._comp.clock.now().isoformat(),
             contracts=row.contracts, target_premium=row.target_premium,
             wing_width=row.wing_width, stop_loss_pct=row.stop_loss_pct,
-            worst_case_estimate=worst_case_estimate(row))
+            worst_case_estimate=worst_case_estimate(row),
+            effective_stop_pct_estimate=effective_stop_pct_estimate(row))
 
     def can_fire(self) -> bool:
         """UI-22: ▶ is enabled only while all three trade-enabling states permit

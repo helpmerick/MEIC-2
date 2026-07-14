@@ -26,7 +26,7 @@ from meic.config.fee_model import FeeModel
 from meic.domain.events import CondorFilled, CondorProposed, EntrySkipped, EntryWindowOpened
 from meic.domain.fees import fee_for_legs
 from meic.domain.ladder import RepriceLadder
-from meic.domain.stop_policy import StopBasis, feasible
+from meic.domain.stop_policy import StopBasis, effective_cap_check, feasible
 from meic.domain.ticks import TickTable
 
 from meic.domain.risk import worst_case_loss
@@ -126,6 +126,7 @@ class ExecuteEntryAttempt:
         stop_loss_pct: Decimal = Decimal("95"),
         stop_rebate_markup: Decimal = Decimal("0"),
         min_stop_distance_ticks: int = 2,
+        max_effective_stop_pct: Decimal = Decimal("110"),
         underlying: str = "SPXW",
         alerts=None,   # ORD-09 cross-check mismatches are alert-only
         # CLS-03 seam (2026-07-11 wiring): the shared WorkingEntryOrders
@@ -157,6 +158,7 @@ class ExecuteEntryAttempt:
         self._pct = stop_loss_pct
         self._markup = stop_rebate_markup
         self._min_distance = min_stop_distance_ticks
+        self._cap_pct = max_effective_stop_pct  # STP-02b cage (v1.67), doc 06 §32
         self._underlying = underlying
         self._alerts = alerts
         self._working = working_orders   # CLS-03 seam; None => no-op
@@ -238,6 +240,24 @@ class ExecuteEntryAttempt:
             min_distance_ticks=self._min_distance,
         ):
             return self._skip(day, n, "infeasible_stop")
+
+        # 4b. STP-02b effective-percentage cage (v1.67): "SKIPS any entry whose
+        # MARKUP pushes past it" -- this guards the markup's inverse-scaling
+        # bite specifically, not `stop_loss_pct` itself. `stop_loss_pct` is its
+        # OWN long-ratified, separately-selectable dial (95-300%, doc 06 STP-02)
+        # with no cap of its own; a high pct chosen with ZERO markup is not
+        # "markup pushing past" anything, so the cage only evaluates when a
+        # markup is actually in force. `max_effective_stop_pct` is global-only,
+        # not a per-row override (doc 06 §37's override list omits it).
+        if s.markup > 0:
+            cap_ok, _worst_effective_pct = effective_cap_check(
+                s.basis, ticks=self._ticks,
+                short_prices={"PUT": condor.put_short_mid, "CALL": condor.call_short_mid},
+                net_credit=condor.mid_credit, pct=s.pct, markup=s.markup,
+                cap_pct=self._cap_pct,
+            )
+            if not cap_ok:
+                return self._skip(day, n, "markup_exceeds_cap")
 
         self._events.append(EntryWindowOpened(date=day, entry_number=n))
         entry_id = f"{day}#{n}"

@@ -1,40 +1,22 @@
-"""TC-STP-09 (EC-STP-08 stop_limit escalation) and TC-ORD-04 (EC-ENT-06 partial
-fill). Pure decisions against the escalation + partial-fill modules."""
+"""TC-STP-09 (superseded, see below) and TC-ORD-04 (EC-ENT-06 partial fill).
+Pure decisions against the partial-fill module."""
 from meic.application.partial_fill import (
     resolve_balanced_partial,
     resolve_unbalanced,
 )
-from meic.application.stop_escalation import (
-    requires_unfilled_watchdog,
-    should_escalate_to_market,
-)
 
 
-# --- TC-STP-09: stop_limit triggered-unfilled escalates to market ------------
-
-def test_tc_stp_09_stop_limit_escalates_to_market_after_window():
-    """TC-STP-09 (EC-STP-08): with stop_limit configured, a triggered-but-
-    unfilled stop is cancelled/replaced with market after the escalation window;
-    stop_market (default) never uses this path."""
-    assert requires_unfilled_watchdog("stop_limit") is True
-    assert requires_unfilled_watchdog("stop_market") is False
-
-    # triggered, unfilled, past 10s -> escalate to market
-    assert should_escalate_to_market(
-        stop_order_type="stop_limit", triggered=True, filled=False,
-        seconds_since_trigger=10, escalation_seconds=10) is True
-    # not yet past the window -> hold
-    assert should_escalate_to_market(
-        stop_order_type="stop_limit", triggered=True, filled=False,
-        seconds_since_trigger=9, escalation_seconds=10) is False
-    # already filled -> nothing to escalate
-    assert should_escalate_to_market(
-        stop_order_type="stop_limit", triggered=True, filled=True,
-        seconds_since_trigger=99, escalation_seconds=10) is False
-    # stop_market never escalates through this watchdog
-    assert should_escalate_to_market(
-        stop_order_type="stop_market", triggered=True, filled=False,
-        seconds_since_trigger=99, escalation_seconds=10) is False
+# --- TC-STP-09: SUPERSEDED (STP-03 v1.67 tombstone) --------------------------
+#
+# TC-STP-09 originally pinned EC-STP-08's stop_limit unfilled-escalation
+# watchdog. The 07-13 week-review found that EC-STP-08 was never wired to
+# anything live -- application/stop_escalation.py existed, was unit-tested
+# (this file, until now), and had exactly two references repo-wide: itself
+# and this test. STP-03 (v1.67, operator-ratified) tombstoned stop_limit
+# outright ("retire, don't build"): the module is DELETED, and the absence is
+# now what TC-NFR-07 scenario 2 tests -- no code constructs a stop_limit order
+# and the config loader rejects `stop_order_type`. See
+# tests/application/test_tc_nfr_07_stp03_tombstone.py.
 
 
 # --- TC-ORD-04: partial fill of the 4-leg complex order ----------------------

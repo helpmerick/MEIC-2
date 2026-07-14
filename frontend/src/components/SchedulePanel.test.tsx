@@ -32,6 +32,7 @@ const PREVIEW: FirePreview = {
   worst_case_estimate: "9400.00",
   worst_case_is_estimate: true,
   estimate_formula: "(width - target premium) x 100 x contracts",
+  effective_stop_pct_estimate: "95.0",
   can_fire: true,
 };
 
@@ -61,6 +62,16 @@ describe("composing the schedule", () => {
     expect(screen.getByLabelText("contracts 2")).toHaveValue(1);
     expect(screen.getByTestId("wc-0")).toHaveTextContent("$9400.00");
     expect(screen.getByTestId("wc-1")).toHaveTextContent("$4700.00");
+  });
+
+  it("shows the effective stop percentage alongside the worst-case estimate (STP-02b)", async () => {
+    vi.spyOn(api, "getSchedule").mockResolvedValue({
+      ...VIEW,
+      rows: [{ ...VIEW.rows[0], effective_stop_pct_estimate: "105.4" }, VIEW.rows[1]],
+    });
+    await renderPanel();
+    expect(screen.getByTestId("effective-pct-0")).toHaveTextContent("effective 105.4%");
+    expect(screen.queryByTestId("effective-pct-1")).toBeNull(); // no estimate -> nothing shown
   });
 
   it("shows max_day_risk beside the day total, so adding a row visibly eats headroom", async () => {
@@ -447,6 +458,24 @@ describe("ENT-09 manual fire (UI-22)", () => {
     expect(box).toHaveTextContent("$9400.00");
     expect(screen.getByText(/\(width - target premium\) x 100 x contracts/)).toBeInTheDocument();
     expect(screen.getByText(/RSK-04 check runs on the real strikes and may still\s+veto/)).toBeInTheDocument();
+  });
+
+  it("shows the effective stop percentage alongside the worst-case estimate (STP-02b)", async () => {
+    vi.spyOn(api, "firePreview").mockResolvedValue(PREVIEW);
+    await renderPanel();
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+
+    await screen.findByRole("dialog");
+    expect(screen.getByTestId("fire-effective-pct")).toHaveTextContent("effective stop 95.0% (ESTIMATE)");
+  });
+
+  it("omits the effective-percentage line when the estimate is null (no target premium)", async () => {
+    vi.spyOn(api, "firePreview").mockResolvedValue({ ...PREVIEW, effective_stop_pct_estimate: null });
+    await renderPanel();
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+
+    await screen.findByRole("dialog");
+    expect(screen.queryByTestId("fire-effective-pct")).toBeNull();
   });
 
   it("OK fires with the press_id from the preview, so a double-click is one attempt", async () => {

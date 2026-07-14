@@ -27,6 +27,17 @@ from meic.domain.schedule import (
     resolve,
     validate_schedule,
 )
+from meic.domain.stop_policy import StopBasis, effective_stop_pct, stop_trigger
+from meic.domain.ticks import TickRung, TickTable
+
+# A composition-time PREVIEW-ONLY tick table (SPX's documented $0.05-below-$3.00
+# / $0.10-at-or-above structure, ticks.py's own fixture shape) -- used ONLY by
+# `effective_stop_pct_estimate` below to floor its ESTIMATE the same way the
+# real trigger will. STK-08 (tick rules come from the API, never hardcoded)
+# governs actual order placement; this is a display number computed before any
+# strike is even selected, same honesty class as `worst_case_estimate` above.
+_PREVIEW_TICKS = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")),
+                            TickRung(None, Decimal("0.10"))))
 
 
 def worst_case_estimate(entry) -> Decimal:
@@ -38,6 +49,27 @@ def worst_case_estimate(entry) -> Decimal:
     later enforce. Always labelled ESTIMATE in the UI.
     """
     return max(Decimal("0"), entry.wing_width - entry.target_premium) * 100 * entry.contracts
+
+
+def effective_stop_pct_estimate(entry, ticks: TickTable | None = None) -> Decimal | None:
+    """STP-02b (v1.67): a composition-time ESTIMATE of this row's effective
+    stop percentage, labelled and approximate exactly like `worst_case_estimate`
+    above -- no strikes exist yet, so `target_premium` stands in for both the
+    net credit AND the short fill (the same proxy `worst_case_estimate` already
+    uses). Reuses the REAL `stop_trigger`/`effective_stop_pct` domain math (one
+    formula, never a second divergent copy) so the estimate tracks the actual
+    STP-02b cage exactly except for that one proxy substitution. Returns None
+    when there is no target premium to estimate from (never fabricates a
+    percentage from nothing).
+    """
+    credit = entry.target_premium
+    if credit is None or credit <= 0:
+        return None
+    trigger = stop_trigger(
+        StopBasis(entry.stop_basis), ticks=ticks or _PREVIEW_TICKS,
+        pct=Decimal(entry.stop_loss_pct), markup=entry.stop_rebate_markup,
+        total_net_credit=credit, short_fill=credit, side_long_fill=Decimal("0"))
+    return effective_stop_pct(trigger, credit)
 
 
 def day_total_estimate(entries) -> Decimal:
@@ -224,9 +256,16 @@ class ScheduleService:
         # `raw_rows` and `resolved` are the same list, same order (`resolved`
         # walks `state.entry_schedule` itself) — zip is safe. A pre-v1.53 row
         # has no "id" key yet; it round-trips as None until the next Save.
-        rows = [{**pinned_row(r, raw.get("id") if isinstance(raw, dict) else None),
-                "worst_case_estimate": str(worst_case_estimate(r))}
-                for raw, r in zip(raw_rows, resolved)]
+        def _row_view(raw, r):
+            eff = effective_stop_pct_estimate(r)
+            return {**pinned_row(r, raw.get("id") if isinstance(raw, dict) else None),
+                    "worst_case_estimate": str(worst_case_estimate(r)),
+                    # STP-02b (v1.67): alongside the worst-case disclosure, not a
+                    # second surface -- same ESTIMATE honesty stance (None -> no
+                    # target premium yet to estimate from).
+                    "effective_stop_pct_estimate": None if eff is None else str(eff)}
+
+        rows = [_row_view(raw, r) for raw, r in zip(raw_rows, resolved)]
         return ScheduleView(rows=rows, day_total_estimate=day_total_estimate(resolved),
                             max_day_risk=self.max_day_risk(),
                             config_version=self._state.config_version)

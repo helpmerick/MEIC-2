@@ -352,6 +352,16 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
                 </td>
                 <td className="cell-wc" data-testid={`wc-${i}`} data-label="Worst case">
                   {row.worst_case_estimate ? `$${row.worst_case_estimate}` : "—"}
+                  {/* STP-02b (v1.67): alongside the worst-case disclosure, not a
+                      second surface -- server-computed
+                      (schedule_service.effective_stop_pct_estimate), same
+                      ESTIMATE honesty stance, same round-trip cadence (Save)
+                      as the dollar figure above it. */}
+                  {row.effective_stop_pct_estimate != null && (
+                    <span className="time-hint" data-testid={`effective-pct-${i}`}>
+                      effective {row.effective_stop_pct_estimate}%
+                    </span>
+                  )}
                 </td>
                 <td className="cell-actions" data-label="Actions">
                   <button
@@ -516,6 +526,11 @@ export function FireDialog({
         <div className="estimate-box" data-testid="fire-estimate">
           <div className="lab">Worst case (ESTIMATE)</div>
           <div className="val">${preview.worst_case_estimate}</div>
+          {preview.effective_stop_pct_estimate != null && (
+            <div className="sub" data-testid="fire-effective-pct">
+              effective stop {preview.effective_stop_pct_estimate}% (ESTIMATE)
+            </div>
+          )}
         </div>
         <p className="note">
           {preview.estimate_formula}. Strikes are not selected until the entry fires, so
