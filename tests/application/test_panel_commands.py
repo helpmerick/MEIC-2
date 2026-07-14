@@ -74,6 +74,47 @@ def test_flatten_requires_typed_confirmation_then_closes_open_entries():
     assert closed == {"e1", "e2"}
 
 
+def test_flatten_in_progress_is_true_only_for_the_duration_of_the_flatten_call():
+    """DCY-01 (2026-07-14): 'never while a Flatten All is executing' needs a
+    REAL live signal off `PanelCommands` -- there was none anywhere in the
+    composition before this wiring. False before/after; observably True from
+    inside a concurrently-running flatten() call; cleared even if a close
+    raises partway through (finally)."""
+    comp = _comp()
+    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    cmd = PanelCommands(comp)
+    assert cmd.flatten_in_progress is False
+
+    seen_during: list[bool] = []
+    real_close = cmd.close
+
+    async def _spying_close(entry_id, *a, **kw):
+        seen_during.append(cmd.flatten_in_progress)
+        return await real_close(entry_id, *a, **kw)
+    cmd.close = _spying_close
+
+    asyncio.run(cmd.flatten("FLATTEN"))
+
+    assert seen_during == [True], "flatten_in_progress must be True while flatten() is closing entries"
+    assert cmd.flatten_in_progress is False, "must clear once flatten() returns"
+
+
+def test_flatten_in_progress_clears_even_if_a_close_raises():
+    comp = _comp()
+    comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    cmd = PanelCommands(comp)
+
+    async def _boom(entry_id, *a, **kw):
+        raise RuntimeError("boom")
+    cmd.close = _boom
+
+    try:
+        asyncio.run(cmd.flatten("FLATTEN"))
+    except RuntimeError:
+        pass
+    assert cmd.flatten_in_progress is False
+
+
 def test_each_press_gets_its_own_id_so_a_second_press_is_not_a_duplicate():
     """ENT-09 is idempotent PER PRESS. The press id was once derived from
     clock.now(), so two separate presses inside one clock tick collided and the

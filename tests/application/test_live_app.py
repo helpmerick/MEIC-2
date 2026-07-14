@@ -573,6 +573,117 @@ def test_live_app_wires_a_real_lex_ladder_watchdog_task_with_env_threshold(monke
             "live_app must actually start the LEX-07 ladder watchdog loop at startup")
 
 
+# --- DCY-01..04 (2026-07-14, NFR-07 pinned regression): decay watcher config ----
+
+def test_decay_buyback_enabled_is_read_from_config_not_hardcoded():
+    from meic.adapters.api.server import _decay_buyback_enabled
+
+    assert _decay_buyback_enabled({}) is True                                       # default
+    assert _decay_buyback_enabled({"MEIC_DECAY_BUYBACK_ENABLED": "false"}) is False
+    assert _decay_buyback_enabled({"MEIC_DECAY_BUYBACK_ENABLED": "FALSE"}) is False
+    assert _decay_buyback_enabled({"MEIC_DECAY_BUYBACK_ENABLED": "true"}) is True
+    assert _decay_buyback_enabled({"MEIC_DECAY_BUYBACK_ENABLED": "junk"}) is True
+
+
+def test_decay_buyback_trigger_is_read_from_config_not_hardcoded():
+    from decimal import Decimal as D
+
+    from meic.adapters.api.server import _decay_buyback_trigger
+
+    assert _decay_buyback_trigger({}) == D("0.05")                                          # default
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "0.10"}) == D("0.10")       # operator
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "0.05"}) == D("0.05")       # low edge
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "0.50"}) == D("0.50")       # high edge
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "0.04"}) == D("0.05")       # < 0.05 -> default
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "0.51"}) == D("0.05")       # > 0.50 -> default
+    assert _decay_buyback_trigger({"MEIC_DECAY_BUYBACK_TRIGGER": "junk"}) == D("0.05")
+
+
+def test_decay_confirmation_evals_is_read_from_config_not_hardcoded():
+    from meic.adapters.api.server import _decay_confirmation_evals
+
+    assert _decay_confirmation_evals({}) == 2                                            # default
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "5"}) == 5         # operator
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "1"}) == 1         # low edge
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "10"}) == 10       # high edge
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "0"}) == 2         # < 1 -> default
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "11"}) == 2        # > 10 -> default
+    assert _decay_confirmation_evals({"MEIC_DECAY_CONFIRMATION_EVALS": "junk"}) == 2
+
+
+def test_decay_unfilled_timeout_seconds_is_read_from_config_not_hardcoded():
+    from decimal import Decimal as D
+
+    from meic.adapters.api.server import _decay_unfilled_timeout_seconds
+
+    assert _decay_unfilled_timeout_seconds({}) == D("30")                                          # default
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "45"}) == D("45")
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "5"}) == D("5")
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "120"}) == D("120")
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "4"}) == D("30")
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "121"}) == D("30")
+    assert _decay_unfilled_timeout_seconds({"MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS": "junk"}) == D("30")
+
+
+def test_decay_cutoff_time_is_read_from_config_not_hardcoded():
+    from datetime import time as dtime
+
+    from meic.adapters.api.server import _decay_cutoff_time
+
+    assert _decay_cutoff_time({}) == dtime(15, 55)                                     # default
+    assert _decay_cutoff_time({"MEIC_DECAY_CUTOFF_TIME": "14:30"}) == dtime(14, 30)     # operator
+    assert _decay_cutoff_time({"MEIC_DECAY_CUTOFF_TIME": "14.30"}) == dtime(14, 30)     # dot separator
+    assert _decay_cutoff_time({"MEIC_DECAY_CUTOFF_TIME": "junk"}) == dtime(15, 55)
+    assert _decay_cutoff_time({"MEIC_DECAY_CUTOFF_TIME": "25:00"}) == dtime(15, 55)     # out of range
+
+
+def test_live_app_wires_a_real_decay_watcher_task_with_env_thresholds(monkeypatch, tmp_path):
+    """DCY-01..04 wiring capstone (2026-07-14, NFR-07 pinned regression):
+    `DecayWatcher` (application/decay_watcher.py) was fully written, unit-
+    tested and race-guarded but never constructed, ticked, or wired into the
+    live app -- grep confirmed zero `DecayWatcher(` hits anywhere under
+    backend/src outside the module and its own tests. This proves live_app()
+    actually constructs a REAL DecayWatcher with the env-configured trigger/
+    confirmation-evals and starts a REAL supervised background task for it.
+    The deeper functional proof (an actual ask<=trigger fire landing a real
+    DecayBuybackPlaced) lives in test_decay_watcher_wiring.py, unit-level."""
+    from decimal import Decimal as D
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.decay_watcher import DecayWatcher
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    monkeypatch.setenv("MEIC_DECAY_BUYBACK_TRIGGER", "0.10")
+    monkeypatch.setenv("MEIC_DECAY_CONFIRMATION_EVALS", "3")
+
+    app = live_app()
+    comp = app.state.composition
+
+    wd = app.state.decay_watcher
+    assert isinstance(wd, DecayWatcher)
+    assert wd.decay_buyback_trigger == D("0.10"), "trigger must come from MEIC_DECAY_BUYBACK_TRIGGER"
+    assert wd.decay_confirmation_evals == 3, "evals must come from MEIC_DECAY_CONFIRMATION_EVALS"
+    assert wd.broker is comp.broker
+    assert wd.events is comp.events
+
+    async def _noop_connect(account=None):   # no network in a unit test
+        return None
+    comp.connect = _noop_connect
+
+    with TestClient(app):
+        task = getattr(app.state, "decay_watcher_task", None)
+        assert task is not None and not task.done(), (
+            "live_app must actually start the DCY-01..04 decay watcher loop at startup")
+        # the pass loop's REAL bookkeeping is reachable off app.state (never a
+        # private copy inside the task's closure) -- see
+        # test_decay_watcher_wiring.py for a fire driven through these exact dicts.
+        assert app.state.decay_watchers is not None
+        assert app.state.decay_watcher_active is not None
+
+
 # --- REC-01 / REC-07(8): the live event log must be DURABLE ---------------------
 
 def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_path):

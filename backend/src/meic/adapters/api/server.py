@@ -328,6 +328,71 @@ def _lex_ladder_watchdog_grace_seconds(env: dict[str, str]) -> Decimal:
     return raw if Decimal("10") <= raw <= Decimal("300") else Decimal("60")
 
 
+def _decay_buyback_enabled(env: dict[str, str]) -> bool:
+    """DCY-01 `decay_buyback_enabled` (doc 06: default true) -- an operator
+    kill switch for the whole decay watcher, independent of Stop Trading
+    (DCY-01: the watcher continues under Stop Trading; this is the one dial
+    that turns it off outright). Only the literal string "false" (any case)
+    disables it -- absent/unset/anything else defaults to the safe-and-
+    documented `true`, the same reject-the-dial convention as every other
+    dial in this module."""
+    return env.get("MEIC_DECAY_BUYBACK_ENABLED", "true").strip().lower() != "false"
+
+
+def _decay_buyback_trigger(env: dict[str, str]) -> Decimal:
+    """DCY-01 `decay_buyback_trigger` (doc 06: $0.05-$0.50 step $0.05, default
+    $0.05) -- the short's ASK at/below which a buyback fires. Out-of-range
+    falls back to the spec default (the same reject-the-dial convention as
+    `_watchdog_grace_seconds` above)."""
+    try:
+        raw = Decimal(env.get("MEIC_DECAY_BUYBACK_TRIGGER", "0.05"))
+    except (ArithmeticError, ValueError):
+        return Decimal("0.05")
+    return raw if Decimal("0.05") <= raw <= Decimal("0.50") else Decimal("0.05")
+
+
+def _decay_confirmation_evals(env: dict[str, str]) -> int:
+    """DCY-01 `decay_confirmation_evals` (doc 06: 1-10, default 2) -- the
+    consecutive valid at/below-trigger evaluations required before a buyback
+    fires. Out-of-range falls back to the default."""
+    try:
+        raw = int(env.get("MEIC_DECAY_CONFIRMATION_EVALS", "2"))
+    except ValueError:
+        return 2
+    return raw if 1 <= raw <= 10 else 2
+
+
+def _decay_unfilled_timeout_seconds(env: dict[str, str]) -> Decimal:
+    """DCY-02(3) `decay_unfilled_timeout_seconds` (doc 06: 5-120, default 30)
+    -- the re-inflation guard's timeout: a buyback unfilled this long is
+    cancelled and the resting stop re-placed. Out-of-range falls back to the
+    default."""
+    try:
+        raw = Decimal(env.get("MEIC_DECAY_UNFILLED_TIMEOUT_SECONDS", "30"))
+    except (ArithmeticError, ValueError):
+        return Decimal("30")
+    return raw if Decimal("5") <= raw <= Decimal("120") else Decimal("30")
+
+
+def _decay_cutoff_time(env: dict[str, str]) -> dtime:
+    """DCY-01 `decay_cutoff_time` (doc 06: ET time, default 15:55) -- no
+    buybacks fire at/after this wall-clock time; expiry finishes the job free.
+    Parsed the SAME "HH:MM"/"HH.MM" shape `schedule_service._parse_time` uses
+    -- an unparseable value falls back to the spec default rather than
+    crashing boot (the reject-the-dial convention every other dial here
+    follows)."""
+    import re as _re
+
+    raw = env.get("MEIC_DECAY_CUTOFF_TIME", "15:55").strip()
+    m = _re.fullmatch(r"(\d{1,2})[.:](\d{2})", raw)
+    if not m:
+        return dtime(15, 55)
+    h, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= mm <= 59):
+        return dtime(15, 55)
+    return dtime(h, mm)
+
+
 def _settlement_lookback_days(env: dict[str, str]) -> int:
     """EOD-01 v1.59 follow-up (2026-07-13): how many RECENT prior trading days
     `_maybe_eod_reconcile_once`'s look-back re-checks for a settlement that
@@ -1470,6 +1535,245 @@ async def _run_lex_ladder_watchdog_loop(comp, wd, alerts, *, clock,
         await asyncio.sleep(idle_seconds)
 
 
+async def _decay_watcher_pass(
+    comp, watchers: dict, active: dict, hub, snaps, alerts, *, now,
+    max_quote_age_ms: int, buyback_trigger: Decimal, confirmation_evals: int,
+    unfilled_timeout_seconds: Decimal, cutoff_time: dtime, enabled: bool,
+    fee_model, clock, flatten_in_progress, suspended: dict,
+) -> None:
+    """DCY-01..04 (2026-07-14): one pass of the decay watcher over every OPEN
+    short with a resting stop placed -- the SAME `_open_short_legs` frame
+    `_stop_watchdog_pass`/the EC-STP-06 catch-up already drive, fed a LIVE
+    QuoteHub mark through the SAME `_streamer_symbol` seam (NFR-04: a decay
+    decision must never fire off a 30-60s snapshot).
+
+    `DecayWatcher` was written, unit-tested (tests/application/test_tpf_dcy.py,
+    test_decay_watcher_live_shaped.py) and race-guarded, but never constructed
+    anywhere outside its own tests -- the seventh exists-but-unwired instance
+    (NFR-07). This closes it, on the same supervised-background-task shape as
+    every watcher above.
+
+    One `DecayWatcher` PER TRACKED SHORT (`watchers`, keyed (entry_id, side),
+    owned by the caller and persisted across passes) -- its `evaluate()`
+    confirmation counter is a single scalar, exactly the one-instance-per-side
+    shape its own unit tests already use; sharing one instance across two
+    sides would conflate their eval counts.
+
+    `active` (owned by the caller) tracks a side with a buyback already
+    resting: `{"buyback_id", "trigger", "resting_stop_id", "symbol",
+    "contracts", "placed_at"}`. A side with an entry here is NEVER re-evaluated
+    for a fresh trigger -- it is only driven through DCY-02(3)'s re-inflation
+    guard until the guard reprotects it or the fill is detected. That FILL
+    DETECTION is deliberately NOT this pass's job: `DecayBuybackPlaced` (which
+    `DecayWatcher.buyback()` journals at placement, STP-08a v1.61) is already
+    picked up by `stop_fill_watch.py`'s existing, already-wired detection loop
+    (`_decay_buyback_specs`/`_resolve_by_order_id`), which journals the
+    ShortStopped(initiator="decay")+EntryClosed(initiator="decay") completion
+    itself. Calling `DecayWatcher.complete()` from here too would double-
+    journal the same close -- so this pass never calls it.
+
+    DCY-01's mode gate: MANUAL mode (UC-08) and OWN-06 SUSPENDED are, as of
+    v1.67, states no code path in this repo can ever place an entry into --
+    UC-08 has no command surface and OWN-06's `ForeignReduction` event is
+    never appended anywhere (grep-confirmed). Passing `mode="AUTO"` here is
+    therefore honest given today's code, not a guess -- flagged in the wiring
+    report as a real gap for the operator, not silently assumed away. The
+    watcher will respect either state automatically the day that plumbing
+    exists, with no change needed here.
+
+    KNOWN LIMITATION (not solved by this wiring, flagged rather than silently
+    dropped): `active`/`watchers` are in-memory and do not survive a process
+    restart mid-buyback. A crash between `buyback()` cancelling the resting
+    stop and this side's fill being detected would, on restart, see
+    `_open_short_legs` still list the (stale) StopPlaced spec and could
+    attempt a second buyback beside the one already resting at the broker.
+    REC-03-style boot reconciliation for an in-flight decay buyback is out of
+    this task's scope."""
+    if not enabled:
+        return
+    from meic.application.decay_watcher import DecayWatcher
+    from meic.application.market_calendar import ET as _ET
+    from meic.application.stop_fill_watch import _open_short_legs
+    from meic.domain.events import StopPlaced
+
+    # DCY-01 (last sentence): the suspension holds only "for the remainder of
+    # the stop-trading state" -- a fresh (non-stop-trading) tick clears it.
+    if not comp.state.stop_trading:
+        suspended["value"] = False
+
+    now_et = now.astimezone(_ET) if now.tzinfo is not None else now
+    snap = getattr(snaps, "last", None)
+    open_shorts = _open_short_legs(comp.events)   # ONE fold of the log this tick, not two
+    open_now = {(entry_id, side) for entry_id, side, _leg, _spec in open_shorts}
+
+    # A side that left the open-short-with-a-stop frame has nothing left to
+    # accumulate -- drop its bookkeeping (same convention as `last_ticked` in
+    # `_stop_watchdog_pass` above).
+    for key in set(watchers) - open_now:
+        watchers.pop(key, None)
+    for key in set(active) - open_now:
+        active.pop(key, None)
+
+    flatten_now = bool(flatten_in_progress())
+
+    for entry_id, side, leg, spec in open_shorts:
+        key = (entry_id, side)
+        streamer = _streamer_symbol(snap, leg.symbol, side)
+        quote = hub.mark(streamer) if streamer else None
+        stale = quote is None or quote.is_stale(now, max_quote_age_ms)
+        ask = quote.ask if quote is not None else Decimal("0")
+
+        in_flight = active.get(key)
+        if in_flight is not None:
+            # DCY-02(3): re-inflation guard for an already-placed buyback --
+            # never a fresh trigger evaluation while one is resting.
+            #
+            # DCY-01 "never while a Flatten All is executing" applies to the
+            # WHOLE watcher, not just a fresh trigger: while a flatten runs,
+            # `assemble_close_inputs` (composition/close_assembly.py) folds a
+            # working decay buyback into CloseEntry's own resting_stop_ids and
+            # replaces it through the SAME race-safe path an ordinary stop
+            # gets -- so the flattening close is what resolves this leg. The
+            # guard stands down rather than racing that replace() with its own
+            # cancel/re-place of the same order.
+            if flatten_now:
+                continue
+            elapsed = (now - in_flight["placed_at"]).total_seconds()
+            unfilled = elapsed >= float(unfilled_timeout_seconds)
+            if unfilled or (not stale and ask > buyback_trigger):
+                # Review finding (2026-07-14, BLOCKING): `reinflation_guard`'s own
+                # race check only looks at `fills_since` -- it has no way to see
+                # that a CONCURRENT close (manual/TPF/TPT/EOD, none of which set
+                # `flatten_in_progress`) already REPLACED this exact buyback order
+                # via CloseEntry's own race-safe path (close_assembly.py now
+                # routes a working decay order through there). Cancelling an
+                # already-REPLACED order and submitting a fresh stop on top of a
+                # leg CloseEntry just closed would rest a PHANTOM stop on a flat
+                # leg -- unprotected-side machinery would never see it, and a
+                # later trigger would open an unintended long. Re-confirm the
+                # buyback is STILL actually resting at the broker, via broker
+                # truth (not this module's own bookkeeping), before touching it
+                # at all -- if it is gone, someone else already resolved this
+                # side; drop our bookkeeping and do nothing further.
+                still_resting = any(
+                    getattr(o, "order_id", None) == in_flight["buyback_id"]
+                    and getattr(o, "status", "WORKING") in ("WORKING", "PARTIAL", "live", "received")
+                    for o in await comp.broker.working_orders())
+                if not still_resting:
+                    active.pop(key, None)
+                    continue
+
+                watcher = watchers.setdefault(key, DecayWatcher(
+                    broker=comp.broker, events=comp.events,
+                    decay_buyback_trigger=buyback_trigger,
+                    decay_confirmation_evals=confirmation_evals,
+                    fee_model=fee_model, clock=clock))
+                try:
+                    outcome = await watcher.reinflation_guard(
+                        entry_id=entry_id, side=side, buyback_id=in_flight["buyback_id"],
+                        resting_stop_id=in_flight["resting_stop_id"], current_ask=ask,
+                        unfilled=unfilled, symbol=leg.symbol, trigger=in_flight["trigger"],
+                        contracts=in_flight["contracts"])
+                except Exception as exc:  # noqa: BLE001 -- must never crash the app
+                    alerts.alert(
+                        "critical",
+                        f"DCY-02.3 re-inflation guard failed for {entry_id}/{side}: {exc!r}")
+                    # DCY-01: a failed re-placement while stop-trading suspends
+                    # the watcher for the remainder of the stop-trading state --
+                    # never retry blind protection machinery.
+                    if comp.state.stop_trading:
+                        suspended["value"] = True
+                    continue
+                if outcome.startswith("REPROTECTED:"):
+                    # Review finding (BLOCKING): the re-placed stop's own id was
+                    # being discarded -- `_stop_specs` (stop_fill_watch.py) keeps
+                    # whichever StopPlaced is JOURNALED LAST, so with nothing
+                    # appended here it silently kept pointing at the OLD,
+                    # cancelled stop forever: a genuine fill on the NEW stop
+                    # would then be invisible to fill detection (REC-02: the
+                    # journal is authoritative), and STP-03b's own watchdog would
+                    # key off a dead order id too. Journal it, exactly like the
+                    # original placement did.
+                    new_stop_id = outcome.split(":", 1)[1]
+                    comp.events.append(StopPlaced(
+                        entry_id=entry_id, side=side, trigger=in_flight["trigger"],
+                        broker_order_id=new_stop_id))
+                    active.pop(key, None)
+                elif outcome != "BUYBACK_STILL_LIVE":
+                    active.pop(key, None)  # already filled -- nothing left to track here
+            continue  # a side with an in-flight buyback is never re-evaluated for a NEW trigger
+
+        watcher = watchers.setdefault(key, DecayWatcher(
+            broker=comp.broker, events=comp.events, decay_buyback_trigger=buyback_trigger,
+            decay_confirmation_evals=confirmation_evals, fee_model=fee_model, clock=clock))
+
+        if not watcher.gate_allows(now_time=now_et.time(), cutoff_time=cutoff_time,
+                                    mode="AUTO", flatten_in_progress=flatten_now,
+                                    watcher_suspended=suspended["value"]):
+            continue
+
+        if not spec.broker_order_id:
+            continue  # nothing confirmed to cancel yet -- never spend a confirmation
+                       # eval on a tick that could not act on it even if it fired
+
+        if not watcher.evaluate(ask=ask, stale=stale):
+            continue
+
+        try:
+            outcome = await watcher.buyback(
+                entry_id=entry_id, side=side, resting_stop_id=spec.broker_order_id,
+                symbol=leg.symbol, contracts=leg.qty)
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            alerts.alert("warning", f"DCY-02 buyback failed for {entry_id}/{side}: {exc!r}")
+            continue
+        if outcome == "STOP_FILLED_RUN_LEX":
+            continue  # DCY-02(1): it was a real stop-out; EC-STP-06/LEX already owns it
+        active[key] = {"buyback_id": outcome, "trigger": spec.trigger,
+                        "resting_stop_id": spec.broker_order_id, "symbol": leg.symbol,
+                        "contracts": leg.qty, "placed_at": now}
+
+
+async def _run_decay_watcher_loop(
+    comp, hub, snaps, alerts, *, clock, max_quote_age_ms: int, buyback_trigger: Decimal,
+    confirmation_evals: int, unfilled_timeout_seconds: Decimal, cutoff_time: dtime,
+    enabled: bool, fee_model, flatten_in_progress, idle_seconds: float = 5.0,
+    connected=lambda: True, watchers: dict | None = None, active: dict | None = None,
+) -> None:
+    """DCY-01..04 (2026-07-14): supervises `_decay_watcher_pass` forever --
+    same shape as `_run_stop_watchdog_loop` above (one supervised background
+    task, created unconditionally at startup, cancelled on shutdown). NEVER
+    crashes the app: any failure is alerted and the loop tries again next
+    tick -- a missed pass is never worse than the watcher not existing at all,
+    and the resting broker stop stays PRIMARY and bot-independent regardless
+    of this loop's health.
+
+    `watchers`/`active` default to fresh dicts but may be supplied by the
+    caller (`live_app()` passes `app.state.decay_watchers`/
+    `app.state.decay_watcher_active`) so the REAL, ticking bookkeeping is
+    reachable from outside the loop's closure -- for the NFR-07 wiring
+    registry and tests, never a decorative copy nobody reads."""
+    if watchers is None:
+        watchers = {}
+    if active is None:
+        active = {}
+    suspended: dict[str, bool] = {"value": False}
+    while True:
+        if not connected():
+            await asyncio.sleep(idle_seconds)
+            continue
+        try:
+            await _decay_watcher_pass(
+                comp, watchers, active, hub, snaps, alerts, now=clock.now(),
+                max_quote_age_ms=max_quote_age_ms, buyback_trigger=buyback_trigger,
+                confirmation_evals=confirmation_evals,
+                unfilled_timeout_seconds=unfilled_timeout_seconds, cutoff_time=cutoff_time,
+                enabled=enabled, fee_model=fee_model, clock=clock,
+                flatten_in_progress=flatten_in_progress, suspended=suspended)
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            alerts.alert("warning", f"DCY-01..04 decay watcher pass failed: {exc!r}")
+        await asyncio.sleep(idle_seconds)
+
+
 def _wire_live_day(comp, env: dict[str, str]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
@@ -2251,6 +2555,64 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_lex_ladder_watchdog_loop() -> None:
         task = getattr(app.state, "lex_ladder_watchdog_task", None)
+        if task:
+            task.cancel()
+
+    # DCY-01..04 (2026-07-14, NFR-07 regression): the decay buyback watcher --
+    # `DecayWatcher` (application/decay_watcher.py) was fully written, unit-
+    # tested (test_tpf_dcy.py) and race-guarded (test_decay_watcher_live_shaped.py,
+    # whose own docstring flagged it as unwired) but never constructed anywhere
+    # outside its own tests -- grep confirmed zero `DecayWatcher(` hits under
+    # backend/src. Fed the SAME live QuoteHub every other watcher above reads,
+    # translated through the SAME `_streamer_symbol` seam (NFR-04: a decay
+    # decision must never fire off a stale snapshot). Constructed and ticked
+    # unconditionally here, same shape as the stop watchdog above.
+    #
+    # `app.state.decay_watcher` is a single always-present instance exposed for
+    # the wiring-audit registry's "constructed" proof and for introspecting the
+    # resolved config; the pass loop's actual per-tracked-short instances (one
+    # per (entry_id, side), never shared -- `evaluate()`'s confirmation counter
+    # is a single scalar) live in `app.state.decay_watchers`, populated lazily
+    # as tracked shorts appear -- see `_decay_watcher_pass`'s own docstring.
+    decay_buyback_enabled = _decay_buyback_enabled(env)
+    decay_buyback_trigger = _decay_buyback_trigger(env)
+    decay_confirmation_evals = _decay_confirmation_evals(env)
+    decay_unfilled_timeout_seconds = _decay_unfilled_timeout_seconds(env)
+    decay_cutoff_time = _decay_cutoff_time(env)
+    app.state.decay_buyback_enabled = decay_buyback_enabled
+    app.state.decay_buyback_trigger = decay_buyback_trigger
+    app.state.decay_confirmation_evals = decay_confirmation_evals
+    app.state.decay_unfilled_timeout_seconds = decay_unfilled_timeout_seconds
+    app.state.decay_cutoff_time = decay_cutoff_time
+    from meic.application.decay_watcher import DecayWatcher as _DecayWatcher
+
+    app.state.decay_watcher = _DecayWatcher(
+        broker=comp.broker, events=comp.events, decay_buyback_trigger=decay_buyback_trigger,
+        decay_confirmation_evals=decay_confirmation_evals, fee_model=comp.fee_model,
+        clock=comp.clock)
+    # (entry_id, side) -> DecayWatcher / in-flight-buyback info -- the REAL
+    # bookkeeping the pass loop reads and mutates every tick (passed INTO
+    # `_run_decay_watcher_loop` below, never a private copy the loop keeps to
+    # itself) -- so the wiring registry and tests can observe actual ticking,
+    # not just a decorative object nobody reads.
+    app.state.decay_watchers = {}
+    app.state.decay_watcher_active = {}
+
+    @app.on_event("startup")
+    async def _start_decay_watcher_loop() -> None:
+        app.state.decay_watcher_task = asyncio.create_task(_run_decay_watcher_loop(
+            comp, hub, live["snapshots"], alerts, clock=comp.clock,
+            max_quote_age_ms=max_quote_age_ms, buyback_trigger=decay_buyback_trigger,
+            confirmation_evals=decay_confirmation_evals,
+            unfilled_timeout_seconds=decay_unfilled_timeout_seconds,
+            cutoff_time=decay_cutoff_time, enabled=decay_buyback_enabled,
+            fee_model=comp.fee_model, flatten_in_progress=lambda: commands.flatten_in_progress,
+            idle_seconds=quote_stream_poll_s, connected=lambda: app.state.broker_connected,
+            watchers=app.state.decay_watchers, active=app.state.decay_watcher_active))
+
+    @app.on_event("shutdown")
+    async def _stop_decay_watcher_loop() -> None:
+        task = getattr(app.state, "decay_watcher_task", None)
         if task:
             task.cancel()
 

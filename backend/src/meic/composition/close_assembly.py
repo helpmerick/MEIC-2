@@ -54,10 +54,41 @@ async def assemble_close_inputs(
         for leg in recorded
         if open_sides is None or leg.side in open_sides
     ]
-    stop_ids = {
-        side_of(o.intent.legs[0].right): o.order_id
-        for o in await broker.working_orders()
-        if getattr(getattr(o, "intent", None), "entry_id", None) == entry_id
-        and getattr(getattr(o, "intent", None), "order_type", None) == "stop_market"
-    }
+    # DCY-01/CLS-01 (2026-07-14): a side whose resting protective stop was
+    # cancelled and replaced by an in-flight DCY-02 decay buyback (a working
+    # `kind="decay"` limit order, application/decay_watcher.py `buyback()`)
+    # must ALSO be treated as "the thing to replace" here -- otherwise this
+    # entry_id has NO recorded stop for that side, `CloseEntry.close()` reads
+    # that as "no resting stop" (CLS-01 (3)) and submits a DIRECT marketable
+    # buy-to-close with no cancel/replace at all: two live buy-to-close orders
+    # resting on the same short leg at once (the decay limit AND the fresh
+    # close), each independently fillable -- a genuine double-fill-into-long
+    # race on real money. Folding it into the SAME `stop_ids` correlation
+    # routes it through CLS-01's existing race-safe `broker.replace()` path
+    # instead, exactly like an ordinary resting stop. (Before this, DecayWatcher
+    # was never constructed anywhere, so this interaction was unreachable.)
+    def _for_entry(o) -> bool:
+        return getattr(getattr(o, "intent", None), "entry_id", None) == entry_id
+
+    def _is_resting_stop(o) -> bool:
+        return getattr(o.intent, "order_type", None) == "stop_market"
+
+    def _is_decay_buyback(o) -> bool:
+        # Precise on purpose: `kind` alone is an unvalidated free-form string
+        # on OrderIntent (application/order_intent.py) -- also requiring the
+        # buy-to-close leg shape `decay_watcher.buyback()` always builds means
+        # a hypothetical future reuse of the "decay" label for something else
+        # cannot silently fold in here too.
+        intent = o.intent
+        legs = getattr(intent, "legs", None) or ()
+        return (getattr(intent, "kind", None) == "decay"
+                and bool(legs) and getattr(legs[0], "action", None) == "buy_to_close")
+
+    working = [o for o in await broker.working_orders() if _for_entry(o)]
+    # A genuine resting stop always wins over a decay buyback for the SAME
+    # side -- structurally the two should never coexist (DCY-02(1) cancels
+    # the stop before placing the buyback), but a deterministic preference
+    # is safer than whichever `working_orders()` happens to list last.
+    stop_ids = {side_of(o.intent.legs[0].right): o.order_id for o in working if _is_decay_buyback(o)}
+    stop_ids.update({side_of(o.intent.legs[0].right): o.order_id for o in working if _is_resting_stop(o)})
     return legs, stop_ids

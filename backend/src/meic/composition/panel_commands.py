@@ -64,6 +64,17 @@ class PanelCommands:
         # CLS-03 (2026-07-11 wiring): the ratified cancel path for a WORKING
         # (pre-fill) entry — built lazily, see `_cancel_service`.
         self._manual_close: ManualClose | None = None
+        # DCY-01 (2026-07-14): "never while a Flatten All is executing" needs a
+        # REAL live signal -- there was none anywhere in the composition before
+        # this (even `LiveMarketGates.flatten_in_progress` defaults to a dead
+        # `lambda: False`). True only for the duration of this instance's own
+        # `flatten()` call below; the decay watcher's wiring reads it live via
+        # the `flatten_in_progress` property.
+        self._flatten_in_progress = False
+
+    @property
+    def flatten_in_progress(self) -> bool:
+        return self._flatten_in_progress
 
     # --- ENT-09 manual fire (UI-22) ---------------------------------------------
     def can_fire(self) -> bool:
@@ -241,13 +252,21 @@ class PanelCommands:
         """RSK-01a: close every open entry — but only on a typed FLATTEN."""
         if confirmation != FLATTEN_CONFIRMATION:
             return {"result": "confirmation_required"}
-        day = fold(self._comp.events)
-        closed = []
-        for entry_id, e in day.entries.items():
-            if not e.close_initiator and _open_sides(e):
-                await self.close(entry_id)
-                closed.append(entry_id)
-        return {"result": "flattened", "entries": closed}
+        # DCY-01: flagged for the duration of this call so the decay watcher's
+        # gate can see "a Flatten All is executing" and never race a buyback
+        # against it. Cleared in `finally` so a raised exception mid-flatten
+        # never leaves the flag stuck true.
+        self._flatten_in_progress = True
+        try:
+            day = fold(self._comp.events)
+            closed = []
+            for entry_id, e in day.entries.items():
+                if not e.close_initiator and _open_sides(e):
+                    await self.close(entry_id)
+                    closed.append(entry_id)
+            return {"result": "flattened", "entries": closed}
+        finally:
+            self._flatten_in_progress = False
 
     def _clear_tpf(self, entry_id: str) -> None:
         floors = dict(self._comp.state.tpf_floors)

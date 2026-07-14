@@ -161,6 +161,19 @@ class CloseEntry:
                 # PNL-01: closing a short (buy-to-close) -- commission-free,
                 # per the fee model (see domain/fees.py).
                 fee = fee_for_leg(self._fee_model, role="short", opening=False)
+                # KNOWN NUANCE (2026-07-14, flagged not fixed): `stop_id` here may
+                # in fact be an in-flight DCY-02 decay buyback's order id
+                # (close_assembly.py's `assemble_close_inputs` now folds a
+                # working decay buyback into `resting_stop_ids` so THIS race-safe
+                # replace() path covers it too, closing the double-order risk).
+                # If THAT race-raced order is what actually filled here, this
+                # still journals initiator="resting_stop", not "decay" -- a
+                # labeling nuance for DCY-04's "list decay closes distinctly"
+                # reporting rule in this narrow window, never a double order.
+                # Deliberately not deepened further here: teaching CLS-01 to
+                # distinguish which kind of working order it raced against is
+                # separable, lower-stakes surgery on already-locked-in CLS-01
+                # semantics.
                 self._events.append(ShortStopped(
                     entry_id=entry_id, side=leg.side, fill=fill_price or close_price,
                     slippage=Decimal("0"), initiator="resting_stop", fee=fee, at=self._at()))
