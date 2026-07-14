@@ -236,12 +236,21 @@ class StopPlaced(Event):
     # (event-store codec's runtime-value tagging handles absent-on-decode,
     # same as `broker_order_id` above).
     markup: Decimal | None = None
+    # ORD-11 (v1.67): lifecycle timestamp, ISO-8601 UTC, from the composition's
+    # INJECTED clock (never `datetime.now()` directly) -- so a watchdog never
+    # has to track wall-clock first-sighting itself (a process restart resets
+    # that clock, the 07-13 review finding this rule exists for). Optional/
+    # additive, None for every pre-v1.67 recorded event and for any call site
+    # that has no clock threaded through yet -- same additive-field replay
+    # convention as `broker_order_id`/`markup` above.
+    at: str | None = None
 
 
 @dataclass(frozen=True)
 class StopReplaced(Event):
     entry_id: str
     side: str  # REC-04(3): stop re-placed on recovery (trigger recomputed at placement)
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -253,6 +262,7 @@ class ReconciliationMismatch(Event):
 class StopConfirmed(Event):
     entry_id: str
     side: str  # STP-04: working-order confirmation from broker
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -269,6 +279,7 @@ class WatchdogEscalated(Event):
     mark_at_breach: Decimal   # calibration evidence (STP-03b / TC-STP-17)
     elapsed_seconds: Decimal
     fill_price: Decimal
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -284,6 +295,7 @@ class ShortStopped(Event):
     slippage: Decimal
     fee: Decimal = Decimal("0")  # buy-to-close fee (PNL-01)
     initiator: str = "resting_stop"  # resting_stop | watchdog_escalation (STP-03b)
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -310,24 +322,28 @@ class LongSold(Event):
     side: str
     recovery: Decimal  # credit received selling the orphaned long (LEX)
     fee: Decimal = Decimal("0")  # long-sale fee (PNL-01)
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
 class SideClosed(Event):
     entry_id: str
     side: str
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
 class SideExpired(Event):
     entry_id: str
     side: str  # cash-settled worthless (EOD-01) — no cash movement
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
 class EntryClosed(Event):
     entry_id: str
     initiator: str  # CLS-02/04: manual | manual_flatten | take_profit | eod | decay | infeasible_stop
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -345,6 +361,7 @@ class LongSaleStarted(Event):
     mark_bid: Decimal | None = None
     mark_ask: Decimal | None = None
     intrinsic: Decimal | None = None
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -353,6 +370,7 @@ class LongSaleRepriced(Event):
     side: str
     step: int
     price: Decimal
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -375,6 +393,7 @@ class LexOrderPlaced(Event):
     price: Decimal
     kind: str  # "ladder" (LEX-03 rung: initial submit or replace) | "fallback" (LEX-05)
                # | "floor" (EC-LEX-08 no-bid intrinsic-floor rest, v1.63)
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
 
 
 @dataclass(frozen=True)
@@ -645,3 +664,61 @@ class SettlementRecorded(Event):
     fee: Decimal | None = None  # this row's own fee, POSITIVE cost -- None only if the
                                  # broker reported no fee data at all for this row
     source: str = "tastytrade_receive_deliver"
+
+
+@dataclass(frozen=True)
+class StanddownRecorded(Event):
+    """OWN-12 (v1.67, from the 2026-07-10 incident -- the reviewer's stated
+    highest-priority open item): EVERY OWN-09/10/11 standdown appends THIS
+    event -- never alert-only. The 07-10 lesson: an unjournaled standdown
+    (application/stop_fill_watch.py's `_try_recover`, an INFO alert reading
+    "operator disposed of it directly -- standing down") RATIONALIZED a real
+    LEX-07 violation for three days -- the bot's own explanatory text for its
+    failure was more convincing than the failure, and because it journaled
+    NOTHING, a journal-driven detector (lex_ladder_watchdog.py) was
+    structurally blind to it: a component that never runs emits no WRONG
+    events, it emits NO events, and nothing that inspects events for mistakes
+    can see an absence.
+
+    Names, per TC-OWN-12: the ENTRY (`entry_id`), the LEG/SIDE (`side`), the
+    REASON the bot is standing down (`reason` -- why automation is ceding
+    this side, e.g. "long_not_held_at_broker"), and the BROKER FINDING
+    (`broker_finding` -- what the broker actually reported that triggered the
+    standdown, e.g. "position absent from broker positions feed"). All four
+    are required: a standdown recorded without naming what was actually found
+    at the broker is exactly the kind of unaccountable "trust me" text OWN-12
+    exists to replace.
+
+    METADATA ONLY / money-neutral (strict OWN-01, operator-ratified
+    corollary): an out-of-band operator disposal is the OPERATOR's P&L,
+    permanently absent from the bot's ledger -- attributing it would
+    fabricate a fill the bot never executed. This event carries NO money
+    field, is folded into NO P&L projection (`domain.projection.fold`), and
+    creates no recovery, no fill, no `LongSold`, no `SideClosed` -- pinned by
+    a money-safety regression test mirroring
+    `tests/reporting/test_own_order_id_retracted_money_safety.py` (see
+    tests/reporting/test_standdown_recorded_money_safety.py).
+
+    Does NOT touch, weaken, or suppress the LEX-07 watchdog
+    (application/lex_ladder_watchdog.py): the bot really did fail to sell
+    that long if a genuine stop-out preceded the standdown, and the operator
+    really did have to rescue it. The watchdog's `_pending_ladder_starts`
+    fold reads `ShortStopped`/`LongSaleStarted`/`LongSold`/`SideClosed`/
+    `EntryClosed` ONLY and must keep firing regardless of this event's
+    presence -- the false alarm on an operator-disposed long is DELIBERATE
+    (OWN-12) and MUST NOT be suppressed: any suppression rule keyed on
+    standdown framing would teach the watchdog to trust exactly the
+    explanation class that masked the 07-10 failure. Pinned by a structural
+    absence test (tests/application/test_lex_ladder_watchdog_standdown_absence.py)
+    that fails if a future agent "helpfully" adds one.
+
+    Written only at the standdown decision point itself
+    (`application/stop_fill_watch.py::_try_recover`, the `_long_still_held`
+    check) -- the ONE standdown call path actually wired into the live
+    system today (`domain/external_close.py`'s `classify_side` is a pure
+    OWN-09/10/11 classifier, not yet driven by any production call site)."""
+    entry_id: str
+    side: str            # "PUT" | "CALL" -- the leg whose long was found disposed of
+    reason: str          # why the bot is standing down, e.g. "long_not_held_at_broker"
+    broker_finding: str  # what the broker actually reported, e.g. "position absent"
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at

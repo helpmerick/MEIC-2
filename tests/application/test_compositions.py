@@ -125,7 +125,10 @@ def test_paper_auto_flatten_closes_the_entrys_real_legs_with_unprotected_initiat
     asyncio.run(comp.protect._close_entry(entry_id, "unprotected"))
 
     closed = [e for e in comp.events if isinstance(e, EntryClosed)]
-    assert closed == [EntryClosed(entry_id=entry_id, initiator="unprotected")]
+    # at (ORD-11, v1.67): CloseEntry now stamps EntryClosed from the injected
+    # clock -- CLOCK's fixed instant, deterministic here.
+    assert closed == [EntryClosed(entry_id=entry_id, initiator="unprotected",
+                                  at="2026-07-06T09:30:00-04:00")]
 
 
 def test_auto_flatten_survives_an_empty_leg_book_without_crashing():

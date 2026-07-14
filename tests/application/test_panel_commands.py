@@ -41,7 +41,10 @@ def test_close_closes_open_entry_cancels_stops_clears_tpf_idempotent():
 
     assert res == {"result": "closed", "initiator": "manual"}
     closed = [e for e in comp.events if isinstance(e, EntryClosed)]
-    assert closed == [EntryClosed(entry_id="e1", initiator="manual")]
+    # at (ORD-11, v1.67): CloseEntry now stamps EntryClosed from the injected
+    # clock -- FakeClock's fixed instant, deterministic here.
+    assert closed == [EntryClosed(entry_id="e1", initiator="manual",
+                                  at="2026-07-07T09:30:00-04:00")]
     assert comp.state.tpf_floors == {}                       # armed floor cleared
     # the resting stop was cancelled (no longer working)
     working = asyncio.run(comp.broker.working_orders())
@@ -190,4 +193,6 @@ def test_close_as_clears_both_tpf_and_tpt_for_the_entry():
     assert res == {"result": "closed", "initiator": "take_profit"}
     assert comp.state.tpf_floors == {} and comp.state.tp_targets == {}
     closed = [e for e in comp.events if isinstance(e, EntryClosed)]
-    assert closed == [EntryClosed(entry_id="e1", initiator="take_profit")]
+    # at (ORD-11, v1.67): see test_close_closes_open_entry... above.
+    assert closed == [EntryClosed(entry_id="e1", initiator="take_profit",
+                                  at="2026-07-07T09:30:00-04:00")]

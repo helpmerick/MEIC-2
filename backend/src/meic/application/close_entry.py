@@ -102,6 +102,7 @@ class CloseEntry:
         alerts=None,
         replace_retry_attempts: int = 3,
         fee_model: FeeModel | None = None,  # PNL-01
+        clock=None,  # ORD-11 (v1.67): injected clock for lifecycle `at` timestamps
     ) -> None:
         self._broker = broker
         self._events = events
@@ -109,6 +110,13 @@ class CloseEntry:
         self._alerts = alerts or _NoOpAlerts()
         self._replace_retry_attempts = max(1, replace_retry_attempts)
         self._fee_model = fee_model or FeeModel()
+        self._clock = clock
+
+    def _at(self) -> str | None:
+        """ORD-11 (v1.67): ISO-8601 UTC from the injected clock, never
+        `datetime.now()` directly. None (legacy/replay-safe) when no clock is
+        threaded through."""
+        return self._clock.now().isoformat() if self._clock is not None else None
 
     async def close(
         self,
@@ -144,7 +152,7 @@ class CloseEntry:
                 # CLS-01 (3): no resting stop recorded (never confirmed,
                 # USER_UNPROTECTED, ...) — direct marketable buy-to-close.
                 await self._broker.submit(intent)
-                self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
+                self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
                 continue
 
             outcome, fill_price = await self._replace_stop(entry_id, leg.side, stop_id, intent)
@@ -155,7 +163,7 @@ class CloseEntry:
                 fee = fee_for_leg(self._fee_model, role="short", opening=False)
                 self._events.append(ShortStopped(
                     entry_id=entry_id, side=leg.side, fill=fill_price or close_price,
-                    slippage=Decimal("0"), initiator="resting_stop", fee=fee))
+                    slippage=Decimal("0"), initiator="resting_stop", fee=fee, at=self._at()))
             elif outcome == "STILL_RESTING":
                 # ORD-08 transient, retries exhausted this call — the original
                 # stop is untouched and still protecting the short. Never
@@ -163,7 +171,7 @@ class CloseEntry:
                 # violated, for this leg.
                 continue
             else:  # "REPLACED" or "TERMINAL" — the short is now closed.
-                self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
+                self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
 
         # CLS-01 (3): remaining LONG legs — plain marketable sells, no stops,
         # no race. A long whose short raced to FILLED is excluded here: LEX
@@ -181,10 +189,10 @@ class CloseEntry:
                 idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
                 legs=(OrderLeg(right=right_of(leg.side), action="sell_to_close",
                                qty=qty, symbol=leg.symbol),)))
-            self._events.append(SideClosed(entry_id=entry_id, side=leg.side))
+            self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
 
         # CLS-04: record the close with its initiator (the ONLY per-initiator diff)
-        self._events.append(EntryClosed(entry_id=entry_id, initiator=initiator))
+        self._events.append(EntryClosed(entry_id=entry_id, initiator=initiator, at=self._at()))
 
     def _exit_qty(self, leg: LiveLeg) -> int:
         return self._ledger.cap_exit_qty(leg.symbol, abs(leg.signed_qty)) or abs(leg.signed_qty)

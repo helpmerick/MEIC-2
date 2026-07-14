@@ -83,6 +83,34 @@ def _pending_ladder_starts(events: list[Event]) -> set[tuple[str, str]]:
     return pending
 
 
+def _stop_started_at(events: list[Event]) -> dict[tuple[str, str], datetime | None]:
+    """ORD-11 (v1.67): each side's OWN `ShortStopped.at`, when the event
+    carries one -- so the grace window below can be anchored to the actual
+    stop-out INSTANT instead of "whenever this process happened to first
+    observe it pending" (the pre-ORD-11 `_first_seen` wall-clock tracking,
+    reset by every restart -- the 07-13 review finding this rule exists for).
+    `None` for a legacy event recorded before `at` existed (additive/
+    optional field) -- the caller falls back to `_first_seen` for those,
+    unchanged. Last write wins, matching every other latest-state fold in
+    this codebase (there is exactly one ShortStopped per (entry_id, side) in
+    practice; a whipsaw re-stop of the SAME side is not a real scenario --
+    STP-01 places one stop per fill)."""
+    at_by_key: dict[tuple[str, str], datetime | None] = {}
+    for e in events:
+        if isinstance(e, ShortStopped):
+            at_by_key[(e.entry_id, e.side)] = _parse_at(e.at)
+    return at_by_key
+
+
+def _parse_at(at: str | None) -> datetime | None:
+    if not at:
+        return None
+    try:
+        return datetime.fromisoformat(at)
+    except ValueError:
+        return None
+
+
 @dataclass
 class LexLadderWatchdog:
     """LEX-07 invariant watchdog. `observe()` is called once per live
@@ -104,6 +132,7 @@ class LexLadderWatchdog:
 
     def observe(self, events: list[Event], *, now: datetime) -> None:
         pending = _pending_ladder_starts(events)
+        stop_at = _stop_started_at(events)  # ORD-11 (v1.67)
 
         # A key that left the pending frame (ladder started, terminal state
         # reached, or the entry closed some other way) has nothing left to
@@ -115,7 +144,7 @@ class LexLadderWatchdog:
         for key in pending:
             if key in self._alerted:
                 continue  # one alert per (entry, side), never per tick
-            first = self._first_seen.setdefault(key, now)
+            first = self._resolve_first_seen(key, stop_at.get(key), now)
             elapsed = (now - first).total_seconds()
             if elapsed >= float(self.grace_seconds):
                 self._alerted.add(key)
@@ -124,3 +153,18 @@ class LexLadderWatchdog:
                     "critical",
                     "LEX-07: side ShortStopped but no LEX ladder started within the grace window",
                     entry_id=entry_id, side=side)
+
+    def _resolve_first_seen(self, key: tuple[str, str], event_at: datetime | None,
+                            now: datetime) -> datetime:
+        """ORD-11 (v1.67): prefer the pending side's OWN `ShortStopped.at`
+        over wall-clock first-sighting -- once the stop-out itself carries a
+        timestamp, a process restart no longer resets this watchdog's grace
+        window (the exact gap ORD-11 exists to close). Falls back to the
+        pre-ORD-11 `_first_seen` wall-clock tracking for a legacy event
+        (`at=None`) or a naive/aware `datetime` mismatch against `now` --
+        the live journal is full of the former and this must keep working
+        for it, unconditionally."""
+        if event_at is not None and (event_at.tzinfo is None) == (now.tzinfo is None):
+            self._first_seen[key] = event_at
+            return event_at
+        return self._first_seen.setdefault(key, now)

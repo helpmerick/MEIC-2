@@ -193,9 +193,12 @@ class ProtectPosition:
                     # markup (RPT-07, 2026-07-11): the STP-02b buffer in force
                     # for THIS stop's trigger, journaled so realized long-sale
                     # recovery can later be compared against it (NLE-06).
+                    # at (ORD-11, v1.67): lifecycle timestamp from the injected clock.
                     self._events.append(StopPlaced(entry_id=entry_id, side=side, trigger=trigger,
-                                                   broker_order_id=str(order_id), markup=markup))
-                    self._events.append(StopConfirmed(entry_id=entry_id, side=side))
+                                                   broker_order_id=str(order_id), markup=markup,
+                                                   at=self._clock.now().isoformat()))
+                    self._events.append(StopConfirmed(entry_id=entry_id, side=side,
+                                                      at=self._clock.now().isoformat()))
                     return True
                 if qty is not None:
                     # STP-01: it IS working, at the wrong size. Retrying would rest a

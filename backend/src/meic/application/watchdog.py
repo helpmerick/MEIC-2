@@ -39,6 +39,7 @@ class StopWatchdog:
     grace_seconds: Decimal = Decimal("10")
     escalate_seconds: Decimal = Decimal("20")
     fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01
+    clock: object = None  # ORD-11 (v1.67): injected clock for lifecycle `at` timestamps
     _breaches: dict[tuple[str, str], _Breach] = field(default_factory=dict)
     resting_stop_ids: dict[tuple[str, str], str] = field(default_factory=dict)
     _escalated: set = field(default_factory=set)
@@ -127,12 +128,13 @@ class StopWatchdog:
         # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by contracts here.
         fee = fee_for_leg(self.fee_model, role="short", opening=False)
+        at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
         self.events.append(ShortStopped(
             entry_id=entry_id, side=side, fill=fill_price, slippage=Decimal("0"),
-            initiator="watchdog_escalation", fee=fee))  # -> SIDE_STOPPED -> LEX
+            initiator="watchdog_escalation", fee=fee, at=at))  # -> SIDE_STOPPED -> LEX
         self.events.append(WatchdogEscalated(
             entry_id=entry_id, side=side, mark_at_breach=mark_at_breach,
-            elapsed_seconds=b.elapsed, fill_price=fill_price))  # calibration
+            elapsed_seconds=b.elapsed, fill_price=fill_price, at=at))  # calibration
         self._reset(key)
 
     async def _resting_stop_filled(self, resting_id: str) -> bool:

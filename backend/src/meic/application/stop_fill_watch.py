@@ -68,7 +68,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from meic.config.fee_model import FeeModel
-from meic.domain.events import DecayBuybackPlaced, EntryClosed, LexOrderPlaced, ShortStopped, StopPlaced
+from meic.domain.events import (
+    DecayBuybackPlaced,
+    EntryClosed,
+    LexOrderPlaced,
+    ShortStopped,
+    StanddownRecorded,
+    StopPlaced,
+)
 from meic.domain.fees import fee_for_leg
 from meic.domain.projection import fold
 
@@ -396,6 +403,17 @@ def _now_epoch(comp) -> float:
     return time.time()
 
 
+def _clock_at(comp) -> str | None:
+    """ORD-11 (v1.67): ISO-8601 UTC lifecycle timestamp from the composition's
+    INJECTED clock, never `datetime.now()` directly. `None` when no clock is
+    threaded through (e.g. a bare test harness `comp`) -- additive/optional,
+    same convention as every other `at` field (StopPlaced.at etc.)."""
+    clock = getattr(comp, "clock", None)
+    if clock is None:
+        return None
+    return clock.now().isoformat()
+
+
 def _alert_once(comp, alerts, key: tuple, level: str, message: str, **ctx) -> None:
     """Alert once per (entry_id, side, reason), not once per 60s tick: an
     unresolvable side re-enters the pending set every tick, and re-alerting
@@ -505,6 +523,28 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
 
     if not await _long_still_held(broker, long_leg.symbol):
         floor_orders.pop(key, None)
+        # OWN-12 (v1.67, highest-priority open item): the standdown is an
+        # EVENT, not alert-only -- the 07-10 lesson pinned. Journaled at THIS
+        # decision point, naming the entry, the leg/side, WHY the bot is
+        # standing down, and WHAT THE BROKER ACTUALLY REPORTED (TC-OWN-12
+        # scenario 1). Metadata-only/money-neutral (strict OWN-01): folds
+        # into no P&L projection, creates no recovery, no fill -- see
+        # StanddownRecorded's docstring. Appended BEFORE the alert so a
+        # journal-driven detector can never be structurally blind to this the
+        # way lex_ladder_watchdog.py was to the unjournaled 07-10 standdown.
+        # ONE per (entry_id, side) -- checked against the JOURNAL itself
+        # (survives a restart, unlike `_alert_once`'s in-memory dedup): this
+        # tick re-runs every ~60s for as long as the side stays pending, and
+        # the fact stated ("broker reports no open position") never changes
+        # once observed, so re-appending it every tick would spam the
+        # append-only journal forever instead of recording the fact once.
+        if not any(isinstance(e, StanddownRecorded) and e.entry_id == entry_id and e.side == side
+                  for e in events):
+            events.append(StanddownRecorded(
+                entry_id=entry_id, side=side,
+                reason="long_not_held_at_broker",
+                broker_finding=f"broker reports no open position in {long_leg.symbol}",
+                at=_clock_at(comp)))
         _alert_once(comp, alerts, (entry_id, side, "standdown"), "info",
                     "EC-STP-06 catch-up: the short's stop had already filled, but the "
                     "long was no longer held at the broker -- standing down (operator disposed "
@@ -661,10 +701,11 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
         # is carried in the tuple for other classification uses only).
         fee = fee_for_leg(fee_model, role="short", opening=False)
         events.append(ShortStopped(entry_id=entry_id, side=side, fill=fill_price,
-                                   slippage=Decimal("0"), initiator="decay", fee=fee))
-        events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
+                                   slippage=Decimal("0"), initiator="decay", fee=fee,
+                                   at=_clock_at(comp)))
+        events.append(EntryClosed(entry_id=entry_id, initiator="decay", at=_clock_at(comp)))
     if tracked:
-        rec = Reconcile(broker, events, fee_model=fee_model)
+        rec = Reconcile(broker, events, fee_model=fee_model, clock=getattr(comp, "clock", None))
         plan = rec.plan(tracked_shorts=tracked, broker_working_order_ids=set(),
                         mid_lex_sides=(), stale_entry_order_ids=())
         # run_lex's only effect in execute() is a LongSaleStarted marker --

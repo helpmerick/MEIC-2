@@ -52,7 +52,7 @@ class PaperComposition:
 
     def __post_init__(self) -> None:
         self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events,
-                                      fee_model=self.fee_model)  # SIM-01
+                                      fee_model=self.fee_model, clock=self.clock)  # SIM-01
         self.state = PersistentState(InMemoryStateStore())
         self.state.trading_mode = "paper"  # DAY-05
         self.alerts = _NullAlerts()
@@ -71,7 +71,7 @@ class PaperComposition:
                                        close_entry=self._auto_flatten_entry)
         self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks,
                                    fee_model=self.fee_model)
-        self.close = CloseEntry(self.broker, self.events, fee_model=self.fee_model)
+        self.close = CloseEntry(self.broker, self.events, fee_model=self.fee_model, clock=self.clock)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
 

@@ -89,12 +89,13 @@ class PaperDemoRuntime:
             # a bit later: entry 3 closes by decay
             if n == 3:
                 await asyncio.sleep(self.step)
-                comp.events.append(EntryClosed(entry_id=f"{day}#3", initiator="decay"))
+                comp.events.append(EntryClosed(entry_id=f"{day}#3", initiator="decay",
+                                                at=comp.clock.now().isoformat()))
         # EOD: remaining sides expire worthless
         await asyncio.sleep(self.step)
         for n in (1, 4, 5, 6):
             for side in ("PUT", "CALL"):
-                e.append(SideExpired(entry_id=f"{day}#{n}", side=side))
+                e.append(SideExpired(entry_id=f"{day}#{n}", side=side, at=comp.clock.now().isoformat()))
         e.append(DayCompleted(date=day))
 
     async def run_forever(self) -> None:

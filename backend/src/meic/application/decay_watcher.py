@@ -29,6 +29,7 @@ class DecayWatcher:
     decay_buyback_trigger: Decimal = Decimal("0.05")
     decay_confirmation_evals: int = 2
     fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01
+    clock: object = None  # ORD-11 (v1.67): injected clock for lifecycle `at` timestamps
     _count: int = 0
 
     # --- DCY-01 gates ---------------------------------------------------------
@@ -116,10 +117,11 @@ class DecayWatcher:
         # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by contracts here.
         fee = fee_for_leg(self.fee_model, role="short", opening=False)
+        at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
         self.events.append(ShortStopped(
             entry_id=entry_id, side=side, fill=self.decay_buyback_trigger,
-            slippage=Decimal("0"), initiator="decay", fee=fee))
-        self.events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
+            slippage=Decimal("0"), initiator="decay", fee=fee, at=at))
+        self.events.append(EntryClosed(entry_id=entry_id, initiator="decay", at=at))
 
     # --- DCY-02.3 re-inflation guard ------------------------------------------
     async def reinflation_guard(

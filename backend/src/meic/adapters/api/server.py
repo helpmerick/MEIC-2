@@ -616,7 +616,7 @@ def _has_settlement_pending(events, day: str) -> bool:
               for entry_id, entry in state.entries.items())
 
 
-def _mark_expired_sides(events, day: str) -> None:
+def _mark_expired_sides(events, day: str, *, clock=None) -> None:
     """EOD-01 v1.59: "After settlement, the bot marks all remaining sides
     EXPIRED." Runs AFTER settlement capture for `day` (both the same-day
     path and the look-back path in `_maybe_eod_reconcile_once` below) --
@@ -660,7 +660,8 @@ def _mark_expired_sides(events, day: str) -> None:
                 continue
             if leg.symbol not in entry.settled_symbols:
                 continue
-            events.append(SideExpired(entry_id=entry_id, side=side))
+            at = clock.now().isoformat() if clock is not None else None  # ORD-11 (v1.67)
+            events.append(SideExpired(entry_id=entry_id, side=side, at=at))
 
 
 async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_reads=None,
@@ -745,7 +746,7 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
                 except Exception:  # noqa: BLE001 -- never let a capture failure crash the tick
                     pass
             try:
-                _mark_expired_sides(comp.events, day)
+                _mark_expired_sides(comp.events, day, clock=comp.clock)
             except Exception:  # noqa: BLE001 -- never let marking crash the tick
                 pass
             await reconciler.reconcile_day(day)
@@ -777,7 +778,7 @@ async def _maybe_eod_reconcile_once(app_state, comp, reconciler, now_fn, broker_
         # above THIS tick, or already sat captured (and unmarked) in the log
         # from before this marking step existed / from an earlier tick.
         try:
-            _mark_expired_sides(comp.events, prior_day)
+            _mark_expired_sides(comp.events, prior_day, clock=comp.clock)
         except Exception:  # noqa: BLE001 -- never let marking crash the tick
             pass
 
@@ -1977,7 +1978,8 @@ def live_app():
         from meic.application.stop_fill_watch import readopt_resting_floors
 
         result = await reconcile_on_boot(
-            broker=comp.broker, events=comp.events, state=comp.state, alerts=alerts)
+            broker=comp.broker, events=comp.events, state=comp.state, alerts=alerts,
+            clock=comp.clock)
         app.state.reconcile = result
         # EC-LEX-08(d) (v1.64): the in-memory floor registry does not survive
         # a restart -- re-adopt any still-resting intrinsic-floor sell before
@@ -2211,7 +2213,7 @@ def live_app():
     app.state.watchdog_escalate_seconds = watchdog_escalate_s
     stop_watchdog = StopWatchdog(broker=comp.broker, alerts=alerts, events=comp.events,
                                  grace_seconds=watchdog_grace_s, escalate_seconds=watchdog_escalate_s,
-                                 fee_model=comp.fee_model)
+                                 fee_model=comp.fee_model, clock=comp.clock)
     app.state.stop_watchdog = stop_watchdog
 
     @app.on_event("startup")

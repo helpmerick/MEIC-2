@@ -20,6 +20,7 @@ from meic.domain.events import (
     LongSaleStarted,
     ShortStopped,
     SideClosed,
+    StanddownRecorded,
     StopPlaced,
 )
 
@@ -174,7 +175,13 @@ def test_own_standdown_when_long_no_longer_held_at_broker():
     """A CAUGHT-UP fill may be old news: the operator could have sold the
     orphaned long directly at the broker while detection lagged. ShortStopped
     is still recorded (the stop DID fire — honesty), but LEX is never invoked
-    and no order is submitted; an info alert notes the disposition."""
+    and no order is submitted; an info alert notes the disposition.
+
+    OWN-12 (TC-OWN-12 scenario 1, the 07-10 lesson): the standdown must ALSO
+    enter the JOURNAL, not exist as alert text alone -- naming the entry, the
+    leg/side, the reason, and what the broker actually reported. Before the
+    OWN-12 fix this event simply did not exist; this assertion is the
+    fail-first pin for that gap."""
     events = list(_condor_filled_events())
     events.append(StopPlaced(entry_id=ENTRY_ID, side="CALL", trigger=D("3.80")))
     broker = _FakeBroker()
@@ -191,6 +198,14 @@ def test_own_standdown_when_long_no_longer_held_at_broker():
     assert len(stopped) == 1, "the stop fill is still recorded honestly"
     assert recover.calls == [], "LEX must NOT be invoked -- the long is already gone"
     assert any(level == "info" and "standing down" in msg for level, msg, _ in alerts.calls)
+
+    standdown_events = [e for e in events if isinstance(e, StanddownRecorded)]
+    assert len(standdown_events) == 1, "OWN-12: the standdown must be a JOURNALED event, not alert-only"
+    sd = standdown_events[0]
+    assert sd.entry_id == ENTRY_ID
+    assert sd.side == "CALL"
+    assert sd.reason, "OWN-12 requires the reason be named"
+    assert sd.broker_finding, "OWN-12 requires what the broker actually reported be named"
 
 
 # --- no usable market data yet: defer THEN RETRY (never strand the long) -------
@@ -282,6 +297,14 @@ def test_own_standdown_respected_on_the_mid_lex_retry_path():
     assert recover.calls == [], "LEX must NOT be invoked on the retry path either"
     standdowns = [a for a in alerts.calls if a[0] == "info" and "standing down" in a[1]]
     assert len(standdowns) == 1, "alert once per side, not once per 60s tick"
+
+    # OWN-12: the journal event, unlike the alert, is append-only by
+    # construction -- still exactly one across two ticks (the standdown
+    # decision itself is re-evaluated idempotently each tick since nothing
+    # ever changes the broker's "long absent" answer here).
+    standdown_events = [e for e in events if isinstance(e, StanddownRecorded)]
+    assert len(standdown_events) == 1
+    assert standdown_events[0].entry_id == ENTRY_ID and standdown_events[0].side == "CALL"
 
 
 # --- guard 1: a stopped side with NO recorded long is loud, once ----------------

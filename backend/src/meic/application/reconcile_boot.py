@@ -85,6 +85,7 @@ async def reconcile_on_boot(
     tracked_shorts: Iterable[TrackedShort] = (),
     stale_entry_order_ids: Iterable[str] = (),
     mid_lex_sides: Iterable[tuple[str, str]] = (),
+    clock=None,  # ORD-11 (v1.67): threaded to Reconcile for lifecycle `at` timestamps
 ) -> BootReconcileResult:
     ledger = OwnershipLedger.restore(state.own_ledger)  # durable (REC-07 item 9)
 
@@ -123,7 +124,7 @@ async def reconcile_on_boot(
         ledger.write_down_to(s, 0)
 
     working_ids = {_order_id(o) for o in await broker.working_orders()}
-    rec = Reconcile(broker, events)
+    rec = Reconcile(broker, events, clock=clock)
     plan = rec.plan(
         tracked_shorts=list(tracked_shorts),
         broker_working_order_ids=working_ids,

@@ -76,10 +76,19 @@ class RecoveryPlan:
 
 
 class Reconcile:
-    def __init__(self, broker, events: list, *, fee_model: FeeModel | None = None) -> None:
+    def __init__(self, broker, events: list, *, fee_model: FeeModel | None = None,
+                 clock=None) -> None:
         self._broker = broker
         self._events = events
         self._fee_model = fee_model or FeeModel()  # PNL-01
+        # ORD-11 (v1.67): the INJECTED clock for lifecycle `at` timestamps --
+        # optional so every existing caller (boot's `reconcile_boot.py`,
+        # tests) keeps working unchanged; `_at()` degrades to None (legacy
+        # replay convention) when absent.
+        self._clock = clock
+
+    def _at(self) -> str | None:
+        return self._clock.now().isoformat() if self._clock is not None else None
 
     def plan(
         self,
@@ -152,7 +161,7 @@ class Reconcile:
             fee = fee_for_leg(self._fee_model, role="short", opening=False)
             self._events.append(ShortStopped(
                 entry_id=entry_id, side=side, fill=fill, slippage=slippage,
-                initiator="resting_stop", fee=fee))
+                initiator="resting_stop", fee=fee, at=self._at()))
             stopped.add((entry_id, side))
 
         for order_id in plan.cancel_orders:
@@ -200,7 +209,7 @@ class Reconcile:
             await self._broker.submit(protective_stop(
                 entry_id=entry_id, right=right_of(side), contracts=spec.contracts,
                 trigger=spec.stop_trigger, symbol=spec.symbol, idempotency_key=key))
-            self._events.append(StopReplaced(entry_id=entry_id, side=side))
+            self._events.append(StopReplaced(entry_id=entry_id, side=side, at=self._at()))
 
         for entry_id, side in plan.run_lex:
-            self._events.append(LongSaleStarted(entry_id=entry_id, side=side))
+            self._events.append(LongSaleStarted(entry_id=entry_id, side=side, at=self._at()))

@@ -122,6 +122,7 @@ class RecoverLong:
         self._events.append(LongSaleStarted(
             entry_id=entry_id, side=side,
             mark_bid=quote.bid, mark_ask=quote.ask, intrinsic=intrinsic,
+            at=self._clock.now().isoformat(),  # ORD-11 (v1.67)
         ))
         floor = lex_floor(quote.bid, intrinsic)  # LEX-04
 
@@ -182,9 +183,10 @@ class RecoverLong:
             # id is already on the log, and the EOD-03 sweep audits it.
             self._events.append(LexOrderPlaced(
                 entry_id=entry_id, side=side, broker_order_id=str(working_id),
-                price=rung.price, kind="ladder"))
+                price=rung.price, kind="ladder", at=self._clock.now().isoformat()))
             working_price = rung.price
-            self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt, price=rung.price))
+            self._events.append(LongSaleRepriced(entry_id=entry_id, side=side, step=rung.attempt,
+                                                 price=rung.price, at=self._clock.now().isoformat()))
 
             # Paper/fake fills are synchronous, so this returns on the FIRST poll
             # without waiting; a live fill needs a beat to register, so we POLL
@@ -207,8 +209,9 @@ class RecoverLong:
         # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by `qty` here.
         fee = fee_for_leg(self._fee_model, role="long", opening=False)
-        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price, fee=fee))
-        self._events.append(SideClosed(entry_id=entry_id, side=side))
+        at = self._clock.now().isoformat()  # ORD-11 (v1.67)
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price, fee=fee, at=at))
+        self._events.append(SideClosed(entry_id=entry_id, side=side, at=at))
         return LexResult("SOLD", tuple(tried))
 
     async def rest_floor(self, *, entry_id: str, side: str, long_symbol: str,
@@ -232,7 +235,7 @@ class RecoverLong:
                            qty=qty, symbol=long_symbol),)))
         self._events.append(LexOrderPlaced(
             entry_id=entry_id, side=side, broker_order_id=str(order_id),
-            price=floor_price, kind="floor"))
+            price=floor_price, kind="floor", at=self._clock.now().isoformat()))
         return str(order_id), floor_price
 
     def record_floor_sold(self, entry_id: str, side: str, recovery: Decimal,
@@ -245,8 +248,9 @@ class RecoverLong:
         # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by `qty` here.
         fee = fee_for_leg(self._fee_model, role="long", opening=False)
-        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery, fee=fee))
-        self._events.append(SideClosed(entry_id=entry_id, side=side))
+        at = self._clock.now().isoformat()  # ORD-11 (v1.67)
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery, fee=fee, at=at))
+        self._events.append(SideClosed(entry_id=entry_id, side=side, at=at))
 
     async def _await_fill(self, working_id, seconds: float) -> bool:
         """Poll for `working_id`'s fill for up to `seconds`, returning True as
@@ -271,7 +275,7 @@ class RecoverLong:
         # order like any rung — its broker id is journaled at placement too.
         self._events.append(LexOrderPlaced(
             entry_id=entry_id, side=side, broker_order_id=str(order_id),
-            price=bid, kind="fallback"))
+            price=bid, kind="fallback", at=self._clock.now().isoformat()))
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):

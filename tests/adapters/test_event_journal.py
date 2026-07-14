@@ -112,6 +112,14 @@ def _sample_instances() -> dict[type, ev.Event]:
             entry_id="2026-07-10#1", broker_order_id="482760202",
             reason="operator's own out-of-band order, not the bot's",
             at="2026-07-14T09:00:00-04:00", note="operator ruling 2026-07-14, strict OWN-01"),
+        # OWN-12 (v1.67, highest-priority open item): a standdown is a
+        # journaled event, not alert-only. METADATA ONLY -- see events.py
+        # docstring.
+        ev.StanddownRecorded: ev.StanddownRecorded(
+            entry_id="2026-07-10#1", side="CALL",
+            reason="long_not_held_at_broker",
+            broker_finding="broker reports no open position in SPXW  260710C07570000",
+            at="2026-07-14T09:00:00-04:00"),
     }
 
 

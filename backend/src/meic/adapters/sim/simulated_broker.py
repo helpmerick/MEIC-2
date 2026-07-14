@@ -110,6 +110,7 @@ class SimulatedBroker:
         fee_per_leg: Decimal = Decimal("0"),
         events: list | None = None,
         fee_model: FeeModel | None = None,  # PNL-01 -- SIDE_STOPPED event fee (SIM-05 parity)
+        clock=None,  # ORD-11 (v1.67): injected clock for ShortStopped's `at`
     ) -> None:
         self._ids = itertools.count(1)
         self._orders: dict[str, SimOrder] = {}
@@ -121,6 +122,7 @@ class SimulatedBroker:
         self._fee_model = fee_model or FeeModel()
         self.events: list = events if events is not None else []  # shared with the pipeline (SIM-05)
         self._market = None  # provider(intent) -> (natural, mid, is_credit); paper's real feed
+        self.clock = clock
 
     def set_market(self, provider) -> None:
         """Bind the market snapshot the fill model evaluates against — the REAL
@@ -159,9 +161,10 @@ class SimulatedBroker:
             # PNL-01: closing a short (buy-to-close) -- commission-free.
             # Per-share (see domain/fees.py) -- never scaled by contracts here.
             fee = fee_for_leg(self._fee_model, role="short", opening=False)
+            at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
             self.events.append(ShortStopped(
                 entry_id=o.intent.entry_id, side=side, fill=price,
-                slippage=price - trigger, initiator="resting_stop", fee=fee))
+                slippage=price - trigger, initiator="resting_stop", fee=fee, at=at))
             return price
         return None
 
