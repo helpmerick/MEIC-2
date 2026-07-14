@@ -31,7 +31,7 @@ The coding AI MUST implement explicit handling (not incidental behaviour) for ev
 - **EC-STP-06 Stop fill event lost (bot down / stream gap).** REC-02 on reconnect discovers the short is gone ⇒ synthesize the missed event, run LEX immediately for the (now aged) long.
   - **Boot-seam idempotency (v1.66):** ALL while-down syntheses (this rule, EC-LEX-08(e), and any future sibling) are idempotent under concurrent boot/connect runs — exactly one journal entry per missed event, guarded by a synchronous pending-set re-check with no await before the append. A double-journal is an accounting corruption even when no order is placed.
 - **EC-STP-07 Operator changes `stop_loss_pct` or `stop_basis` mid-day.** Applies to new entries only (STP-02). Resting stops unchanged unless operator uses UC-08 explicit modify, which is a cancel/replace per side with confirmation and UNPROTECTED handling if replace fails.
-- **EC-STP-08 stop_limit configured and triggered-but-unfilled.** Watchdog escalation to market after `stop_limit_escalation_seconds` (STP-03). If the bot is down when this happens there is no protection — this residual risk is why `stop_market` is the default.
+- **EC-STP-08 — RETIRED (v1.67).** stop_limit is tombstoned (STP-03); this escalation case cannot arise. The dead module is deleted; an absence test asserts no stop-limit construction path exists.
 - **EC-STP-09 Stop triggers within seconds of expiration.** If the stop fills, run LEX with EOD-04 (work until close). If it hasn't triggered by settlement, EOD-01 applies.
 - **EC-STP-10 Duplicate stop orders discovered (e.g. after crash-retry).** REC-05/ORD-04: cancel the surplus order(s); reconcile before any other action on that side.
 

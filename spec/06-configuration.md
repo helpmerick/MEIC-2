@@ -29,6 +29,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `drill_outage_seconds` | 10–300 | 60 | immediate | UC-12 v1.56 — outage-drill disconnect duration |
 | `take_profit_target_pct` | {5..95 step 5} or off | off | next-entry (live-editable per entry, TPT-02) | TPT-01 — whole-entry take-profit target; distinct from the TPF floor |
 | `stop_fill_poll_seconds` | 5–120 | 15 | immediate | STP-08a — fallback fill-detection poll; authoritative while the order-event stream is down |
+| `max_effective_stop_pct` | 100–150 | 110 | next-entry | STP-02b v1.67 — skips `markup_exceeds_cap` when trigger ÷ credit exceeds it; reject-never-clamp |
 | ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |
@@ -60,9 +61,9 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | `stop_basis` | total_credit \| short_premium \| ~~per_side~~ | **total_credit** | next-entry | STP-02 — DEFAULT is Ash's outcome contract (v1.38): trigger = pct × net credit, both shorts; one-side hit ⇒ small profit, both ⇒ ≈ the premium, never more. `per_side` GATED (STP-02d, v1.43): rejected `allocation_unverified` until 5 consecutive real fills reconcile + ratified amendment |
 | `stop_rebate_markup` | $0.00–$5.00, step $0.05 | $0.00 | next-entry | STP-02b — added to trigger to pre-credit expected long recovery; UI must show worst-case increase (UI-18) |
 | `min_stop_distance_ticks` | 1–20 | 2 | next-entry | STP-02c — trigger must clear each short's price by this; else skip `infeasible_stop` / close post-fill |
-| `stop_order_type` | stop_market \| stop_limit | stop_market | next-entry | STP-03 |
+| ~~`stop_order_type`~~ | — | — | — | RETIRED v1.67 (stop_limit tombstoned, STP-03); config loader rejects the key |
 | `stop_limit_offset_ticks` | 1–20 (stop_limit only) | 4 | next-entry | STP-03 |
-| `stop_limit_escalation_seconds` | 2–60 | 10 | immediate | STP-03, EC-STP-08 |
+| ~~`stop_limit_escalation_seconds`~~ | — | — | — | RETIRED v1.67 with EC-STP-08 |
 | `watchdog_grace_seconds` | 3–60 | 10 | immediate | STP-03b — mark at/above trigger this long with stop unfilled ⇒ critical alert |
 | `watchdog_escalate_seconds` | 5–120 | 20 | immediate | STP-03b — total from first breach; bot buys back + cancels the sleeping stop |
 | `stop_retry_seconds` | 1–30 | 5 | immediate | STP-04 |

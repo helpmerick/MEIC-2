@@ -1490,6 +1490,89 @@ Scenario: A floor that fills while the bot is down is recognized on boot (v1.65)
   And a floor gone WITHOUT a fill takes the OWN external-cancel path instead
 ```
 
+**TC-RPT-17** — RPT-15a/OWN-01/OWN-03 shared-account scoping (v1.67, real 2026-07-10 vector)
+```gherkin
+Scenario: The reconciler sees only the bot's rows
+  Given a day where the account holds the bot's condor (+43.68, fees 6.32) and the operator's own trades (-928.26 futures, -466.00 settlement, +350.12 condor)
+  Then RPT-15's cash_delta and fees reflect ONLY the bot's rows
+  And the foreign rows never move any bot figure and a clean day emits no correction
+```
+
+**TC-RPT-18** — RPT-15c unattributable day (v1.67)
+```gherkin
+Scenario: A day with no journaled order ids is refused, never fabricated
+  Given filled entries whose events carry no broker order id
+  Then reconcile journals NOTHING, stamps nothing, and raises ONE critical alert
+  And the broker side is never reported as zero
+```
+
+**TC-RPT-19** — OWN-03 ambiguous settlement (v1.67)
+```gherkin
+Scenario: A settlement symbol shared with a foreign fill is never guessed
+  Given a symbol appearing on both an own fill and a skipped foreign fill that day
+  Then its settlement row is excluded and counted in ambiguous_settlements
+```
+
+**TC-RPT-20** — RPT-15d legacy corrections (v1.67)
+```gherkin
+Scenario: Unscoped corrections are permanently inert
+  Given a scope-less CorrectionRecord asserting broker cash of -534.46
+  Then it never overrides the fold, never displays, and never counts as reconciled
+  And an own-scoped record on the same day does all three
+```
+
+**TC-RPT-21** — PNL-04a broker truth on the dashboard (v1.67)
+```gherkin
+Scenario: Own-scoped broker figures render; absent them the fold renders
+  Given an own-scoped correction of net 43.68 gross 50.00 fees 6.32
+  Then the day report renders exactly those figures as authoritative
+  And a day without one renders the plain fold byte-identical, badged bot-computed
+```
+
+**TC-RPT-22** — RPT-16a backfill money-neutrality (v1.67)
+```gherkin
+Scenario: The order-id backfill moves no money and survives its own retraction
+  Given a backfill of operator-supplied order ids followed by one retraction
+  Then every money fold is byte-identical before and after both operations
+  And re-running either is a no-op and the retracted id is never re-adopted
+```
+
+**TC-PNL-02b** — PNL-01a fee derivation (v1.67): fee = value − net_value, exact on the real rows (0.72/0.72/5.00 → 6.32); a fee-category sum is a test failure.
+
+**TC-NFR-07** — NFR-07 wiring audit (v1.67)
+```gherkin
+Scenario: Every spec-mandated live component is constructed and ticked
+  Given the registry of runtime components the spec mandates
+  Then each is provably constructed AND ticked inside live_app()
+  And a registered component absent from the live composition fails CI
+  And DecayWatcher — found built, tested, race-guarded, and never constructed — is the pinned regression
+
+Scenario: stop_limit has no construction path (STP-03 tombstone)
+  Then no code constructs a stop_limit order and the config loader rejects stop_order_type
+```
+
+**TC-STP-21** — STP-02b effective-percentage cage (v1.67)
+```gherkin
+Scenario: The effective stop percentage is displayed and caged
+  Given credit 2.80 and markup 0.30 with max_effective_stop_pct = 110
+  Then the trigger floors to 2.95 and the display shows effective 105.4 percent — allowed
+  And on credit 2.00 the same markup shows 110 percent — allowed at the boundary
+  And a combination exceeding the cap skips with reason "markup_exceeds_cap", never clamped
+```
+
+**TC-OWN-12** — OWN-12 journaled standdowns + deliberate false alarm (v1.67)
+```gherkin
+Scenario: A standdown is an event, not an alert
+  Given a catch-up finds a bot leg disposed of at the broker
+  Then a standdown event enters the journal naming entry, leg, reason, and broker finding
+  And the out-of-band P&L stays the operator's, absent from the bot's ledger
+
+Scenario: The LEX-07 watchdog is never taught to trust standdowns
+  Given a standdown explanation exists for a missing long
+  Then the LEX-07 watchdog still raises its alert for the operator to dismiss
+  And no suppression rule keyed on standdown framing exists
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1521,7 +1604,9 @@ Scenario: A floor that fills while the bot is down is recognized on boot (v1.65)
 | RPT-01→15 / UI-25/26/27 | TC-RPT-01→09 | | RPT-15 (zero drift) | TC-RPT-09 |
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
 | UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
-| EC-LEX-08 | TC-LEX-10 | | | |
+| EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
+| ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
+| NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
