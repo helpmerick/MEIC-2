@@ -29,7 +29,6 @@ from .events import (
     DayArmed,
     DayCompleted,
     EntryClosed,
-    EntryCompleted,
     Event,
     EntrySkipped,
     FilledLeg,
@@ -54,7 +53,6 @@ class EntryProjection:
     sides_closed: tuple[str, ...] = ()
     sides_expired: tuple[str, ...] = ()
     close_initiator: str | None = None  # CLS-04: how the entry closed
-    completed: bool = False
     placed_at: str | None = None  # UI card: fill time (CondorFilled.at), ISO, null if absent
     legs: tuple[FilledLeg, ...] = ()  # ORD-09: broker-reported strikes/prices for the card
     # EOD-01 v1.59: SUM of attributed `SettlementRecorded.value` -- REAL DOLLARS
@@ -176,9 +174,6 @@ def apply(state: DayState, event: Event) -> DayState:
     if isinstance(event, EntryClosed):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(e, close_initiator=event.initiator)))
-    if isinstance(event, EntryCompleted):
-        e = _entry(state, event.entry_id)
-        return replace(state, entries=_put(state, replace(e, completed=True)))
     if isinstance(event, DayCompleted):
         return replace(state, completed=True)
     return state

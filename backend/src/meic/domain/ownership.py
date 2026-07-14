@@ -56,7 +56,19 @@ class OwnershipLedger:
     def classify(self, symbol: str, broker_net: int) -> Ownership:
         ledger = self.owned(symbol)
         if ledger == 0:
-            return Ownership.FOREIGN if broker_net != 0 else Ownership.OWNED
+            # Zero-quantity fix (2026-07-14, operator ruling): ledger 0 AND
+            # broker_net 0 used to fall through to OWNED here, which
+            # rendered a genuinely-flat symbol (e.g. a closed future/crypto
+            # line the broker still lists at qty 0) as "adopted" in
+            # reconcile_boot.py -- misleading, and it undermines trust in the
+            # OWN-03 quarantine display. OWN-01: the ledger is built
+            # EXCLUSIVELY from the bot's own fills; zero fills recorded means
+            # the bot owns NONE of this symbol, full stop -- regardless of
+            # what a stale/closed broker line happens to read, "not the
+            # bot's own" is FOREIGN, the same as the broker_net != 0 case
+            # just below. NON-zero-quantity classification (ledger != 0,
+            # below) is completely untouched by this fix.
+            return Ownership.FOREIGN
         if broker_net == ledger:
             return Ownership.OWNED
         # same-sign shrink below the ledger ⇒ operator closed bot lots (OWN-06)

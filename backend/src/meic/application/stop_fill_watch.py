@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from meic.config.fee_model import FeeModel
@@ -125,6 +126,56 @@ class NoBidFloor:
     intrinsic: Decimal
 
 
+def _entry_day(entry_id: str) -> str:
+    """The day-bucket prefix of an entry id -- the SAME convention as
+    domain/projection.py's private `_entry_day` / reporting/folds.py's
+    `entry_day`, mirrored here (not imported): this module is a peer of both
+    layers, never a consumer, the same reason those two keep their own
+    copies of each other instead of importing."""
+    return entry_id.split("#", 1)[0]
+
+
+def _within_catchup_window(entry_id: str, *, today: str | None, max_age_days: int | None) -> bool:
+    """EC-STP-06 age cutoff (2026-07-14, operator ruling). Bounds the live
+    catch-up to RECENT entries only.
+
+    THE GAP THIS CLOSES: without a bound, this pass re-evaluates EVERY entry
+    that never reached a terminal PROJECTION state against TODAY's broker
+    truth, on EVERY tick/boot, forever. Observed live 2026-07-13: the
+    2026-07-10 entry's short had already stopped and its long was already
+    disposed of (by the operator, directly, before OWN-12/EC-LEX-08(d)
+    existed) -- economically over and done -- but its projection stayed
+    stuck non-terminal (no `SideClosed`, no `close_initiator`; the settlement
+    -capture bug that caused this is separately fixed). Every boot since then
+    re-diffed that three-day-old entry against a broker that obviously holds
+    nothing from three days ago, and emitted the exact same misleading
+    "operator disposed of it directly -- standing down" INFO alert each time.
+
+    `today` (the caller's own ET trading day, DAY-03 -- NEVER a wall-clock
+    date) and `max_age_days` are BOTH optional so every call site that
+    doesn't pass them keeps its EXACT prior, unbounded behaviour: this is a
+    narrow fix to the EC-STP-06 catch-up path (`build_tracked_shorts`,
+    `detect_and_recover_stop_fills`, and the `_pending_lex_sides` recovery
+    phase they drive) ONLY. It deliberately does NOT change what "open"
+    means for the OTHER `_open_short_legs` callers in adapters/api/server.py
+    (the STP-03b stop watchdog pass, the DecayWatcher wiring, the
+    drill-guidance provider) -- none of those were reported broken, and
+    widening the blast radius to them was not asked for.
+
+    A malformed/unparseable entry id (should not occur -- REC-01 always
+    prefixes entry ids "{day}#{n}") is left IN the window rather than
+    silently dropped: a parsing anomaly is a bug to investigate, never a
+    reason to abandon a genuine catch-up."""
+    if today is None or max_age_days is None:
+        return True
+    try:
+        entry_date = date.fromisoformat(_entry_day(entry_id))
+        today_date = date.fromisoformat(today)
+    except ValueError:
+        return True
+    return (today_date - entry_date).days <= max_age_days
+
+
 def _stop_specs(events) -> dict[tuple[str, str], StopPlaced]:
     """The latest recorded `StopPlaced` per (entry_id, side) -- carries the
     trigger (needed for EC-STP-06 slippage) and, for every stop placed since
@@ -150,16 +201,23 @@ def _decay_buyback_specs(events) -> dict[tuple[str, str], DecayBuybackPlaced]:
     return specs
 
 
-def _open_short_legs(events):
+def _open_short_legs(events, *, today: str | None = None, max_age_days: int | None = None):
     """Every (entry_id, side, leg, spec) this tick's EC-STP-06 triage
     considers: a still-open short (not stopped/closed/expired, entry not
     closed) with a `StopPlaced` on record. No StopPlaced at all is REC-04(2)/
-    (3) territory -- boot's job, not this tick's."""
+    (3) territory -- boot's job, not this tick's.
+
+    `today`/`max_age_days` (2026-07-14, optional/additive): bound the
+    candidates to entries within `max_age_days` of `today` -- see
+    `_within_catchup_window`'s docstring for the incident this closes.
+    Callers that don't pass them get the exact prior, unbounded behaviour."""
     day = fold(events)
     specs = _stop_specs(events)
     out = []
     for entry_id, e in day.entries.items():
         if e.close_initiator is not None:
+            continue
+        if not _within_catchup_window(entry_id, today=today, max_age_days=max_age_days):
             continue
         shorts = {leg.side: leg for leg in e.legs if leg.role == "short"}
         for side, leg in shorts.items():
@@ -257,11 +315,17 @@ async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None,
     return False, None, None
 
 
-async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list[tuple[str, str, Decimal, int]]]:
+async def build_tracked_shorts(broker, events, *, today: str | None = None,
+                               max_age_days: int | None = None
+                               ) -> tuple[list[TrackedShort], list[tuple[str, str, Decimal, int]]]:
     """The EC-STP-06 candidates for THIS tick: an open, stop-placed short
     whose stop is no longer resting and DID fill. The first list is reused
     directly by `Reconcile.plan()` -- the SAME frame boot reconciliation
     drives.
+
+    `today`/`max_age_days` (2026-07-14, optional/additive): the EC-STP-06 age
+    cutoff, passed straight through to `_open_short_legs` -- see
+    `_within_catchup_window`'s docstring.
 
     The second list is STP-08a's decay classification (v1.61): sides whose
     matched fill is, by journaled order id, the DCY BUYBACK -- (entry_id,
@@ -281,7 +345,7 @@ async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list
     decay_closed: list[tuple[str, str, Decimal, int]] = []
     decay_specs = _decay_buyback_specs(events)
     decay_ids = {spec.broker_order_id: spec for spec in decay_specs.values()}
-    for entry_id, side, leg, spec in _open_short_legs(events):
+    for entry_id, side, leg, spec in _open_short_legs(events, today=today, max_age_days=max_age_days):
         if await _still_resting(broker, leg.symbol):
             continue  # covers the resting stop AND a still-working decay buyback
         dspec = decay_specs.get((entry_id, side))
@@ -341,7 +405,8 @@ def _long_leg_for(events, entry_id: str, side: str):
     return None
 
 
-def _pending_lex_sides(events) -> list[tuple[str, str]]:
+def _pending_lex_sides(events, *, today: str | None = None,
+                       max_age_days: int | None = None) -> list[tuple[str, str]]:
     """LEX-01: a stopped side's orphaned long is ALWAYS sold. Pending = the
     short is stopped (`ShortStopped` on the log -- a fresh detection this
     tick, a boot EC-STP-06 synthesis, a watchdog escalation, or a stop that
@@ -371,10 +436,24 @@ def _pending_lex_sides(events) -> list[tuple[str, str]]:
     removed (final review 2026-07-10): it over-exempted EVERY stopped side on
     a decay-closed entry, so a CALL stopped earlier by a resting_stop (quote-
     deferred, ladder not yet started) would be silently stranded the moment
-    the PUT decayed -- the exact R3-F1 orphan class, re-opened."""
+    the PUT decayed -- the exact R3-F1 orphan class, re-opened.
+
+    `today`/`max_age_days` (2026-07-14, optional/additive): the SAME EC-STP-06
+    age cutoff `_open_short_legs` takes -- see `_within_catchup_window`'s
+    docstring. OWN-12 interaction: once an entry ages past the cutoff, this
+    function stops considering it at all, so `_try_recover`'s OWN standdown
+    branch never runs for it again -- no NEW `StanddownRecorded` and no
+    repeated "standing down" INFO for an entry this old. This is correct and
+    intended (every entry here is 0DTE -- STK-01 -- so a GENUINE recovery is
+    always resolved same-day; an entry this old with a still-pending side is
+    the settlement-capture-class bug the cutoff exists to stop re-surfacing,
+    not real catch-up work). Pinned: an old entry can never resurrect a
+    standdown once it has aged out."""
     day = fold(events)
     out = []
     for entry_id in sorted(day.entries):
+        if not _within_catchup_window(entry_id, today=today, max_age_days=max_age_days):
+            continue
         e = day.entries[entry_id]
         # side -> every initiator that stopped it (parallel tuples in the fold)
         initiators: dict[str, set[str]] = {}
@@ -641,7 +720,9 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
 
 
 async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
-                                        lex_quote_wait_seconds: float = LEX_QUOTE_WAIT_SECONDS) -> None:
+                                        lex_quote_wait_seconds: float = LEX_QUOTE_WAIT_SECONDS,
+                                        today: str | None = None,
+                                        max_age_days: int | None = None) -> None:
     """One health-tick pass (60s cadence -- the honest poll `live_app`'s
     `MEIC_HEALTH_INTERVAL_S` already runs everything else on; no new
     streaming infrastructure). Idempotent: a side already resolved
@@ -658,6 +739,16 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
     caught the first time this runs after it ships, exactly like a fill that
     happens between two ticks going forward.
 
+    `today`/`max_age_days` (2026-07-14, optional/additive): the EC-STP-06 age
+    cutoff -- see `_within_catchup_window`'s docstring for the incident it
+    closes (an already-resolved, days-old entry re-diffed against today's
+    broker truth on every boot, forever). Threaded through BOTH the
+    detection frame (`build_tracked_shorts` and the R3-F2 re-check below) and
+    the recovery frame (`_pending_lex_sides`) so the two phases always agree
+    on which entries are still in scope. `None`/`None` (every caller that
+    predates this cutoff, and every test in this suite) is the exact prior,
+    unbounded behaviour.
+
     `quote_provider(long_symbol, side) -> (Quote, intrinsic) | StaleQuote |
     None` supplies the live market data LEX needs to start its ladder;
     injected so this module stays I/O-light and unit-testable. A tuple is a
@@ -671,7 +762,7 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
 
     # Phase 1 -- DETECTION: journal any stop fill the broker knows about that
     # the log doesn't (EC-STP-06 synthesis, via the ratified Reconcile frame).
-    tracked, decay_closed = await build_tracked_shorts(broker, events)
+    tracked, decay_closed = await build_tracked_shorts(broker, events, today=today, max_age_days=max_age_days)
     if tracked or decay_closed:
         # R3-F2: build_tracked_shorts folded the log ONCE at its start, then
         # awaited the broker repeatedly -- a concurrent close for the same
@@ -683,7 +774,8 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
         # the CURRENT log, synchronously: no await can interleave between
         # this check and execute()'s synthesis appends (which sit at its
         # top, before its first await).
-        open_now = {(entry_id, side) for entry_id, side, _leg, _spec in _open_short_legs(events)}
+        open_now = {(entry_id, side) for entry_id, side, _leg, _spec in
+                   _open_short_legs(events, today=today, max_age_days=max_age_days)}
         tracked = [t for t in tracked if (t.entry_id, t.side) in open_now]
         decay_closed = [d for d in decay_closed if (d[0], d[1]) in open_now]
     # STP-08a (v1.61): a fill identified (by journaled order id) as the DCY
@@ -720,7 +812,7 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
     # whether it was detected this tick, deferred by a guard on a previous
     # tick, synthesized at boot, or stopped by the watchdog. One set, one
     # guard path -- no fresh/resume split to drift apart.
-    for entry_id, side in _pending_lex_sides(events):
+    for entry_id, side in _pending_lex_sides(events, today=today, max_age_days=max_age_days):
         await _try_recover(comp, alerts, quote_provider, entry_id, side,
                            lex_quote_wait_seconds=lex_quote_wait_seconds)
 

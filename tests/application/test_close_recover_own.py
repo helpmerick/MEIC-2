@@ -40,6 +40,25 @@ class TestOwnershipLedger:
         led.write_down_to("SPXW_5990P", -1)
         assert led.owned("SPXW_5990P") == -1
 
+    def test_zero_quantity_position_is_foreign_not_adopted(self):
+        """2026-07-14 fix: a symbol with NO bot fills (ledger 0) that the
+        broker also reports at qty 0 (e.g. a closed future/crypto line still
+        listed at zero) must classify FOREIGN, never OWNED -- before this
+        fix it fell through to OWNED and rendered as "adopted" in
+        reconcile_boot.py, misleading (OWN-01: ownership comes exclusively
+        from the bot's own fills; zero fills is zero ownership)."""
+        led = OwnershipLedger()  # no bot fills at all
+        assert led.classify("ETH/USD", broker_net=0) is Ownership.FOREIGN
+
+    def test_zero_quantity_fix_does_not_touch_real_owned_or_foreign(self):
+        """Pin: the fix is narrow -- every NON-zero-quantity classification
+        (a real owned position, and a real foreign one) is byte-identical to
+        before."""
+        led = OwnershipLedger()
+        led.apply_fill("SPXW_5990P", -2)  # real bot fills -> real ownership
+        assert led.classify("SPXW_5990P", broker_net=-2) is Ownership.OWNED
+        assert led.classify("SPXW_6050C", broker_net=-1) is Ownership.FOREIGN  # real foreign, unaffected
+
 
 class TestCloseEntry:
     def _legs(self):

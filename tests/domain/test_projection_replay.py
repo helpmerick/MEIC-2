@@ -7,7 +7,6 @@ from meic.domain.events import (
     DayArmed,
     DayCompleted,
     EntryClosed,
-    EntryCompleted,
     EntrySkipped,
     FilledLeg,
     LongSold,
@@ -29,11 +28,9 @@ def canonical_day():
         ShortStopped(entry_id="e1", side="PUT", fill=D("3.80"), slippage=D("0.15")),
         LongSold(entry_id="e1", side="PUT", recovery=D("0.00")),
         SideExpired(entry_id="e1", side="CALL"),
-        EntryCompleted(entry_id="e1"),
         # e2: both sides expire worthless -> keep full 2.30
         SideExpired(entry_id="e2", side="PUT"),
         SideExpired(entry_id="e2", side="CALL"),
-        EntryCompleted(entry_id="e2"),
         DayCompleted(date="2026-07-06"),
     ]
 

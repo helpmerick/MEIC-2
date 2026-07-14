@@ -10,6 +10,7 @@ from meic.domain.events import (
     FilledLeg,
     SettlementRecorded,
     ShortStopped,
+    SideExpired,
 )
 from meic.reporting.folds import (
     contracts_of,
@@ -361,3 +362,65 @@ def test_day_snapshot_stamps_flat_only_once_every_short_is_settled():
     assert snap.flat is True
     assert snap.net == D("-13.88")
     assert snap.fees == D("9.88")
+
+
+# --- EntryCompleted removal (v1.68, operator-ratified) -----------------------
+#
+# "A field that can never be true is a lie waiting for someone to trust it."
+# EntryCompleted was emitted by NOTHING -- not production, not even the demo
+# simulator -- so EntryProjection.completed was permanently False and its
+# OR-clause in _settled() below was dead code. Confirmed before removal: ZERO
+# occurrences in the live journal (data/state.db, 4654 events) and its three
+# backups. These tests pin that removing the dead clause changed _settled()/
+# day_snapshot().flat for NO reachable state -- the other four OR-clauses
+# already cover every real path.
+
+def test_entry_completed_event_class_no_longer_exists():
+    from meic.domain import events as ev
+
+    assert not hasattr(ev, "EntryCompleted"), \
+        "EntryCompleted was removed (v1.68) -- a reintroduction would resurrect a field that can never be true"
+
+
+def test_settled_reachable_states_unaffected_by_entry_completed_removal():
+    """Each of _settled()'s four SURVIVING OR-clauses independently flags an
+    entry settled, with no EntryCompleted event anywhere on the log."""
+    from meic.reporting.folds import _settled
+
+    # 1. close_initiator is not None
+    closed = entries_by_day([
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00")),
+        EntryClosed(entry_id="2026-07-09#1", initiator="manual"),
+    ])["2026-07-09"][0]
+    assert _settled(closed) is True
+
+    # 2. both sides expired
+    both_expired = entries_by_day([
+        CondorFilled(entry_id="2026-07-09#2", net_credit=D("4.00"), legs=_real_condor_legs()),
+        SideExpired(entry_id="2026-07-09#2", side="PUT"),
+        SideExpired(entry_id="2026-07-09#2", side="CALL"),
+    ])["2026-07-09"][0]
+    assert _settled(both_expired) is True
+
+    # 3. both sides stopped
+    both_stopped = entries_by_day([
+        CondorFilled(entry_id="2026-07-09#3", net_credit=D("4.00")),
+        ShortStopped(entry_id="2026-07-09#3", side="PUT", fill=D("3.80"), slippage=D("0")),
+        ShortStopped(entry_id="2026-07-09#3", side="CALL", fill=D("3.80"), slippage=D("0")),
+    ])["2026-07-09"][0]
+    assert _settled(both_stopped) is True
+
+    # 4. filled with legs and nothing left settlement_pending (held-to-expiry, EOD-01)
+    entry_id = "2026-07-09#4"
+    held_to_expiry = entries_by_day([
+        CondorFilled(entry_id=entry_id, net_credit=D("3.60"), fee=D("0.0488"), legs=_real_condor_legs()),
+        *_real_settlement_events(entry_id),
+    ])["2026-07-09"][0]
+    assert _settled(held_to_expiry) is True
+
+    # A genuinely still-open entry (no legs at all) remains UNSETTLED --
+    # confirms the removal did not accidentally make _settled() vacuously True.
+    open_entry = entries_by_day([
+        CondorFilled(entry_id="2026-07-09#5", net_credit=D("4.00")),
+    ])["2026-07-09"][0]
+    assert _settled(open_entry) is False

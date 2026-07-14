@@ -483,11 +483,6 @@ class ForeignReduction(Event):
 
 
 @dataclass(frozen=True)
-class EntryCompleted(Event):
-    entry_id: str
-
-
-@dataclass(frozen=True)
 class DayBrokerConfirmed(Event):
     """RPT-15 (doc 10): the EOD broker reconciliation found the day's
     bot-computed numbers (flat check, fill count, cash delta, fees) matched

@@ -14,6 +14,7 @@ to the CERT sandbox; MEIC_LIVE_IS_TEST=false selects production credentials:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
@@ -23,6 +24,7 @@ from typing import Callable
 from fastapi import HTTPException, Query
 
 from meic.adapters.api.app import _strike_from_symbol
+from meic.adapters.logging_setup import configure_logging
 from meic.application.clocks import MutableClock
 from meic.application.market_calendar import (
     is_trading_day,
@@ -37,6 +39,14 @@ from meic.domain.ticks import TickRung, TickTable
 
 SPX = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")), TickRung(None, Decimal("0.10"))))
 ROOT = Path(__file__).resolve().parents[5]
+
+# 2026-07-14 (server logging from boot): server logs were never written at
+# all until 2026-07-13 -- see adapters/logging_setup.py's module docstring
+# for the incident (cert-day logs permanently lost) this closes. This
+# module's own logger; `configure_logging()` is called once from each real
+# entrypoint (`paper_app`/`live_app` below) so a boot logs identically
+# however the process is started.
+logger = logging.getLogger("meic.server")
 
 # Wiring PRODUCTION (real money) requires this exact second opt-in alongside
 # MEIC_LIVE_IS_TEST=false. One flipped env var must never be enough.
@@ -69,6 +79,16 @@ class _PanelAlerts:
         self._alerts.append({"level": level, "message": message,
                              "context": {k: str(v) for k, v in context.items()}})
         del self._alerts[: -self._cap]
+        # 2026-07-14: every alert (the uniform error-reporting path virtually
+        # every supervised background loop already uses -- watchdogs, the
+        # quote stream, the day supervisor) is ALSO logged, durably, to the
+        # per-boot file. `level` here is the alert's own vocabulary
+        # ("critical"/"warning"/"info"), not a Python logging level name --
+        # map the ones actually used and fall back to INFO for anything else
+        # rather than crash a live alert over an unrecognised label.
+        _log_level = {"critical": logging.ERROR, "warning": logging.WARNING,
+                     "info": logging.INFO}.get(level, logging.INFO)
+        logger.log(_log_level, "ALERT[%s] %s %s", level, message, context)
 
     def recent(self) -> list[dict]:
         return list(reversed(self._alerts))
@@ -110,6 +130,9 @@ def paper_app():
     from meic.application.manual_entry import ManualEntry
     from meic.composition.panel_commands import PanelCommands
     from meic.domain.projection import fold
+
+    env = _read_env()
+    configure_logging(env, root=ROOT)  # 2026-07-14: logging works however the app is started
 
     comp = PaperComposition(clock=MutableClock(datetime(2026, 7, 7, 9, 30, tzinfo=timezone.utc)), ticks=SPX)
     comp.state.trading_mode = "paper"   # honest: this process holds the simulator
@@ -407,6 +430,40 @@ def _settlement_lookback_days(env: dict[str, str]) -> int:
     reject-the-dial convention as `_chain_completeness_pct` above)."""
     try:
         raw = int(env.get("MEIC_SETTLEMENT_LOOKBACK_DAYS", "5"))
+    except ValueError:
+        return 5
+    return raw if 1 <= raw <= 30 else 5
+
+
+def _stop_fill_catchup_max_age_days(env: dict[str, str]) -> int:
+    """EC-STP-06 (2026-07-14, operator ruling) `stop_fill_catchup_max_age_days`:
+    bounds the live stop-fill catch-up (`application/stop_fill_watch.py`,
+    `_within_catchup_window`) to entries within this many CALENDAR days of
+    TODAY (DAY-03: the ET trading day, computed via `market_calendar.
+    trading_day` -- never a wall-clock date).
+
+    THE INCIDENT THIS CLOSES: observed live 2026-07-13 -- the catch-up
+    re-evaluated the already-resolved 2026-07-10 entry against TODAY's broker
+    positions (which obviously hold nothing three days old), emitting the
+    same misleading "operator disposed of it directly -- standing down" INFO
+    on every single boot, forever, because the entry's projection never
+    reached a terminal state (a since-fixed settlement-capture bug).
+
+    Every entry this bot ever books is 0DTE (STK-01): a GENUINE catch-up --
+    matching a resting stop's fill, or resolving an orphaned long's true
+    disposition -- is always settled within its own trading day, almost
+    always within the very next ~60s health tick. The window here is set
+    well past that floor purely so an operator-initiated restart spanning an
+    ORDINARY weekend (Friday close -> Monday boot, 3 calendar days) or a long
+    holiday weekend never silently drops a real catch-up. Default 5
+    (mirroring `_settlement_lookback_days` immediately above -- the same
+    class of infra dial, same reject-the-dial convention), range 1-30 (same
+    range as `_settlement_lookback_days`): an entry outside even 30 days is
+    definitionally stale (0DTE) and its lingering non-terminal projection
+    state is a bug to fix at the source, not something more re-evaluation
+    could ever resolve. Out-of-range falls back to the default."""
+    try:
+        raw = int(env.get("MEIC_STOP_FILL_CATCHUP_MAX_AGE_DAYS", "5"))
     except ValueError:
         return 5
     return raw if 1 <= raw <= 30 else 5
@@ -2045,6 +2102,12 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
             return StaleQuote(quote=quote, intrinsic=intrinsic)
         return quote, intrinsic
 
+    # EC-STP-06 (2026-07-14): the age cutoff bounding the catch-up below to
+    # RECENT entries only -- see `_stop_fill_catchup_max_age_days`'s docstring
+    # for the incident this closes (an already-resolved, days-old entry
+    # re-diffed against today's broker truth on every boot, forever).
+    stop_fill_catchup_max_age_days = _stop_fill_catchup_max_age_days(env)
+
     async def _detect_stop_fills() -> None:
         """EC-STP-06 (v1.60): catch up any stop fill this process missed
         while it was UP and running — the exact gap behind the 2026-07-10
@@ -2052,10 +2115,18 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         noticed: no SIDE_STOPPED, no LEX, no UI feedback). Run every health
         tick (see `_probe_once`); `comp.alerts` is read at CALL time (not
         closure-construction time) so it resolves to whichever AlertSink
-        `live_app()` ends up assigning."""
+        `live_app()` ends up assigning.
+
+        `today` is read FRESH every call (DAY-03: `trading_day(comp.clock.
+        now())`, never a wall-clock date) and passed with
+        `stop_fill_catchup_max_age_days` to bound the catch-up to recent
+        entries only (2026-07-14) -- see `_stop_fill_catchup_max_age_days`'s
+        docstring."""
         from meic.application.stop_fill_watch import detect_and_recover_stop_fills
 
-        await detect_and_recover_stop_fills(comp, comp.alerts, _long_quote)
+        today = trading_day(comp.clock.now()).isoformat()
+        await detect_and_recover_stop_fills(comp, comp.alerts, _long_quote,
+                                            today=today, max_age_days=stop_fill_catchup_max_age_days)
 
     def _floor_candidates(row) -> dict:
         """ENT-09b v1.57: the ▶ dialog's floor dropdowns. Thin -- the actual
@@ -2100,6 +2171,10 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         # and the enrichers/evaluator read live-first, snapshot-fallback.
         "quote_hub": quote_hub,
         "max_quote_age_ms": max_quote_age_ms,
+        # EC-STP-06 (2026-07-14): exposed for the wiring capstone, mirroring
+        # `stop_fill_poll_interval_s` -- proves the cutoff actually comes
+        # from env, not a hardcoded value.
+        "stop_fill_catchup_max_age_days": stop_fill_catchup_max_age_days,
     }
 
 
@@ -2122,7 +2197,12 @@ def live_app():
     from meic.composition.panel_commands import PanelCommands
 
     env = _read_env()
+    configure_logging(env, root=ROOT)  # 2026-07-14: logging works however the app is started
     is_test = env.get("MEIC_LIVE_IS_TEST", "true").lower() != "false"
+    # Boot announcement: which environment, never which secret -- see
+    # adapters/logging_setup.py's module docstring on what this module does
+    # and does not log.
+    logger.info("live_app booting: kind=%s", "CERT" if is_test else "PROD")
     token = env.get("MEIC_USER_PASSWORD")
     if not token:
         raise RuntimeError("live panel requires MEIC_USER_PASSWORD (NFR-06) — set it in .env/env")
@@ -2343,10 +2423,12 @@ def live_app():
             await live["session_probe"]()
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: session_probe failed: %r", exc)
         try:
             await live["data_probe"]()
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: data_probe failed: %r", exc)
         try:
             # RPT-12/D8: sample marks off the snapshot just refreshed above,
             # same cadence, independent of either probe's success (the
@@ -2354,6 +2436,7 @@ def live_app():
             _sample_marks_once(comp, live["snapshots"].last)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: mark sampling failed: %r", exc)
         try:
             # TPF-03/TPT-04: the bot-side profit monitor, same cadence as the
             # marks sample above (same snapshot, no new subscription). NFR-04:
@@ -2363,6 +2446,7 @@ def live_app():
                                        hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: exit evaluation failed: %r", exc)
         # EC-STP-06 (v1.60) stop-fill catch-up MOVED OFF this tick (operator
         # ruling 2026-07-11, ITEM 1's follow-up): it used to run here, inline,
         # every ~60s. It now runs on its OWN dedicated poll loop
@@ -2382,6 +2466,7 @@ def live_app():
                                         half_days=eod_half_days)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: EOD sweep failed: %r", exc)
         try:
             # RPT-15: once per tick, past EOD settlement, on a day with
             # activity, not yet reconciled -- see _maybe_eod_reconcile_once's
@@ -2393,6 +2478,7 @@ def live_app():
                                             lookback_days=settlement_lookback_days)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
+            logger.warning("health tick: EOD reconcile failed: %r", exc)
 
     @app.on_event("startup")
     async def _connect() -> None:
@@ -2414,6 +2500,16 @@ def live_app():
                                       hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
+            # PRE-EXISTING RISK, flagged not fixed here (out of this item's
+            # scope): `repr(exc)` on a `comp.connect()` failure is already
+            # returned verbatim in the `/broker/connect` JSON response today;
+            # if the underlying SDK ever embeds the secret/refresh token/
+            # session credential in an auth-failure exception's own message,
+            # that string would appear here too. No broker/adapter exception
+            # message in this codebase is known to do that today, but this
+            # logger call does not increase exposure beyond what the API
+            # response already discloses -- it only makes it durable.
+            logger.error("boot connect failed: %r", exc)
 
     # NFR-02 + DAY-03: the periodic health loop the gates and pre-flight assume
     # exists. It keeps the session-liveness and broker-clock reading FRESH (a
@@ -2500,6 +2596,7 @@ def live_app():
                         await run_pass_if_idle(app.state.stop_fill_lock, live["stop_fill_detector"])
                     except Exception as exc:  # noqa: BLE001 -- must never crash the app
                         app.state.broker_error = repr(exc)
+                        logger.warning("stop-fill poll fallback failed: %r", exc)
         app.state.stop_fill_poll_task = asyncio.create_task(_loop())
 
     @app.on_event("shutdown")
@@ -2672,6 +2769,11 @@ def live_app():
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False
             app.state.broker_error = repr(exc)
+            # Same pre-existing risk noted on the boot _connect() handler
+            # above: `repr(exc)` is already returned verbatim in this
+            # endpoint's own JSON response today; this logger call makes an
+            # already-disclosed string durable, not newly exposed.
+            logger.error("/broker/connect retry failed: %r", exc)
         return {"connected": app.state.broker_connected, "error": app.state.broker_error}
 
     @app.get("/broker/health")

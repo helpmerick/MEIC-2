@@ -323,7 +323,13 @@ class DaySnapshot:
 
 
 def _settled(entry: EntryProjection) -> bool:
-    return (entry.completed or entry.close_initiator is not None
+    # EntryCompleted removed (v1.68, operator-ratified): it was emitted by
+    # NOTHING -- not production, not even the demo simulator -- so
+    # `entry.completed` was permanently False and its OR-clause here was
+    # dead code (pinned: removing it changes _settled() for NO reachable
+    # state, since every real path is already covered by the four clauses
+    # below).
+    return (entry.close_initiator is not None
             or len(entry.sides_expired) >= 2 or len(entry.sides_stopped) >= 2
             # EOD-01 v1.59: a filled entry with nothing left settlement_pending
             # (every unstopped short's symbol has a captured SettlementRecorded)

@@ -14,7 +14,6 @@ from meic.domain.events import (
     DayBrokerConfirmed,
     DayCompleted,
     EntryClosed,
-    EntryCompleted,
     EntryMarkSample,
     EntrySkipped,
     Event,
@@ -31,7 +30,7 @@ from meic.domain.events import (
 # import cycle: periods.py is a peer of folds.py, not a consumer of it).
 _ENTRY_SCOPED = (
     CondorProposed, CondorFilled, ShortStopped, LongSold,
-    SideClosed, SideExpired, EntryClosed, EntryCompleted, EntryMarkSample,
+    SideClosed, SideExpired, EntryClosed, EntryMarkSample,
     SettlementRecorded,  # EOD-01 v1.59: carries its own entry_id like the others above
 )
 # Events keyed directly by a `date` field.

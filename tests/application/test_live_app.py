@@ -1063,7 +1063,7 @@ def test_live_app_wires_a_real_order_event_consumer_that_triggers_the_stop_fill_
 
     calls: list[bool] = []
 
-    async def _fake_pass(comp, alerts, quote_provider):
+    async def _fake_pass(comp, alerts, quote_provider, **kwargs):
         calls.append(True)
 
     monkeypatch.setattr(sfw, "detect_and_recover_stop_fills", _fake_pass)
@@ -1172,7 +1172,7 @@ def test_stop_fill_poll_loop_drives_the_detector_on_its_own_env_interval(monkeyp
 
     calls: list[bool] = []
 
-    async def _fake_pass(comp, alerts, quote_provider):
+    async def _fake_pass(comp, alerts, quote_provider, **kwargs):
         calls.append(True)
 
     monkeypatch.setattr(sfw, "detect_and_recover_stop_fills", _fake_pass)

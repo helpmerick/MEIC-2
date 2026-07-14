@@ -131,6 +131,100 @@ def test_catch_up_via_symbol_when_no_broker_order_id_recorded():
     assert len(recover.calls) == 1
 
 
+# --- EC-STP-06 age cutoff (2026-07-14, operator ruling) -----------------------
+#
+# Observed live 2026-07-13: the catch-up re-evaluated the already-resolved
+# 2026-07-10 entry against TODAY's broker truth on every boot, forever,
+# because its projection never reached a terminal state (a since-fixed
+# settlement-capture bug). These tests pin the fix: an entry older than
+# `max_age_days` is not re-evaluated at all (detection AND recovery), while a
+# recent one still is -- the cutoff must never weaken genuine same-day catch-up.
+
+def test_catchup_cutoff_skips_detection_for_an_entry_older_than_the_window():
+    """MUST FAIL before the fix: today's suite re-evaluates entries from ANY
+    past day with no bound at all."""
+    events = list(_condor_filled_events())
+    events.append(StopPlaced(entry_id=ENTRY_ID, side="CALL", trigger=D("3.80")))
+    broker = _FakeBroker()
+    broker.fills = [{"order_id": "STOP-9", "legs": [{"symbol": CALL_SHORT, "action": "buy_to_close"}]}]
+    broker.fill_legs_by_order["STOP-9"] = (
+        FilledLeg(symbol=CALL_SHORT, right="C", role="short", qty=1, price=D("3.85")),)
+    broker.positions_ = [{"symbol": CALL_LONG, "signed_qty": 1}]
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    # ENTRY_ID's day is 2026-07-10; "today" is 4 days later with a 1-day window.
+    asyncio.run(detect_and_recover_stop_fills(comp, alerts, _quote_provider,
+                                              today="2026-07-14", max_age_days=1))
+
+    assert not any(isinstance(e, ShortStopped) for e in events), \
+        "an entry older than the cutoff must not be detected at all"
+    assert recover.calls == []
+
+
+def test_catchup_cutoff_still_detects_a_recent_entry_within_the_window():
+    """The cutoff must never weaken genuine same-day/recent catch-up -- an
+    entry ON its own trading day, well inside the window, is detected and
+    recovered exactly as before."""
+    events = list(_condor_filled_events())
+    events.append(StopPlaced(entry_id=ENTRY_ID, side="CALL", trigger=D("3.80")))
+    broker = _FakeBroker()
+    broker.fills = [{"order_id": "STOP-9", "legs": [{"symbol": CALL_SHORT, "action": "buy_to_close"}]}]
+    broker.fill_legs_by_order["STOP-9"] = (
+        FilledLeg(symbol=CALL_SHORT, right="C", role="short", qty=1, price=D("3.85")),)
+    broker.positions_ = [{"symbol": CALL_LONG, "signed_qty": 1}]
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    asyncio.run(detect_and_recover_stop_fills(comp, alerts, _quote_provider,
+                                              today="2026-07-10", max_age_days=5))
+
+    stopped = [e for e in events if isinstance(e, ShortStopped)]
+    assert len(stopped) == 1 and stopped[0].side == "CALL"
+    assert len(recover.calls) == 1
+
+
+def test_catchup_cutoff_prevents_an_old_stopped_side_from_resurrecting_a_standdown():
+    """OWN-12 interaction (pinned per the operator's note): once an entry
+    ages past the cutoff, `_pending_lex_sides` stops considering it, so an
+    ALREADY-stopped side whose long is gone must NOT go on re-triggering the
+    OWN standdown journal entry/INFO alert on every future boot -- exactly
+    the misleading 07-13 boot-log repeat this cutoff exists to stop."""
+    events = list(_condor_filled_events())
+    events.append(ShortStopped(entry_id=ENTRY_ID, side="CALL", fill=D("3.85"), slippage=D("0.05")))
+    broker = _FakeBroker()
+    broker.positions_ = []  # the long is GONE -- operator disposed of it directly
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    asyncio.run(detect_and_recover_stop_fills(comp, alerts, _quote_provider,
+                                              today="2026-07-14", max_age_days=1))
+
+    assert recover.calls == []
+    assert not any(isinstance(e, StanddownRecorded) for e in events), \
+        "an aged-out entry must never journal a NEW standdown"
+    assert not any(level == "info" and "standing down" in msg for level, msg, _ in alerts.calls)
+
+
+def test_catchup_cutoff_still_standsdown_a_recent_stopped_side():
+    """Companion to the above: WITHIN the window, the exact same shape still
+    produces the standdown exactly as before the cutoff existed."""
+    events = list(_condor_filled_events())
+    events.append(ShortStopped(entry_id=ENTRY_ID, side="CALL", fill=D("3.85"), slippage=D("0.05")))
+    broker = _FakeBroker()
+    broker.positions_ = []
+    recover, alerts = _RecoverSpy(), _Alerts()
+    comp = _Comp(broker, events, recover)
+
+    asyncio.run(detect_and_recover_stop_fills(comp, alerts, _quote_provider,
+                                              today="2026-07-10", max_age_days=5))
+
+    assert recover.calls == []
+    standdown_events = [e for e in events if isinstance(e, StanddownRecorded)]
+    assert len(standdown_events) == 1
+    assert any(level == "info" and "standing down" in msg for level, msg, _ in alerts.calls)
+
+
 # --- precise broker_order_id path (every stop placed since v1.60) -------------
 
 def test_catch_up_via_precise_broker_order_id():

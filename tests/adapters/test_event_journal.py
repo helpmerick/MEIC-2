@@ -64,7 +64,6 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.ForeignDetected: ev.ForeignDetected(symbol="AAPL"),
         ev.ForeignReduction: ev.ForeignReduction(symbol="SPXW  260709P05600000",
                                                   from_qty=2, to_qty=1),
-        ev.EntryCompleted: ev.EntryCompleted(entry_id="2026-07-09#1"),
         ev.EntryMarkSample: ev.EntryMarkSample(
             entry_id="2026-07-09#1", at="2026-07-09T10:01:00+00:00", spot=D("5650.25"),
             put_short_mid=D("3.00"), put_long_mid=None, call_short_mid=D("2.50"),

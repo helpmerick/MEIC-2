@@ -12,7 +12,6 @@ from meic.adapters.persistence.event_store import SqliteEventStore
 from meic.domain.events import (
     CondorFilled,
     DayArmed,
-    EntryCompleted,
     LongSold,
     ShortStopped,
     SideExpired,
@@ -35,7 +34,6 @@ def _scripted_day(seed: int):
                 events.append(LongSold(entry_id=eid, side=side, recovery=D(str(rng.choice(["0.00", "0.40"])))))
             else:
                 events.append(SideExpired(entry_id=eid, side=side))
-        events.append(EntryCompleted(entry_id=eid))
     return events
 
 
