@@ -37,6 +37,7 @@ from meic.application.order_intent import (
 )
 from meic.config.validation import (
     TOMBSTONE_KEYS_V167,
+    TOMBSTONE_KEYS_V168,
     ConfigRejected,
     validate_config,
 )
@@ -64,6 +65,12 @@ def _():
     test_constructing_a_stop_limit_order_intent_raises()
     test_config_loader_rejects_stop_order_type()
     test_no_production_source_constructs_a_stop_limit_order()
+
+
+@then("stop_limit_offset_ticks is likewise rejected (v1.68 sweep completion)")
+def _():
+    test_config_loader_rejects_stop_limit_offset_ticks()
+    test_the_v168_tombstone_set_is_exactly_this_one_key()
 
 
 # --- vocabulary: stop_limit is not a member of any order-type set ------------
@@ -97,6 +104,16 @@ def test_config_loader_rejects_stop_limit_escalation_seconds():
 
 def test_the_v167_tombstone_set_is_exactly_these_two_keys():
     assert TOMBSTONE_KEYS_V167 == frozenset({"stop_order_type", "stop_limit_escalation_seconds"})
+
+
+def test_config_loader_rejects_stop_limit_offset_ticks():
+    with pytest.raises(ConfigRejected) as exc:
+        validate_config({"stop_limit_offset_ticks": 4})
+    assert exc.value.key == "stop_limit_offset_ticks"
+
+
+def test_the_v168_tombstone_set_is_exactly_this_one_key():
+    assert TOMBSTONE_KEYS_V168 == frozenset({"stop_limit_offset_ticks"})
 
 
 # --- the dead EC-STP-08 module is actually deleted, not merely unwired ------

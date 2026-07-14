@@ -5,11 +5,15 @@ from types import SimpleNamespace
 
 from meic.composition.wiring_registry import (
     REGISTRY,
+    SAFETY_GATE_REGISTRY,
     SPEC_DIR,
+    _closes_over_real_state,
     all_rule_ids,
     check_all,
+    check_all_safety_gate_inputs,
     spec_runtime_component_rule_ids,
     unaccounted_rule_ids,
+    unexpectedly_not_live,
 )
 
 
@@ -84,6 +88,73 @@ def test_spec_runtime_component_rule_ids_finds_the_known_ones():
     found = spec_runtime_component_rule_ids()
     assert "DCY-01" in found       # "the watcher is event-driven..."
     assert "STP-03b" in found or "STP-08a" in found
+
+
+# --- NFR-07 v1.68 constant-signal species: SAFETY_GATE_REGISTRY machinery --
+# (the real live_app() proof lives in tests/bdd/test_tc_nfr_07_constant_signal.py;
+# this is unit coverage of the standalone helper/registry logic in isolation.)
+
+def test_closes_over_real_state_rejects_a_bare_constant_lambda():
+    """The exact shape of the pinned regression: `lambda: False` has no free
+    variables and is not a bound method -- the heuristic must reject it."""
+    assert _closes_over_real_state(lambda: False) is False
+    assert _closes_over_real_state(lambda: True) is False
+
+
+def test_closes_over_real_state_accepts_a_real_closure():
+    captured = {"flag": True}
+
+    def reads_captured():
+        return captured["flag"]
+
+    assert _closes_over_real_state(reads_captured) is True
+
+
+def test_closes_over_real_state_accepts_a_bound_method_on_a_real_instance():
+    class _Real:
+        def check(self):
+            return True
+
+    assert _closes_over_real_state(_Real().check) is True
+
+
+def test_safety_gate_registry_entries_are_well_formed():
+    assert len(SAFETY_GATE_REGISTRY) > 0
+    for entry in SAFETY_GATE_REGISTRY:
+        assert entry.rule_ids, f"{entry.gate_input} declares no rule ids"
+        assert entry.gate_input
+        assert entry.proof
+        assert callable(entry.live_check)
+
+
+def test_flatten_in_progress_is_the_named_pinned_regression_in_the_registry():
+    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "flatten_in_progress")
+    assert "RSK-01a" in entry.rule_ids
+    assert entry.known_gap is None   # this one must actually be proven live, never excused
+
+
+def test_halted_is_the_only_documented_known_gap_the_ninth_finding():
+    gaps = {e.gate_input for e in SAFETY_GATE_REGISTRY if e.known_gap}
+    assert gaps == {"halted"}
+
+
+def test_check_all_safety_gate_inputs_returns_one_result_per_entry_and_fails_closed():
+    """A totally empty state (no runtime, no commands, no chain_snapshots
+    reachable) must report every entry as NOT live -- never a false pass."""
+    state = SimpleNamespace()
+    results = check_all_safety_gate_inputs(state)
+    assert len(results) == len(SAFETY_GATE_REGISTRY)
+    assert all(not result.live for _entry, result in results)
+
+
+def test_unexpectedly_not_live_excludes_the_documented_known_gap():
+    """Against an empty state every entry fails its live_check -- but the
+    hard-fail set must exclude `halted` (a DOCUMENTED gap, not a silent
+    regression) while still flagging every genuinely unproven input."""
+    state = SimpleNamespace()
+    failing = unexpectedly_not_live(state)
+    assert "halted" not in failing
+    assert "flatten_in_progress" in failing   # unreachable off an empty state -> correctly flagged
 
 
 def test_nfr07_wiring_registry_is_self_policing():

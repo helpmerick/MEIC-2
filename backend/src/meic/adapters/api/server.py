@@ -18,6 +18,7 @@ import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Callable
 
 from fastapi import HTTPException, Query
 
@@ -1774,7 +1775,7 @@ async def _run_decay_watcher_loop(
         await asyncio.sleep(idle_seconds)
 
 
-def _wire_live_day(comp, env: dict[str, str]) -> dict:
+def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[], bool]) -> dict:
     """Assemble the live trading day: selector, gates, runtime, ▶, pre-flight.
 
     Thin: every decision that could leave a SAFETY RAIL unarmed lives in
@@ -1783,6 +1784,16 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     LiveRuntime with max_day_risk, order_cap and buying_power all left at None,
     and threw the composed schedule rows away — while the paper composition and
     every unit test had all of it armed.
+
+    `flatten_in_progress` (RSK-01a, v1.68 constant-signal fix): REQUIRED, no
+    default. `LiveMarketGates.for_live()` itself still defaults this input to
+    a dead `lambda: False` for callers with no real signal (e.g. paper/tests);
+    THIS function, wiring the real live day, must never be one of them — the
+    caller (`live_app()`) supplies a late-bound cell because the real signal
+    (`PanelCommands.flatten_in_progress`) is only constructed AFTER this
+    function runs. Requiring the argument here (vs. silently accepting the
+    dataclass default) is what makes forgetting to pass it a loud call-site
+    error instead of a silent green gate.
     """
     from meic.application.timeouts import run_warmup
     from meic.application.warmup import ALERT_AT_SECONDS
@@ -1879,8 +1890,14 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     # UTC boot-time date that could name the wrong year right at a New Year's
     # Eve boundary (UTC rolls to Jan 1 hours before ET does).
     _cal_anchor = trading_day(comp.clock.now())
+    # RSK-01a (v1.68 constant-signal fix, NFR-07's pinned regression): this
+    # used to fall through to LiveMarketGates' dead `lambda: False` default --
+    # present, called, green forever, never actually reading whether a
+    # Flatten All is executing. `flatten_in_progress` is now the REQUIRED
+    # caller-supplied live signal (see this function's docstring).
     gates = LiveMarketGates.for_live(clock=comp.clock, data_fresh=_data_fresh,
                                      session_valid=_session_valid, buying_power_ok=_buying_power_ok,
+                                     flatten_in_progress=flatten_in_progress,
                                      holidays=holidays_near(_cal_anchor, years_ahead=10),
                                      half_days=half_days_near(_cal_anchor, years_ahead=10))
 
@@ -2135,11 +2152,31 @@ def live_app():
     # so the UI shows LIVE (and the Confirm-Live modal shows the real-money warning).
     comp.state.trading_mode = "live"
 
+    # RSK-01a (v1.68, operator-ratified fix for the NFR-07 constant-signal
+    # regression): PanelCommands is the real owner of `flatten_in_progress`
+    # (true only for the duration of its own `flatten()` call), but it is
+    # constructed AFTER `_wire_live_day` below builds the live gates -- see
+    # `commands = PanelCommands(...)` further down. Reordering construction
+    # would ripple through every other thing `_wire_live_day` builds (the
+    # selector, the manual-entry wiring, the pre-flight checks all close over
+    # objects built inside it), so instead this late-binding cell is the seam:
+    # the gate holds `flatten_signal` (a plain callable) from the start, and
+    # `flatten_signal.target` is pointed at the real `commands` once it exists
+    # a few lines down. Every gate evaluation reads `.target` at CALL time
+    # (never cached), so this is a live signal, not a snapshot taken here.
+    class _FlattenSignalCell:
+        target: object | None = None
+
+        def __call__(self) -> bool:
+            return bool(self.target is not None and self.target.flatten_in_progress)
+
+    flatten_signal = _FlattenSignalCell()
+
     # The live day, assembled with EVERY safety rail armed. Built BEFORE create_app
     # so the panel's ▶ button and pre-flight get the real thing, not stubs. See
     # composition/live_wiring.py — and tests/composition/test_live_wiring.py, which
     # asserts on those functions precisely because this is where rails go missing.
-    live = _wire_live_day(comp, env)
+    live = _wire_live_day(comp, env, flatten_in_progress=flatten_signal)
 
     def _drill_guidance_provider() -> list[str]:
         """UC-12 v1.56: advisory-only warnings for the drill confirmation
@@ -2202,6 +2239,10 @@ def live_app():
                              # UC-12 v1.56: the outage-drill dialog's advisory warnings.
                              drill_guidance_provider=_drill_guidance_provider,
                              default_drill_outage_seconds=_drill_outage_seconds(env))
+    # RSK-01a: bind the late-binding cell above to the now-real `commands` --
+    # every entry-gate evaluation from this point on reads
+    # `commands.flatten_in_progress` LIVE (never a constant, never cached).
+    flatten_signal.target = commands
     # FEATURE 3 + UI-13/14/15: live P/L, then the shared TPF/TPT profit%, both
     # off the already-held chain snapshot — no new subscription — PLUS the
     # NFR-04 QuoteHub for a live-first mark per leg (falls back to the
