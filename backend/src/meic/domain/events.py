@@ -400,6 +400,58 @@ class OwnOrderIdBackfilled(Event):
 
 
 @dataclass(frozen=True)
+class OwnOrderIdRetracted(Event):
+    """OWN-01 append-only retraction: an id previously journaled (via a direct
+    `broker_order_id` field OR `OwnOrderIdBackfilled`) as one of the bot's own
+    broker orders is WITHDRAWN from the bot's own-scope, because it was in
+    fact an operator's out-of-band order on the shared account, not the
+    bot's. The real incident this exists for (2026-07-10, CALL side): the
+    bot's live stop-fill detection did not exist yet when the CALL short
+    stopped, so the bot never ran the LEX ladder; the OPERATOR sold the
+    orphaned long himself, from his own platform, with his own order
+    `482760202` -- and a later RPT-16 backfill mistakenly journaled THAT
+    order id as `OwnOrderIdBackfilled(role="lex")` for the bot's entry.
+    OWN-01 requires the bot's ledger contain ONLY the bot's own orders; an
+    operator's personal trade sitting inside the bot's own-scope is the same
+    shared-account leak class that once made RPT-15 report a bogus
+    -$534.46 on a winning trade. The fix is ratified as strict OWN-01: strip
+    it, operator ruling 2026-07-14.
+
+    The event log is append-only -- nothing is ever deleted or rewritten, so
+    this is a correction record, not an edit: the mistaken
+    `OwnOrderIdBackfilled` stays in the log unchanged (drill-down history is
+    preserved), and THIS event is what withdraws its effect going forward.
+    `reason` is required (unlike the optional `at`/`note`) because a
+    retraction without a stated reason is exactly the kind of silent
+    correction OWN-01/RPT-15 forbid elsewhere in this file -- e.g.
+    "operator's own out-of-band order, not the bot's".
+
+    METADATA ONLY, same convention as `OwnOrderIdBackfilled`: carries no
+    money and is folded into NO P&L projection. Its ONLY effect is on
+    `reporting/own_orders.py::own_order_ids`, which must compute
+    `claimed - retracted` -- CRITICAL TRAP: this event itself carries a
+    `broker_order_id` field, the same generic field `own_order_ids` scans
+    for on every event, so a naive scan would re-claim the very id being
+    retracted. `own_order_ids` must exclude `OwnOrderIdRetracted` events from
+    the "claimed" side of that scan before subtracting the retracted set
+    (pinned by a regression test in tests/reporting/test_own_orders.py).
+    Written only by `application/retract_own_order_id.retract_own_order_ids`,
+    which is idempotent per (entry_id, broker_order_id), mirroring
+    `application/backfill_order_ids.backfill_own_order_ids`.
+
+    Does NOT touch, weaken, or suppress the LEX-07 watchdog: the bot really
+    did fail to sell that long, and the operator really did have to rescue
+    it from his own platform. That alert reads off `ShortStopped`/
+    `LongSaleStarted`/`EntryClosed` only and must keep firing regardless of
+    this event."""
+    entry_id: str
+    broker_order_id: str
+    reason: str
+    at: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class ForeignDetected(Event):
     symbol: str  # OWN-03: FOREIGN quarantine, alert-only
 

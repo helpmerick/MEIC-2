@@ -104,6 +104,14 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.OwnOrderIdBackfilled: ev.OwnOrderIdBackfilled(
             entry_id="2026-07-10#1", broker_order_id="482621396", role="entry",
             at="2026-07-12T09:00:00-04:00", note="operator-authorised backfill, RPT-16"),
+        # OWN-01 append-only retraction (2026-07-14): withdraws an id
+        # mistakenly claimed as the bot's own (the real incident: the
+        # operator's own order 482760202 was backfilled as role="lex").
+        # METADATA ONLY -- see events.py docstring.
+        ev.OwnOrderIdRetracted: ev.OwnOrderIdRetracted(
+            entry_id="2026-07-10#1", broker_order_id="482760202",
+            reason="operator's own out-of-band order, not the bot's",
+            at="2026-07-14T09:00:00-04:00", note="operator ruling 2026-07-14, strict OWN-01"),
     }
 
 
