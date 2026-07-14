@@ -67,3 +67,34 @@ def test_old_style_long_sale_started_still_constructs_with_none_defaults():
     new field, not a TypeError."""
     e = LongSaleStarted(entry_id="e1", side="PUT")
     assert e.mark_bid is None and e.mark_ask is None and e.intrinsic is None
+
+
+# --- PNL-01: EC-LEX-08 floor path (rest_floor / record_floor_sold) ------------
+
+def test_record_floor_sold_journals_a_non_zero_closing_fee():
+    """EC-LEX-08: a resting intrinsic-floor sell discovered filled between
+    ticks (`stop_fill_watch._try_recover` / `readopt_resting_floors`) calls
+    this directly -- outside `recover()`'s own ladder -- so it needs its own
+    fee wiring, not a free ride off `_sold`'s. Per-share: real $0.72
+    (clearing+ORF+exchange, no commission on a close) / 100."""
+    from meic.domain.events import LongSold
+
+    events: list = []
+    rec = _rec(events)
+    rec.record_floor_sold("e1", "PUT", D("0.10"))
+    sold = next(e for e in events if isinstance(e, LongSold))
+    assert sold.fee == D("0.0072")  # closing a long: no commission
+
+
+def test_record_floor_sold_fee_is_contracts_invariant():
+    """PNL-01: the fee is PER-SHARE (see domain/fees.py) -- `entry_dollars`
+    rescales by contracts exactly ONCE, at the reporting layer, off the
+    entry's own leg qty. `record_floor_sold`'s own `qty` sizes the ORDER, not
+    a second, double-counting fee multiplication."""
+    from meic.domain.events import LongSold
+
+    events: list = []
+    rec = _rec(events)
+    rec.record_floor_sold("e1", "PUT", D("0.10"), qty=2)
+    sold = next(e for e in events if isinstance(e, LongSold))
+    assert sold.fee == D("0.0072")

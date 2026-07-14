@@ -56,6 +56,11 @@ def test_live_shaped_lex_fill_mid_rung_never_duplicates():
     assert len(lex_submits) == 1, f"LEX order submitted {len(lex_submits)}x (duplicate!)"
     assert sum(isinstance(e, LongSold) for e in events) == 1
     assert sum(isinstance(e, SideClosed) for e in events) == 1
+    sold = next(e for e in events if isinstance(e, LongSold))
+    # PNL-01: a LEX sale is a CLOSE (sell-to-close, commission-free) but
+    # clearing/ORF/exchange still apply -- never the bare 0 default. Per-share:
+    # real $0.72 / 100.
+    assert sold.fee == D("0.0072")
 
 
 def test_replace_race_mid_ladder_is_recorded_sold_not_raised():

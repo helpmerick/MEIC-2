@@ -152,3 +152,104 @@ def test_fill_matches_handles_paper_dicts_and_live_order_objects():
     assert _fill_matches(filled, "999") is False
     partial = SimpleNamespace(id=482314017, status="Partially Filled")
     assert _fill_matches(partial, "482314017") is False        # partial is not filled
+
+
+# --- PNL-01: fee + short_premium wiring (fail-first against the pre-fix code,
+# which took the dataclass default fee=Decimal("0")/short_premium=Decimal("0")
+# on every construction site) --------------------------------------------------
+
+def test_condor_filled_journals_a_non_zero_fee_and_pnl_is_net_of_it():
+    """PNL-01: the entry's fee must be RECORDED at fill time, non-zero, and
+    the entry projection's pnl must be net of it (`net_credit - fees`, per
+    domain/projection.py). Before this fix, EVERY CondorFilled took the
+    `fee=Decimal("0")` dataclass default -- the entry card overstated pnl by
+    the full commission all day."""
+    from meic.domain.projection import fold
+
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
+    clock = FakeClock(SCHEDULED)
+    asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert len(filled) == 1
+    assert filled[0].fee > D("0")            # THE fail-first assertion
+
+    day = fold(events)
+    entry = next(iter(day.entries.values()))
+    assert entry.fees == filled[0].fee
+    assert entry.pnl == entry.net_credit - entry.fees   # pnl is net of the fee
+
+
+def test_short_premium_is_the_sum_of_the_short_legs_broker_prices():
+    """UI-14: `short_premium` = sum of the SHORT legs' broker-allocated
+    prices, from the SAME leg data `net_credit` already uses -- no new I/O,
+    no inference. Fails against the pre-fix default of Decimal("0")."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill"))
+
+    async def fake_fill_legs(order_id):
+        return (
+            FilledLeg(symbol="SPXW260709P07535000", right="P", role="short", qty=1, price=D("1.80")),
+            FilledLeg(symbol="SPXW260709P07510000", right="P", role="long", qty=1, price=D("0.08")),
+            FilledLeg(symbol="SPXW260709C07540000", right="C", role="short", qty=1, price=D("1.95")),
+            FilledLeg(symbol="SPXW260709C07565000", right="C", role="long", qty=1, price=D("0.07")),
+        )
+    broker.fill_legs = fake_fill_legs
+
+    condor = Condor(1, D("7535"), D("7540"), D("1.85"), D("2.00"), D("3.50"), D("2.00"),
+                    put_long=D("7510"), call_long=D("7565"), expiration=date(2026, 7, 9))
+    clock = FakeClock(SCHEDULED)
+    asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=condor, gates=PASS))
+
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert filled[0].short_premium == D("1.80") + D("1.95")   # shorts only, 3.75
+
+
+def test_short_premium_is_zero_when_no_broker_allocation_exists():
+    """The honest paper/missing-allocation case (mirrors
+    `test_record_fill_falls_back_to_rung_price_when_any_leg_price_is_missing`):
+    no allocation to sum, so short_premium stays the honest 0.00 default --
+    never fabricated."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
+    clock = FakeClock(SCHEDULED)
+    asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert filled[0].short_premium == D("0")
+
+
+def test_paper_fills_still_get_a_real_fee_even_without_broker_allocated_prices():
+    """SIM-05: paper runs the identical pipeline. `FilledLeg.role`/`.qty` are
+    populated even when `.price` is None (the honest paper case) --
+    `simulated_fill_legs` always sets them -- so a paper CondorFilled's fee
+    must be non-zero too, computed from role/qty alone."""
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
+    clock = FakeClock(SCHEDULED)
+    asyncio.run(_svc(broker, events, clock).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert all(leg.price is None for leg in filled[0].legs)   # honest paper case
+    assert filled[0].fee > D("0")                             # yet fee is still real
+
+
+def test_a_custom_fee_model_is_honoured_by_execute_entry_attempt():
+    from meic.config.fee_model import FeeModel
+
+    broker, events = FakeBroker(), []
+    broker.script_submit(Scripted("fill", payload={"net_credit": "4.00"}))
+    clock = FakeClock(SCHEDULED)
+    zero_fees = FeeModel(commission_open=D("0"), clearing_fee=D("0"),
+                         regulatory_fee=D("0"),
+                         index_option_fees={}, default_exchange_fee=D("0"))
+    asyncio.run(_svc(broker, events, clock, fee_model=zero_fees).attempt(
+        day="d", scheduled=SCHEDULED, condor=CONDOR, gates=PASS))
+
+    filled = [e for e in events if isinstance(e, CondorFilled)]
+    assert filled[0].fee == D("0")

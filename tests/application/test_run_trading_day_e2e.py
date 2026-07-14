@@ -140,4 +140,14 @@ def test_full_scripted_day_capstone():
     # P&L sanity: 6 entries banked 4.00 each; entry 2 paid 3.80 to stop, recovered
     # ~0.40 on the long; entry 3 paid 0.05 to decay-close. Positive day.
     assert rpt.day_pnl > 0
-    assert rpt.per_entry_pnl["2026-07-06#2"] == D("4.00") - D("3.80") + D("0.40")  # 0.60
+    # PNL-01: entry 2's pnl is net of its recorded fees -- the CondorFilled
+    # entry-open fee (4 legs: 2 short @ 0.0172/share sell-to-open + 2 long @
+    # 0.0072/share buy-to-open = 0.0488/share) plus the REAL LongSold
+    # close fee (0.0072/share). Its `ShortStopped` above is appended directly
+    # by this test (not through close_entry/watchdog/reconcile), so it
+    # carries the honest 0.00 default, same as every other event this test
+    # constructs by hand rather than through the real pipeline.
+    entry_open_fee = D("0.0488")
+    long_sold_fee = D("0.0072")
+    assert rpt.per_entry_pnl["2026-07-06#2"] == (
+        D("4.00") - D("3.80") + D("0.40") - entry_open_fee - long_sold_fee)  # 0.5440

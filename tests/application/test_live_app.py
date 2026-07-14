@@ -533,18 +533,24 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
 
     from meic.adapters.api.server import live_app
     from meic.application.event_log import DurableEventLog
+    from meic.application.market_calendar import trading_day_str
     from meic.domain.events import CondorFilled, DayArmed
 
     _cert_env(monkeypatch, tmp_path)
     monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
 
     # 2026-07-13 fix: /entries is now scoped to TODAY (commands.day(), which
-    # here falls back to the real SystemClock's UTC date since live_app()'s
-    # composition wires no fake `day` provider) — so the entry stamped here
-    # must fall on that same real day, or the day-scope filter would (rightly)
-    # hide it, and this durability check would fail for a reason unrelated to
-    # durability.
-    today = datetime.now(timezone.utc).date().isoformat()
+    # here falls back to the real SystemClock's ET TRADING DAY, via the one
+    # shared `trading_day_str` helper, since live_app()'s composition wires no
+    # fake `day` provider) — so the entry stamped here must fall on that same
+    # ET day, or the day-scope filter would (rightly) hide it, and this
+    # durability check would fail for a reason unrelated to durability.
+    # (DAY-03 live bug, 2026-07-13: `commands.day()` used to derive "today" via
+    # `.astimezone()` with no argument, i.e. the OS/operator machine's LOCAL
+    # timezone -- not ET, and not UTC either, despite this test's old comment
+    # claiming the latter. This test genuinely failed under that bug whenever
+    # the runner's local zone disagreed with the ET trading day.)
+    today = trading_day_str(datetime.now(timezone.utc))
 
     app1 = live_app()
     comp1 = app1.state.composition
@@ -560,6 +566,77 @@ def test_live_app_event_log_is_durable_and_survives_a_rebuild(monkeypatch, tmp_p
 
     cards = TestClient(app2).get("/entries").json()
     assert any(c["entry_id"] == f"{today}#1" and c["net_credit"] == "4.00" for c in cards)
+
+
+def test_day03_entry_survives_the_day_scope_filter_at_23_53_utc_on_a_trading_day(monkeypatch, tmp_path):
+    """DAY-03, THE confirmed live bug, reproduced through the REAL production
+    wiring (not a unit test of the helper in isolation): `commands.day()`
+    (server.py's `build_manual_entry(..., day=...)`) used to derive "today"
+    via `datetime.now(timezone.utc).astimezone().date().isoformat()` --
+    `.astimezone()` with no argument converts to the SYSTEM's local timezone,
+    and (just as importantly) IGNORES any injected clock entirely, always
+    reading the REAL wall clock instead.
+
+    Freezing `comp.clock` at 23:53 UTC on 2026-07-13 (19:53 ET, still the
+    13th) pins the scenario without depending on the test runner's own OS
+    timezone or the real wall-clock date: against the OLD code, `commands.
+    day()` ignores this frozen clock and returns whatever day the REAL clock
+    reads when the test actually runs (never "2026-07-13" outside one
+    coincidental calendar day), so the entry below would NOT be returned by
+    /entries' day-scope filter -- exactly the live incident (`2026-07-13#2`
+    vanished from the board)."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.clocks import MutableClock
+    from meic.domain.events import CondorFilled, DayArmed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+    comp.clock = MutableClock(datetime(2026, 7, 13, 23, 53, tzinfo=timezone.utc))
+
+    assert app.state.commands.day() == "2026-07-13"
+
+    comp.events.append(DayArmed(date="2026-07-13", entry_count=1))
+    comp.events.append(CondorFilled(entry_id="2026-07-13#2", net_credit=Decimal("4.00")))
+
+    cards = TestClient(app).get("/entries").json()
+    assert any(c["entry_id"] == "2026-07-13#2" for c in cards)
+
+
+def test_day03_mid_session_entry_stamps_todays_et_day_not_a_rolled_over_local_date(monkeypatch, tmp_path):
+    """The Tokyo case (operator ruling, DAY-03 fix): 15:00 UTC on 2026-07-13
+    is 11:00 EDT -- mid-session -- while a machine in Asia/Tokyo (UTC+9) has
+    ALREADY rolled its own local wall-clock date to 2026-07-14. An entry
+    fired at this instant must still be stamped "2026-07-13#n", never
+    tomorrow's date."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from meic.adapters.api.server import live_app
+    from meic.application.clocks import MutableClock
+    from meic.domain.events import CondorFilled, DayArmed
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+
+    app = live_app()
+    comp = app.state.composition
+    comp.clock = MutableClock(datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc))
+
+    assert app.state.commands.day() == "2026-07-13"
+
+    comp.events.append(DayArmed(date="2026-07-13", entry_count=1))
+    comp.events.append(CondorFilled(entry_id="2026-07-13#3", net_credit=Decimal("4.00")))
+
+    cards = TestClient(app).get("/entries").json()
+    assert any(c["entry_id"] == "2026-07-13#3" for c in cards)
 
 
 # --- UC-12 v1.56: outage-drill LIVE wiring capstone ----------------------------

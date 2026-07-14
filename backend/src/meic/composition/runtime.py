@@ -19,6 +19,7 @@ from decimal import Decimal as D
 
 from meic.adapters.sim.simulated_broker import SimLedger
 from meic.application.execute_entry import Condor
+from meic.application.market_calendar import trading_day
 from meic.application.protect_position import ShortLeg
 from meic.application.recover_long import Quote
 from meic.composition.paper import PaperComposition
@@ -38,7 +39,7 @@ class PaperDemoRuntime:
                       put_long=put_short - 50, call_long=call_short + 50,
                       put_short_mid=D("3.00"), call_short_mid=D("2.00"),
                       mid_credit=D("4.00"), min_total_credit=D("2.00"),
-                      expiration=self.comp.clock.now().date(), contracts=contracts)
+                      expiration=trading_day(self.comp.clock.now()), contracts=contracts)
 
     def _reset(self) -> None:
         self.comp.events.clear()

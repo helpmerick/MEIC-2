@@ -76,7 +76,7 @@ def test_tc_stp_11_stop_filled_while_down_synthesizes_event_and_starts_lex():
         broker_working_order_ids=set(),
         mid_lex_sides=[], stale_entry_order_ids=[],
     )
-    assert plan.synthesize_stopped == [("e1", "PUT", D("3.90"), D("0.10"))]
+    assert plan.synthesize_stopped == [("e1", "PUT", D("3.90"), D("0.10"), 1)]
     assert plan.run_lex == [("e1", "PUT")]
 
     asyncio.run(Reconcile(RecordingBroker(), events).execute(plan))
@@ -88,3 +88,27 @@ def test_tc_stp_11_stop_filled_while_down_synthesizes_event_and_starts_lex():
     assert stopped.fill == D("3.90") and stopped.slippage == D("0.10")
     assert stopped.initiator == "resting_stop"
     assert any(isinstance(e, LongSaleStarted) for e in events)
+    # PNL-01: a synthesized stop-out is still a CLOSE (commission-free), but
+    # clearing/ORF/exchange still apply. Per-share: real $0.72 / 100.
+    assert stopped.fee == D("0.0072")
+
+
+def test_tc_stp_11_synthesized_fee_is_contracts_invariant():
+    """PNL-01: the fee is PER-SHARE (domain/fees.py) -- `reporting/folds.py`'s
+    `entry_dollars` rescales by the entry's contracts exactly ONCE, at the
+    reporting layer. A 3-contract short's synthesized stop-out carries the
+    SAME per-share fee as a 1-contract one; TrackedShort.contracts sizes the
+    re-placed stop (ENT-04), not a second, double-counting fee multiplication."""
+    events: list = []
+    plan = Reconcile(RecordingBroker(), events).plan(
+        tracked_shorts=[
+            TrackedShort("e1", "PUT", "SPXW_P", stop_order_id="s1", stop_filled=True,
+                         stop_fill_price=D("3.90"), stop_trigger=D("3.80"), contracts=3),
+        ],
+        broker_working_order_ids=set(),
+        mid_lex_sides=[], stale_entry_order_ids=[],
+    )
+    assert plan.synthesize_stopped == [("e1", "PUT", D("3.90"), D("0.10"), 3)]
+    asyncio.run(Reconcile(RecordingBroker(), events).execute(plan))
+    stopped = next(e for e in events if isinstance(e, ShortStopped))
+    assert stopped.fee == D("0.0072")

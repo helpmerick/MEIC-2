@@ -11,10 +11,12 @@ The leftover long is left to expire (DCY-03, SIDE_CLOSED_DECAY).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
+from meic.config.fee_model import FeeModel
 from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped
+from meic.domain.fees import fee_for_leg
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import OrderIntent, buy_to_close_leg, protective_stop, right_of
@@ -26,6 +28,7 @@ class DecayWatcher:
     events: list
     decay_buyback_trigger: Decimal = Decimal("0.05")
     decay_confirmation_evals: int = 2
+    fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01
     _count: int = 0
 
     # --- DCY-01 gates ---------------------------------------------------------
@@ -110,9 +113,12 @@ class DecayWatcher:
     async def complete(self, *, entry_id: str, side: str) -> None:
         """Buyback filled ⇒ side = SIDE_CLOSED_DECAY (long left to expire,
         DCY-03), recorded as a `decay` close (CLS-04)."""
+        # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
+        # (see domain/fees.py) -- never scaled by contracts here.
+        fee = fee_for_leg(self.fee_model, role="short", opening=False)
         self.events.append(ShortStopped(
             entry_id=entry_id, side=side, fill=self.decay_buyback_trigger,
-            slippage=Decimal("0"), initiator="decay"))
+            slippage=Decimal("0"), initiator="decay", fee=fee))
         self.events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
 
     # --- DCY-02.3 re-inflation guard ------------------------------------------

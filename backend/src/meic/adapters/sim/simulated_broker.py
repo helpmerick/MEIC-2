@@ -20,6 +20,8 @@ from decimal import Decimal
 from meic.adapters.occ import simulated_fill_legs
 from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from meic.application.order_intent import OrderIntent
+from meic.config.fee_model import FeeModel
+from meic.domain.fees import fee_for_leg
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
 
 
@@ -107,6 +109,7 @@ class SimulatedBroker:
         stop_slippage_ticks: int = 3,
         fee_per_leg: Decimal = Decimal("0"),
         events: list | None = None,
+        fee_model: FeeModel | None = None,  # PNL-01 -- SIDE_STOPPED event fee (SIM-05 parity)
     ) -> None:
         self._ids = itertools.count(1)
         self._orders: dict[str, SimOrder] = {}
@@ -115,6 +118,7 @@ class SimulatedBroker:
         self._through = fill_through_ticks
         self._slippage = stop_slippage_ticks
         self._fee = fee_per_leg
+        self._fee_model = fee_model or FeeModel()
         self.events: list = events if events is not None else []  # shared with the pipeline (SIM-05)
         self._market = None  # provider(intent) -> (natural, mid, is_credit); paper's real feed
 
@@ -152,9 +156,12 @@ class SimulatedBroker:
             # SIM-05: a paper stop fill emits the SAME event a live fill would,
             # routing the side into SIDE_STOPPED -> LEX through the normal pipeline.
             side = "PUT" if o.intent.legs[0].right == "P" else "CALL"
+            # PNL-01: closing a short (buy-to-close) -- commission-free.
+            # Per-share (see domain/fees.py) -- never scaled by contracts here.
+            fee = fee_for_leg(self._fee_model, role="short", opening=False)
             self.events.append(ShortStopped(
                 entry_id=o.intent.entry_id, side=side, fill=price,
-                slippage=price - trigger, initiator="resting_stop"))
+                slippage=price - trigger, initiator="resting_stop", fee=fee))
             return price
         return None
 

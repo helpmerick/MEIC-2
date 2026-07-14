@@ -67,7 +67,9 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
+from meic.config.fee_model import FeeModel
 from meic.domain.events import DecayBuybackPlaced, EntryClosed, LexOrderPlaced, ShortStopped, StopPlaced
+from meic.domain.fees import fee_for_leg
 from meic.domain.projection import fold
 
 from .execute_entry import _fill_matches
@@ -248,7 +250,7 @@ async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None,
     return False, None, None
 
 
-async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list[tuple[str, str, Decimal]]]:
+async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list[tuple[str, str, Decimal, int]]]:
     """The EC-STP-06 candidates for THIS tick: an open, stop-placed short
     whose stop is no longer resting and DID fill. The first list is reused
     directly by `Reconcile.plan()` -- the SAME frame boot reconciliation
@@ -269,7 +271,7 @@ async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list
         latent hazard -- a decay buyback IS a buy-to-close on the short's own
         symbol)."""
     tracked: list[TrackedShort] = []
-    decay_closed: list[tuple[str, str, Decimal]] = []
+    decay_closed: list[tuple[str, str, Decimal, int]] = []
     decay_specs = _decay_buyback_specs(events)
     decay_ids = {spec.broker_order_id: spec for spec in decay_specs.values()}
     for entry_id, side, leg, spec in _open_short_legs(events):
@@ -280,7 +282,7 @@ async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list
             filled, price = await _resolve_by_order_id(broker, dspec.broker_order_id)
             if filled:
                 decay_closed.append((entry_id, side,
-                                     price if price is not None else dspec.price))
+                                     price if price is not None else dspec.price, leg.qty))
                 continue  # SIDE_CLOSED_DECAY -- never a stop-out (STP-08a)
         if spec.broker_order_id:
             filled, price = await _resolve_by_order_id(broker, spec.broker_order_id)
@@ -289,7 +291,7 @@ async def build_tracked_shorts(broker, events) -> tuple[list[TrackedShort], list
             if filled and matched_oid is not None and matched_oid in decay_ids:
                 bspec = decay_ids[matched_oid]
                 decay_closed.append((entry_id, side,
-                                     price if price is not None else bspec.price))
+                                     price if price is not None else bspec.price, leg.qty))
                 continue  # the "stop fill" was in fact the DCY buyback
         if not filled:
             continue  # neither resting nor fillable -- ambiguous; leave for boot
@@ -491,7 +493,8 @@ async def _try_recover(comp, alerts, quote_provider, entry_id: str, side: str,
         filled, price = await _resolve_by_order_id(broker, floor[0])
         if filled:
             comp.recover.record_floor_sold(entry_id, side,
-                                           price if price is not None else floor[1])
+                                           price if price is not None else floor[1],
+                                           qty=long_leg.qty)
             floor_orders.pop(key, None)
             getattr(comp, "_stop_fill_quote_deferrals", {}).pop(key, None)
             getattr(comp, "_stop_fill_quote_deferred_since", {}).pop(key, None)
@@ -651,12 +654,17 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
     # long is LEFT TO EXPIRE (DCY-03): the decay initiator excludes the side
     # from the pending set, so no LEX ladder ever starts. Appended
     # synchronously (no await between the R3-F2 re-check and these appends).
-    for entry_id, side, fill_price in decay_closed:
+    fee_model = getattr(comp, "fee_model", None) or FeeModel()  # PNL-01
+    for entry_id, side, fill_price, _contracts in decay_closed:
+        # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
+        # (see domain/fees.py) -- never scaled by contracts here (`_contracts`
+        # is carried in the tuple for other classification uses only).
+        fee = fee_for_leg(fee_model, role="short", opening=False)
         events.append(ShortStopped(entry_id=entry_id, side=side, fill=fill_price,
-                                   slippage=Decimal("0"), initiator="decay"))
+                                   slippage=Decimal("0"), initiator="decay", fee=fee))
         events.append(EntryClosed(entry_id=entry_id, initiator="decay"))
     if tracked:
-        rec = Reconcile(broker, events)
+        rec = Reconcile(broker, events, fee_model=fee_model)
         plan = rec.plan(tracked_shorts=tracked, broker_working_order_ids=set(),
                         mid_lex_sides=(), stale_entry_order_ids=())
         # run_lex's only effect in execute() is a LongSaleStarted marker --
@@ -749,7 +757,9 @@ async def readopt_resting_floors(comp, broker) -> None:
         # so whichever run appends first closes the side and the other skips.
         # Mirrors the identical Phase-1 detection guard elsewhere in this module.
         if filled and (entry_id, side) in set(_pending_lex_sides(comp.events)):
+            long_leg = _long_leg_for(comp.events, entry_id, side)
             comp.recover.record_floor_sold(
-                entry_id, side, price if price is not None else Decimal(str(lop.price)))
+                entry_id, side, price if price is not None else Decimal(str(lop.price)),
+                qty=(long_leg.qty if long_leg is not None else 1))
         # else: gone WITHOUT a fill (externally cancelled) -- leave it for the
         # OWN external-cancel path; do not synthesize, do not re-adopt.

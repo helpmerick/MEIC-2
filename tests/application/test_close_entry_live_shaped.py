@@ -87,3 +87,30 @@ def test_replace_succeeds_when_no_race_is_in_play():
     assert not [e for e in events if isinstance(e, ShortStopped)]
     buy_submits = [s for s in broker.submits if s[1] == "marketable_limit"]
     assert len(buy_submits) == 1, "the replace fallback should submit exactly one close"
+
+
+def test_pnl01_replace_race_shortstopped_carries_a_non_zero_closing_fee():
+    """PNL-01: the ShortStopped CloseEntry journals on an ORD-08a replace race
+    (the SAME event `test_replace_races_fill_is_detected...` above proves) must
+    carry a non-zero fee -- a closing buy-to-close, commission-free but not
+    fee-free (clearing + ORF + exchange still apply)."""
+    clock = FakeClock(SCHEDULED_START)
+    broker = LiveShapedBroker(clock, fill_delay=10_000.0)
+    events: list = []
+    close = CloseEntry(broker, events, alerts=_Alerts(), replace_retry_attempts=2)
+
+    stop_intent = protective_stop(entry_id="e3", right="P", contracts=1,
+                                  trigger=D("2.00"), symbol="SPXW_7525P",
+                                  idempotency_key="stop:e3:PUT")
+    stop_id = asyncio.run(broker.submit(stop_intent))
+    broker.fill_stop(stop_id)
+
+    live_leg = LiveLeg(symbol="SPXW_7525P", side="PUT", role="short", signed_qty=-1)
+    asyncio.run(close.close("e3", "manual", resting_stop_ids={"PUT": stop_id},
+                           live_legs=[live_leg], close_price=D("2.10")))
+
+    stopped = [e for e in events if isinstance(e, ShortStopped)]
+    assert len(stopped) == 1
+    # per-share: real $0.72 (clearing 0.10 + ORF 0.02 + SPX exchange 0.60, no
+    # commission) / 100 -- matches `fill`'s own per-share scale.
+    assert stopped[0].fee == D("0.0072")

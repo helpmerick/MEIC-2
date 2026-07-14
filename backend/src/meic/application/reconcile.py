@@ -17,12 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from meic.config.fee_model import FeeModel
 from meic.domain.events import (
     LongSaleStarted,
     ReconciliationMismatch,
     ShortStopped,
     StopReplaced,
 )
+from meic.domain.fees import fee_for_leg
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import protective_stop, right_of
@@ -55,7 +57,9 @@ class RecoveryPlan:
     mismatches: list[str] = field(default_factory=list)                    # REC-02 -> RSK-03
     # EC-STP-06: stops that filled while the bot was down — the missed ShortStopped
     # is synthesized on recovery so the projection/P&L reflects broker truth.
-    synthesize_stopped: list[tuple[str, str, Decimal, Decimal]] = field(default_factory=list)
+    # 5th element (v1.63, PNL-01): the short's contracts, so the synthesized
+    # event's fee (a closing buy-to-close, commission-free) is sized correctly.
+    synthesize_stopped: list[tuple[str, str, Decimal, Decimal, int]] = field(default_factory=list)
     # REC-04(3): the shorts behind `place_stops`, keyed (entry_id, side). A stop is
     # an order for a specific instrument at a specific trigger — recovery cannot
     # re-place one from a bare (entry_id, side) pair.
@@ -72,9 +76,10 @@ class RecoveryPlan:
 
 
 class Reconcile:
-    def __init__(self, broker, events: list) -> None:
+    def __init__(self, broker, events: list, *, fee_model: FeeModel | None = None) -> None:
         self._broker = broker
         self._events = events
+        self._fee_model = fee_model or FeeModel()  # PNL-01
 
     def plan(
         self,
@@ -93,7 +98,7 @@ class Reconcile:
                     slippage = (s.stop_fill_price - s.stop_trigger
                                 if s.stop_trigger is not None else Decimal("0"))
                     p.synthesize_stopped.append(
-                        (s.entry_id, s.side, s.stop_fill_price, slippage))
+                        (s.entry_id, s.side, s.stop_fill_price, slippage, s.contracts))
                 p.run_lex.append((s.entry_id, s.side))
             elif s.stop_order_id in broker_working_order_ids:
                 # REC-03: covered — re-attach to the resting stop, no new order.
@@ -138,12 +143,16 @@ class Reconcile:
         # other skip. Same one-line cure as the floor synthesis, on the original
         # EC-STP-06 append next to it (final-review escalation).
         stopped = {(e.entry_id, e.side) for e in self._events if isinstance(e, ShortStopped)}
-        for entry_id, side, fill, slippage in plan.synthesize_stopped:
+        for entry_id, side, fill, slippage, _contracts in plan.synthesize_stopped:
             if (entry_id, side) in stopped:
                 continue  # a concurrent boot reconcile already synthesized it
+            # PNL-01: closing a short (buy-to-close) -- commission-free.
+            # Per-share (see domain/fees.py) -- never scaled by contracts here
+            # (`_contracts` -- STP-01's quantity-mismatch data, unrelated to fee).
+            fee = fee_for_leg(self._fee_model, role="short", opening=False)
             self._events.append(ShortStopped(
                 entry_id=entry_id, side=side, fill=fill, slippage=slippage,
-                initiator="resting_stop"))
+                initiator="resting_stop", fee=fee))
             stopped.add((entry_id, side))
 
         for order_id in plan.cancel_orders:

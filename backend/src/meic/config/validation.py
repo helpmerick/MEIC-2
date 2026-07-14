@@ -6,6 +6,7 @@ rule that a non-localhost bind structurally requires a token.
 """
 from __future__ import annotations
 
+from .fee_model import FeeModelRejected, validate_fee_model
 from .stop_basis import StopBasisRejected, validate_stop_basis
 
 STOP_PCT_SET = tuple(range(95, 305, 5))  # {95, 100, …, 300}, exactly (STP-02, UI-04)
@@ -54,3 +55,5 @@ def validate_config(cfg: dict) -> None:
         validate_stop_basis(str(cfg["stop_basis"]))  # STP-02d gate (per_side rejected)
     if "bind_host" in cfg:
         validate_bind(str(cfg["bind_host"]), cfg.get("api_token"))
+    if "fee_model" in cfg:
+        validate_fee_model(dict(cfg["fee_model"]))  # PNL-01 -- reject, never clamp

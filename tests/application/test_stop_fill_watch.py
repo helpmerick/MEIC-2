@@ -472,6 +472,10 @@ def test_decay_buyback_fill_classifies_side_closed_decay_never_a_stop_out():
     assert len(stopped) == 1 and stopped[0].initiator == "decay", \
         "the DCY buyback fill must classify as decay, never as a stop-out"
     assert stopped[0].fill == D("0.05") and stopped[0].slippage == D("0")
+    # PNL-01: a decay buyback synthesized here is still a CLOSE (commission-
+    # free), but clearing/ORF/exchange still apply -- never the bare 0
+    # default. Per-share: real $0.72 / 100.
+    assert stopped[0].fee == D("0.0072")
     closed = [e for e in events if isinstance(e, EntryClosed)]
     assert len(closed) == 1 and closed[0].initiator == "decay"
     assert recover.calls == [], "the decay long is left to expire -- no LEX ladder (DCY-03)"

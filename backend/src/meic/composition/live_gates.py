@@ -17,12 +17,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Awaitable, Callable
-from zoneinfo import ZoneInfo
 
 from meic.application.entry_gates import GateSnapshot
-from meic.application.market_calendar import is_market_open
+from meic.application.market_calendar import ET, is_market_open
 
-ET = ZoneInfo("America/New_York")  # DAY-03: all session times are ET
+# DAY-03: `ET` is re-exported from market_calendar (the ONE shared ET zone) --
+# every other module that did `from meic.composition.live_gates import ET`
+# keeps working unchanged; this file must never declare its own ZoneInfo.
 
 
 @dataclass

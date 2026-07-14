@@ -28,6 +28,7 @@ from meic.application.recover_long import RecoverLong
 from meic.application.run_trading_day import RunTradingDay
 from meic.application.working_entries import WorkingEntryOrders
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
+from meic.config.fee_model import FeeModel
 from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickTable
 
@@ -47,9 +48,11 @@ class PaperComposition:
     events: list = field(default_factory=EventLog)
     # RSK-04: entry_id -> structural worst case of each FILLED entry.
     worst_case: dict = field(default_factory=dict)
+    fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01, config.fee_model
 
     def __post_init__(self) -> None:
-        self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events)  # SIM-01
+        self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events,
+                                      fee_model=self.fee_model)  # SIM-01
         self.state = PersistentState(InMemoryStateStore())
         self.state.trading_mode = "paper"  # DAY-05
         self.alerts = _NullAlerts()
@@ -58,15 +61,17 @@ class PaperComposition:
         self.working_entries = WorkingEntryOrders()
         self.execute = ExecuteEntryAttempt(self.broker, self.clock, self.events, self.ticks,
                                            stop_basis=self.stop_basis,
-                                           working_orders=self.working_entries)
+                                           working_orders=self.working_entries,
+                                           fee_model=self.fee_model)
         # STP-04 AUTO-FLATTEN: `self._auto_flatten_entry` is a bound method, not
         # evaluated until called, so it is safe to hand to ProtectPosition here
         # even though `self.close` (CloseEntry) is constructed a line later —
         # the closure resolves `self.close` at CALL time, not at construction.
         self.protect = ProtectPosition(self.broker, self.clock, self.alerts, self.events, self.ticks,
                                        close_entry=self._auto_flatten_entry)
-        self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks)
-        self.close = CloseEntry(self.broker, self.events)
+        self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks,
+                                   fee_model=self.fee_model)
+        self.close = CloseEntry(self.broker, self.events, fee_model=self.fee_model)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
 

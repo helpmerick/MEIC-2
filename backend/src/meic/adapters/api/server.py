@@ -23,7 +23,12 @@ from fastapi import HTTPException, Query
 
 from meic.adapters.api.app import _strike_from_symbol
 from meic.application.clocks import MutableClock
-from meic.application.market_calendar import is_trading_day, next_trading_day
+from meic.application.market_calendar import (
+    is_trading_day,
+    next_trading_day,
+    trading_day,
+    trading_day_str,
+)
 from meic.application.nyse_holidays import half_days_near, holidays_near, nyse_holidays
 from meic.composition.paper import PaperComposition
 from meic.composition.runtime import PaperDemoRuntime
@@ -459,7 +464,8 @@ def _next_trading_day_extras(state, now):
     from meic.composition.live_gates import ET
     from meic.composition.live_wiring import schedule_rows
 
-    day = next_trading_day(now.date(), holidays=holidays_near(now.date()))
+    today = trading_day(now)  # DAY-03: ET, not `now`'s own (possibly UTC) `.date()`
+    day = next_trading_day(today, holidays=holidays_near(today))
     return _day_status_extras(schedule_rows(state, today=day, tz=ET), now)
 
 
@@ -512,14 +518,20 @@ async def _supervise_once(app_state, comp, alerts, todays_rows, runtime, now_fn)
     # previously every closed day started one whose entries were then each
     # refused by the at-fire-time ENT-03 market-open gate (which remains, as
     # the safety net), writing EntrySkipped noise into the event log.
-    from meic.composition.live_gates import ET as _et
-    today = (now.astimezone(_et) if now.tzinfo else now).date()
+    #
+    # DAY-03: `today` is the ET trading day (`trading_day`, the one shared
+    # helper) — previously computed here via an ad hoc ET conversion and then
+    # DISCARDED: the two lines below used to re-derive `now.date().isoformat()`
+    # directly, which is `now`'s own (UTC) date whenever `now_fn` is a real
+    # UTC clock, silently contradicting the trading-day check just above.
+    today = trading_day(now)
     if not is_trading_day(today, holidays=holidays_near(today)):
         return
 
-    rows = _remaining_rows(todays_rows(), now, comp.events, now.date().isoformat())
+    day = today.isoformat()
+    rows = _remaining_rows(todays_rows(), now, comp.events, day)
     if rows:
-        app_state.day_task = asyncio.create_task(runtime.run_day(now.date().isoformat(), rows))
+        app_state.day_task = asyncio.create_task(runtime.run_day(day, rows))
 
 
 async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn) -> None:
@@ -1510,7 +1522,10 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     # config; a decade out costs nothing and outlives any realistic uptime.
     # DAY-01a (v1.61): construct through the guarded LIVE seam — an empty
     # calendar at boot is a construction error, never an open market.
-    _cal_anchor = datetime.now(timezone.utc).date()
+    # DAY-03: anchor on the ET trading day (correct by construction), not a
+    # UTC boot-time date that could name the wrong year right at a New Year's
+    # Eve boundary (UTC rolls to Jan 1 hours before ET does).
+    _cal_anchor = trading_day(comp.clock.now())
     gates = LiveMarketGates.for_live(clock=comp.clock, data_fresh=_data_fresh,
                                      session_valid=_session_valid, buying_power_ok=_buying_power_ok,
                                      holidays=holidays_near(_cal_anchor, years_ahead=10),
@@ -1581,7 +1596,18 @@ def _wire_live_day(comp, env: dict[str, str]) -> dict:
     manual = build_manual_entry(
         comp, selector=selector, market_gates=gates,
         max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
-        day=lambda: datetime.now(timezone.utc).astimezone().date().isoformat(),
+        # DAY-03 (THE confirmed live bug, 2026-07-13): this used to be
+        # `datetime.now(timezone.utc).astimezone().date().isoformat()`, which
+        # converts to the SYSTEM's local timezone (whatever the operator's
+        # machine happens to be set to) -- not ET. A BST operator's local
+        # midnight (7pm ET) or a Tokyo operator's local midnight (11am ET,
+        # MID-SESSION) silently stamped the wrong trading day onto every
+        # entry_id this manual/ad-hoc lane fires, and onto /entries' day-scope
+        # filter (`commands.day()` reads the SAME "today" via `self.today()`
+        # below) -- a real cert trade vanished from the board this way live.
+        # `trading_day_str` is the ONE shared ET derivation (application/
+        # market_calendar.py) -- never a second ZoneInfo/astimezone call.
+        day=lambda: trading_day_str(comp.clock.now()),
         # ENT-09b v1.57 refuse-and-re-pick: the live spot off the SAME cached
         # snapshot FEATURE 3 already holds -- no new subscription.
         spot_provider=lambda: getattr(snaps.last, "spot", None))
@@ -1783,8 +1809,13 @@ def live_app():
         from meic.composition.live_wiring import schedule_rows
 
         now = comp.clock.now()
-        rows = schedule_rows(comp.state, today=now.date(), tz=_ET)
-        remaining = _remaining_rows(rows, now, comp.events, now.date().isoformat())
+        # DAY-03: `comp.clock.now()` is UTC-aware (SystemClock) -- the ET trading
+        # day, never its own `.date()`, is what `today`/the day-scope string must
+        # be (previously agreed only by luck: this only ever runs inside market
+        # hours, when the UTC and ET calendar dates happen to coincide).
+        today = trading_day(now)
+        rows = schedule_rows(comp.state, today=today, tz=_ET)
+        remaining = _remaining_rows(rows, now, comp.events, today.isoformat())
         entry_soon = bool(remaining) and (min(r.when for r in remaining) - now) <= _td(seconds=600)
 
         snap = live["snapshots"].last
@@ -1885,7 +1916,9 @@ def live_app():
     # EOD-03 (2026-07-11): the sweep's half-day calendar — the SAME algorithmic
     # exchange facts the DAY-01/02 gates use (nyse_holidays), a decade out, so
     # a 13:00 half-day close sweeps at 13:00 (DAY-02), never a hardcoded 16:00.
-    eod_half_days = half_days_near(datetime.now(timezone.utc).date(), years_ahead=10)
+    # DAY-03: anchored on the ET trading day, not a UTC boot-time date (same
+    # New Year's Eve boundary concern as `_cal_anchor` above).
+    eod_half_days = half_days_near(trading_day(comp.clock.now()), years_ahead=10)
 
     async def _boot_reconcile() -> None:
         """REC-02/04: adopt broker truth before any trading is possible. Anything
@@ -2128,7 +2161,8 @@ def live_app():
     app.state.watchdog_grace_seconds = watchdog_grace_s
     app.state.watchdog_escalate_seconds = watchdog_escalate_s
     stop_watchdog = StopWatchdog(broker=comp.broker, alerts=alerts, events=comp.events,
-                                 grace_seconds=watchdog_grace_s, escalate_seconds=watchdog_escalate_s)
+                                 grace_seconds=watchdog_grace_s, escalate_seconds=watchdog_escalate_s,
+                                 fee_model=comp.fee_model)
     app.state.stop_watchdog = stop_watchdog
 
     @app.on_event("startup")

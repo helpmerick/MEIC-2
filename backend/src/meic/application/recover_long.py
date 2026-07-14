@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from meic.config.fee_model import FeeModel
 from meic.domain.events import (
     LexOrderPlaced,
     LongSaleRepriced,
@@ -42,6 +43,7 @@ from meic.domain.events import (
     LongSold,
     SideClosed,
 )
+from meic.domain.fees import fee_for_leg
 from meic.domain.ladder import RepriceLadder, lex_floor
 from meic.domain.ticks import TickTable
 
@@ -81,6 +83,7 @@ class RecoverLong:
         lex_reprice_attempts: int = 4,
         lex_max_spread_ticks: int = 10,
         lex_fill_poll_seconds: float = 2.0,
+        fee_model: FeeModel | None = None,  # PNL-01
     ) -> None:
         self._broker = broker
         self._clock = clock
@@ -90,6 +93,7 @@ class RecoverLong:
         self._attempts = lex_reprice_attempts
         self._max_spread_ticks = lex_max_spread_ticks
         self._poll_seconds = lex_fill_poll_seconds
+        self._fee_model = fee_model or FeeModel()
 
     def _quote_usable(self, q: Quote) -> bool:
         """LEX-02: not crossed, spread within bound."""
@@ -158,7 +162,7 @@ class RecoverLong:
                 # whole ladder when the broker rejects the replace outright.
                 # Re-confirm not-filled immediately before every replace.
                 if await self._filled(working_id):
-                    return self._sold(entry_id, side, working_price, tried)
+                    return self._sold(entry_id, side, working_price, tried, qty)
                 try:
                     working_id = await self._broker.replace(working_id, intent)
                 except Exception:
@@ -169,7 +173,7 @@ class RecoverLong:
                     # filled, this was the race, not a genuine error. A real,
                     # unrelated replace failure still propagates unchanged.
                     if await self._filled(working_id):
-                        return self._sold(entry_id, side, working_price, tried)
+                        return self._sold(entry_id, side, working_price, tried, qty)
                     raise
             # LEX-01 order-id journaling (v1.62): every LEX order journals its
             # broker order id AT PLACEMENT — the initial submit AND every
@@ -188,18 +192,22 @@ class RecoverLong:
             # waiting the whole interval (that would delay a known fill) and
             # never repricing a filled order.
             if await self._await_fill(working_id, self._reprice_seconds):
-                return self._sold(entry_id, side, working_price, tried)
+                return self._sold(entry_id, side, working_price, tried, qty)
 
         # LEX-05 fallback: last guard — it may have filled right at the final
         # deadline, between the last poll and here.
         if working_id is not None and await self._filled(working_id):
-            return self._sold(entry_id, side, working_price, tried)
+            return self._sold(entry_id, side, working_price, tried, qty)
 
         await self._fallback(entry_id, side, long_symbol, quote.bid, qty)
         return LexResult("FALLBACK_WORKING", tuple(tried))
 
-    def _sold(self, entry_id: str, side: str, price: Decimal, tried: list[Decimal]) -> LexResult:
-        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price))
+    def _sold(self, entry_id: str, side: str, price: Decimal, tried: list[Decimal],
+             qty: int = 1) -> LexResult:
+        # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
+        # (see domain/fees.py) -- never scaled by `qty` here.
+        fee = fee_for_leg(self._fee_model, role="long", opening=False)
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price, fee=fee))
         self._events.append(SideClosed(entry_id=entry_id, side=side))
         return LexResult("SOLD", tuple(tried))
 
@@ -227,13 +235,17 @@ class RecoverLong:
             price=floor_price, kind="floor"))
         return str(order_id), floor_price
 
-    def record_floor_sold(self, entry_id: str, side: str, recovery: Decimal) -> None:
+    def record_floor_sold(self, entry_id: str, side: str, recovery: Decimal,
+                         qty: int = 1) -> None:
         """EC-LEX-08: the SAME terminal appends `_sold` makes (LongSold +
         SideClosed), for a resting floor order discovered FILLED between
         ticks -- the floor order is never inside a `recover()` ladder call,
         so nothing else watches it; `stop_fill_watch._try_recover` resolves
         its fill directly and calls this to close out the side honestly."""
-        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery))
+        # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
+        # (see domain/fees.py) -- never scaled by `qty` here.
+        fee = fee_for_leg(self._fee_model, role="long", opening=False)
+        self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery, fee=fee))
         self._events.append(SideClosed(entry_id=entry_id, side=side))
 
     async def _await_fill(self, working_id, seconds: float) -> bool:

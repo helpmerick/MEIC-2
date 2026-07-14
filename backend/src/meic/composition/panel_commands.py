@@ -22,6 +22,7 @@ import itertools
 from decimal import Decimal
 
 from meic.application.manual_close import FLATTEN_CONFIRMATION, ManualClose
+from meic.application.market_calendar import trading_day_str
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.domain import tpf as tpf_domain
 from meic.domain import tpt as tpt_domain
@@ -114,7 +115,7 @@ class PanelCommands:
         when manual entry isn't wired (nothing will actually fire in that case)."""
         if self._manual is not None:
             return self._manual.today()
-        return self._comp.clock.now().date().isoformat()
+        return trading_day_str(self._comp.clock.now())
 
     async def close(self, entry_id: str) -> dict:
         """Close one entry via CLS (manual). No-op if it is already closed —

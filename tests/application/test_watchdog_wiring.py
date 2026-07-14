@@ -167,6 +167,10 @@ def test_pass_escalates_at_bound_cancels_resting_stop_and_journals_calibration()
 
     stopped = [e for e in events if isinstance(e, ShortStopped)]
     assert len(stopped) == 1 and stopped[0].initiator == "watchdog_escalation"
+    # PNL-01: a watchdog-escalated buy-to-close is still a CLOSE (commission-
+    # free), but clearing/ORF/exchange still apply -- never the bare 0
+    # default. Per-share: real $0.72 / 100.
+    assert stopped[0].fee == D("0.0072")
     escalated = [e for e in events if isinstance(e, WatchdogEscalated)]
     assert len(escalated) == 1
     assert escalated[0].mark_at_breach == D("3.90")

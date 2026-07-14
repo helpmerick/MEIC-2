@@ -21,7 +21,10 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from meic.application.market_calendar import trading_day
+from meic.config.fee_model import FeeModel
 from meic.domain.events import CondorFilled, CondorProposed, EntrySkipped, EntryWindowOpened
+from meic.domain.fees import fee_for_legs
 from meic.domain.ladder import RepriceLadder
 from meic.domain.stop_policy import StopBasis, feasible
 from meic.domain.ticks import TickTable
@@ -133,6 +136,10 @@ class ExecuteEntryAttempt:
         # registry's cancel flag is what lets the ladder stand down instead
         # of repricing an order the operator just cancelled.
         working_orders=None,
+        # PNL-01: the per-contract fee table in force. None (every pre-existing
+        # caller) defaults to the verified tastytrade schedule (FeeModel()) --
+        # the seam, not a behaviour change for callers that don't care.
+        fee_model: FeeModel | None = None,
     ) -> None:
         # NOTE (v1.44): there is deliberately no `contracts_per_entry` here. ENT-04
         # made contracts a PER-ENTRY value — it rides on the Condor (the schedule
@@ -153,6 +160,7 @@ class ExecuteEntryAttempt:
         self._underlying = underlying
         self._alerts = alerts
         self._working = working_orders   # CLS-03 seam; None => no-op
+        self._fee_model = fee_model or FeeModel()  # PNL-01
         # The GLOBAL stop settings, used by any row that overrides none of them.
         self.default_stop = StopParams(stop_basis, stop_loss_pct, stop_rebate_markup)
 
@@ -266,7 +274,9 @@ class ExecuteEntryAttempt:
             return self._skip(day, n, "insufficient_credit")
 
         # 0DTE: the expiration IS today unless selection named one explicitly.
-        expiration = condor.expiration or self._clock.now().date()
+        # DAY-03: "today" is the ET trading day, not `self._clock.now()`'s own
+        # (UTC) `.date()` -- see `trading_day`'s docstring.
+        expiration = condor.expiration or trading_day(self._clock.now())
 
         working_id = None
         working_price = None
@@ -399,11 +409,25 @@ class ExecuteEntryAttempt:
         # paper/simulated fills (no allocation exists) or a real fill the broker
         # reported with a leg missing its allocation.
         actual = fill_credit
+        short_premium = Decimal("0")
         if legs and all(leg.price is not None for leg in legs):
             actual = (sum(leg.price for leg in legs if leg.role == "short")
                      - sum(leg.price for leg in legs if leg.role == "long"))
+            # UI-14: gross premium on the shorts alone, from the SAME
+            # broker-allocated per-leg prices `actual` uses above -- no new
+            # I/O, no inference. Paper/simulated fills carry no allocation
+            # (leg.price is None), so this stays the honest 0.00 default,
+            # same guard as `actual`'s fallback above.
+            short_premium = sum(leg.price for leg in legs if leg.role == "short")
+        # PNL-01: fee at fill time, from the SAME already-fetched leg data
+        # (role + qty per leg) -- no new broker I/O. Paper/simulated fills
+        # still carry role/qty (only `price` is None there, see
+        # `adapters/occ.py::simulated_fill_legs`), so paper entries get a
+        # real, non-zero fee too (SIM-05: paper runs the identical pipeline).
+        fee = fee_for_legs(self._fee_model, legs, opening=True) if legs else Decimal("0")
         self._events.append(CondorFilled(
-            entry_id=entry_id, net_credit=actual, legs=legs,
+            entry_id=entry_id, net_credit=actual, fee=fee, short_premium=short_premium,
+            legs=legs,
             initiator=initiator,             # ENT-09 / UC-08 tagging
             at=self._clock.now().isoformat(),  # UI card: fill time
             put_floor=put_floor, call_floor=call_floor,  # ENT-09b v1.57 audit

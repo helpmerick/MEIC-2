@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from meic.application.market_calendar import trading_day
 from meic.domain.chain import ChainSide, Mark
 
 # Subscription breadth only (never the STK-10 gate, which inspects the
@@ -149,7 +150,12 @@ async def snapshot_chain(
     if not chains:
         raise RuntimeError(f"no {underlying} chain available")
     chain = chains[0]
-    today = date.today()
+    # DAY-03: the current trading day is the ET one, never the OS/operator
+    # machine's own local calendar date (`date.today()` used to read that --
+    # the same bug class as the confirmed live "today" bug elsewhere in the
+    # codebase, just for 0DTE expiration selection instead of an entry id).
+    instant = (now() if callable(now) else None) or datetime.now(timezone.utc)
+    today = trading_day(instant)
     expiration = next((e for e in sorted(chain.expirations, key=lambda x: x.expiration_date)
                        if e.expiration_date >= today), None)
     if expiration is None:
@@ -191,7 +197,7 @@ async def snapshot_chain(
 
         elapsed = asyncio.get_event_loop().time() - started
 
-    taken_at = (now() if callable(now) else None) or datetime.now(timezone.utc)
+    taken_at = instant  # same instant `today` was derived from above -- one clock read
     # build_sides matches quotes to strikes by the SUBSCRIPTION symbols (streamer).
     put_side, call_side, put_band, call_band = build_sides(
         spot=spot, strike_symbols=strike_streamers, quotes=quotes,

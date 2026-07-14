@@ -76,6 +76,11 @@ def test_tc_dcy_01_happy_path():
     assert any(isinstance(e, ShortStopped) and e.initiator == "decay" for e in events)
     assert any(isinstance(e, EntryClosed) and e.initiator == "decay" for e in events)
     assert not any(isinstance(e, LongSold) for e in events)  # long left to expire (DCY-03)
+    # PNL-01: a decay buyback is a CLOSE (commission-free), but clearing/ORF/
+    # exchange still apply -- never the bare 0 default. Per-share: real
+    # $0.72 / 100.
+    decayed = next(e for e in events if isinstance(e, ShortStopped) and e.initiator == "decay")
+    assert decayed.fee == D("0.0072")
 
 
 def test_tc_dcy_02_reinflation_guard():

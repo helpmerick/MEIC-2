@@ -70,3 +70,17 @@ class TestSimulatedBroker:
         oid = asyncio.run(b.submit(stop_intent("PUT", "3.80")))
         assert b.try_fill_stop(oid, mark=D("3.70")) is None
         assert len(asyncio.run(b.working_orders())) == 1
+
+    def test_pnl01_paper_stop_fill_journals_a_non_zero_closing_fee(self):
+        """SIM-05: a paper stop fill emits the SAME event a live fill would --
+        including a real, non-zero fee (PNL-01), not the pre-fix 0 default.
+        Per-share (matches `fill`'s own per-share convention): the REAL
+        per-contract closing fee is $0.72 (clearing+ORF+exchange, no
+        commission); / 100 for the per-share scale `entry_dollars_fees`
+        rescales at the reporting layer."""
+        b = SimulatedBroker(SimLedger(), tick=TICK, stop_slippage_ticks=3)
+        oid = asyncio.run(b.submit(stop_intent("PUT", "3.80")))
+        b.try_fill_stop(oid, mark=D("3.85"))
+        stopped = [e for e in b.events if type(e).__name__ == "ShortStopped"]
+        assert len(stopped) == 1
+        assert stopped[0].fee == D("0.0072")  # closing a short: no commission

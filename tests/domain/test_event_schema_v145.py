@@ -59,6 +59,43 @@ def test_filled_leg_side_maps_right_to_put_call():
     assert LEGS[1].side == "PUT" and LEGS[2].side == "CALL"
 
 
+# --- PNL-01: fee/short_premium are additive-optional -- old log entries replay
+# unchanged, historical P&L never shifts retroactively (operator constraint) ---
+
+def test_an_older_condor_filled_without_fee_or_short_premium_still_replays():
+    """Every event journaled before PNL-01's fee wiring has no `fee`/
+    `short_premium` key at all -- it must replay to the ORIGINAL 0.00
+    defaults, not be retroactively repriced by today's fee table."""
+    old = {"type": "CondorFilled", "entry_id": "d#1", "net_credit": "4.00"}
+    revived = Event.from_dict(old)
+    assert revived.fee == D("0") and revived.short_premium == D("0")
+
+
+def test_an_older_shortstopped_without_fee_still_replays():
+    from meic.domain.events import ShortStopped
+
+    old = {"type": "ShortStopped", "entry_id": "d#1", "side": "PUT",
+           "fill": "3.90", "slippage": "0.10"}
+    revived = Event.from_dict(old)
+    assert revived.fee == D("0")
+
+
+def test_an_older_longsold_without_fee_still_replays():
+    from meic.domain.events import LongSold
+
+    old = {"type": "LongSold", "entry_id": "d#1", "side": "PUT", "recovery": "0.10"}
+    revived = Event.from_dict(old)
+    assert revived.fee == D("0")
+
+
+def test_a_new_condor_filled_with_fee_round_trips_exactly():
+    original = CondorFilled(entry_id="d#1", net_credit=D("4.00"), fee=D("4.88"),
+                            short_premium=D("3.75"), legs=LEGS)
+    revived = Event.from_dict(json.loads(json.dumps(original.to_dict())))
+    assert revived == original
+    assert revived.fee == D("4.88") and revived.short_premium == D("3.75")
+
+
 # --- config_version stamping -----------------------------------------------------
 
 def test_the_event_log_stamps_every_appended_event():

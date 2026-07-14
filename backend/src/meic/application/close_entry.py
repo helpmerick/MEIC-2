@@ -56,7 +56,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from meic.config.fee_model import FeeModel
 from meic.domain.events import EntryClosed, ShortStopped, SideClosed
+from meic.domain.fees import fee_for_leg
 from meic.domain.ownership import OwnershipLedger
 
 from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
@@ -99,12 +101,14 @@ class CloseEntry:
         *,
         alerts=None,
         replace_retry_attempts: int = 3,
+        fee_model: FeeModel | None = None,  # PNL-01
     ) -> None:
         self._broker = broker
         self._events = events
         self._ledger = ledger or OwnershipLedger()
         self._alerts = alerts or _NoOpAlerts()
         self._replace_retry_attempts = max(1, replace_retry_attempts)
+        self._fee_model = fee_model or FeeModel()
 
     async def close(
         self,
@@ -146,9 +150,12 @@ class CloseEntry:
             outcome, fill_price = await self._replace_stop(entry_id, leg.side, stop_id, intent)
             if outcome == "FILLED":
                 stopped_sides.add(leg.side)
+                # PNL-01: closing a short (buy-to-close) -- commission-free,
+                # per the fee model (see domain/fees.py).
+                fee = fee_for_leg(self._fee_model, role="short", opening=False)
                 self._events.append(ShortStopped(
                     entry_id=entry_id, side=leg.side, fill=fill_price or close_price,
-                    slippage=Decimal("0"), initiator="resting_stop"))
+                    slippage=Decimal("0"), initiator="resting_stop", fee=fee))
             elif outcome == "STILL_RESTING":
                 # ORD-08 transient, retries exhausted this call — the original
                 # stop is untouched and still protecting the short. Never

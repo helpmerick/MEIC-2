@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Any, Awaitable, Callable, Mapping
 
 from meic.application.execute_entry import Condor
+from meic.application.market_calendar import trading_day
 from meic.domain.chain import ChainSide, completeness_ok, reachable_strikes, validated_universe
 from meic.domain.collision import Abort, Resolved, resolve_collisions
 from meic.domain.gates import GatesFailed, check_credit_gates
@@ -344,6 +345,9 @@ class LiveCondorSelector:
             put_long=legs["put"].long_strike, call_long=legs["call"].long_strike,
             put_short_mid=mids["put_short"], call_short_mid=mids["call_short"],
             mid_credit=net_credit, min_total_credit=c.min_total_credit,
-            expiration=when.date(),  # 0DTE
+            expiration=trading_day(when),  # 0DTE (DAY-03: the ET trading day `when`
+            # falls on, not `when`'s own tzinfo's raw `.date()` -- `when` can be a
+            # UTC-aware clock reading (manual ENT-09 fire), and only ever agreeing
+            # with the ET date by luck of always firing inside market hours).
             contracts=c.contracts,   # ENT-04 (v1.44): the ROW's size, not a global knob
         ), None

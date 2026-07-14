@@ -30,6 +30,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from meic.application.market_calendar import trading_day_str
 from meic.domain.events import EntrySkipped
 from meic.domain.projection import day_report
 from meic.domain.walk import floor_inside_spot
@@ -133,7 +134,7 @@ class ManualEntry:
         ad-hoc 101+ numbering lane must scan the SAME day string, so the API
         layer (which has no access to `_day`) reads it through here rather than
         guessing its own — a mismatch would let two ad-hoc fires collide."""
-        return self._day() if self._day else self._comp.clock.now().date().isoformat()
+        return self._day() if self._day else trading_day_str(self._comp.clock.now())
 
     # --- ENT-11/UI-25 --------------------------------------------------------------
     async def simulate(self, row) -> dict[str, Any]:
