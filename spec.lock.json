@@ -3,7 +3,7 @@
   "spec/02-edge-cases.md": "e5eb56a9a946a249f450da9695ff608b802e90fc1692a2a9540cb1739f405eba",
   "spec/03-use-cases.md": "1892bbd400907ff468673c5b9545a11f7fb016ffce8b54bb39a2f729baca6a99",
   "spec/04-test-cases.md": "6da8f0c048eaaa15b845c256cee931b383535cd7ab312ba532c4f1ac5468b57c",
-  "spec/05-architecture-ddd.md": "6408a5777adfbb851dab965bd2904bd16f6f52f832ff07c6a51ce85fa4e91e37",
+  "spec/05-architecture-ddd.md": "bdd8517245403a30a1f8dd08e031f4045d9cef09b78f9b8d42d63f8c97c9ec34",
   "spec/06-configuration.md": "1bb8851dd9e36694674cba5e0d7afbdd8dea52e7d2ef4d706a1633922d72aa18",
   "spec/07-user-flow.mermaid": "5d09bd0f2747ad28faaac58c96762a108fc6d0fffdc2d8f0be93c5f6beafe650",
   "spec/08-decision-tree.mermaid": "4b7bbf068a8433215fa3c2c05c46983f487c86ee0d59ca3802a28c66141b68aa",
