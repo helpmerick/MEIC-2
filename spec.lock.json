@@ -11,12 +11,12 @@
   "spec/10-results-dashboard.md": "43e39644fa30dda6cf0eb250d08482aacf82b47518ae6ab43e3cfe8188d7ad57",
   "spec/11-trading-calendar.md": "f13770b0e1263a3ce89c0be7e77d60108cc2cc0b4078390b2728daa135dd4aa1",
   "spec/12-how-it-works.md": "0ab2e2551bf477e1f18cf1de2bee67f72edaafa89f9bdb1900e0fc80bb558af4",
-  "spec/README.md": "ff7ade92de59c3ad459ea50962d5f6c798fcfba1c16c6a334d04809e54a86185",
+  "spec/README.md": "dd557802c705ed4695897ad4742d16be9d1b891c3060536952d6e9ab9392671c",
   "scripts/check_traceability.py": "e9b4ea72e7c4c1062a9a12f71fade6274ec370d18d5d1bae2954a9fd1c3b5001",
   "scripts/check_wiring.py": "97e7645d1c94221a490c21a9a93389bcb1532e572c96b823992bdb66bdd12596",
   "scripts/extract_features.py": "797e8a5fb2336b7071c8c1b09b98f42ef4e906b7a4da7b5f0dfb0fe3a54a8aa0",
   "scripts/verify_spec_lock.py": "4ead9fb6c03dcbc08db5181fc6bc4b63ae90af0d1f2e1183c52358a795634ddf",
-  ".github/workflows/ci.yml": "78e3198f9d73409a42f5d5c39a7656da144584407b9be0d62b4e94de9d9f2655",
+  ".github/workflows/ci.yml": "7a4fe0a434bfd8750f437c1473e88074fe850147e23c68ec0bacaccf32149cdc",
   "CLAUDE.md": "62af52884778bec6fda42acee01192637059d7167b7c5c26220366541e01b5b9",
   "CODEOWNERS": "0ce788065da1156dc83a635bc0300c43f3cdefcf0f9cbeb98233a3d6360664ac"
 }

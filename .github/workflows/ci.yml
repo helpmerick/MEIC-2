@@ -33,6 +33,9 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+      - name: frontend deps (BDD dual-half bindings shell out to the pinned vitest)
+        run: |
+          if [ -f frontend/package-lock.json ]; then npm ci --prefix frontend; fi
       - name: NFR-07 wiring-audit gate (registry pytest — never the real-broker CLI)
         run: |
           if [ -f tests/bdd/test_tc_nfr_07_wiring_registry.py ]; then
