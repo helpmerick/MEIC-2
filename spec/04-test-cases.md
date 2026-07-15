@@ -1637,6 +1637,25 @@ Scenario: Four-tab navigation (operator-specified)
   Then the SPA's top-level tabs are exactly Trading, Results, Calendar, How it works
 ```
 
+**TC-UI-09** — UI-31 activity feed day boundaries + explanations (v1.73)
+```gherkin
+Scenario: Days are visually separated, never continuous
+  Given activity spanning 2026-07-13 and 2026-07-14
+  Then a sticky ET date header renders between the two days
+  And each row shows its own ET time
+  And days without activity render no header
+
+Scenario: Every activity explains itself on hover
+  Given any rendered activity row
+  Then a styled focus- and tap-capable tooltip explains the event in plain English
+  And the wording uses the doc-12 chapter vocabulary
+  And no native title attribute carries the explanation
+
+Scenario: An unexplained event type is a test failure
+  Given an event type renderable by the feed with no explanation entry
+  Then the suite fails naming the event type
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1672,6 +1691,7 @@ Scenario: Four-tab navigation (operator-specified)
 | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→08 / UI-30 | TC-CAL-01, TC-CAL-02 | | DOC-01→05 / UI-29 | TC-DOC-01 |
+| UI-31 | TC-UI-09 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
