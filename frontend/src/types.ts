@@ -89,6 +89,14 @@ export interface ActivityLine {
   label: string;
   entry: string;
   detail: string;
+  // Day-separator feature (2026-07-15, additive): `at` mirrors an ORD-11
+  // lifecycle instant when the event carries one; `date` mirrors an event's
+  // own trading-day field (DayArmed/EntryWindowOpened/EntrySkipped/
+  // DayCompleted) when it doesn't. Both null/absent is honest -- see
+  // activityDays.ts for the fallback chain (entry_id prefix, then the
+  // preceding item's day).
+  at?: string | null;
+  date?: string | null;
 }
 
 export interface Snapshot {

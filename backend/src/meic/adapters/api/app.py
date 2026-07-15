@@ -177,7 +177,7 @@ def origin_allowed(origin: str | None, *, scheme: str, host: str, panel_origin: 
     return origin == f"{scheme}://{host}" and _is_loopback(host)
 
 
-def _describe(ev: Any) -> dict[str, str] | None:
+def _describe(ev: Any) -> dict[str, str | None] | None:
     """Turn a domain event into one activity-feed line (icon, label, entry,
     detail). Presentation only — the UI renders whatever it's given."""
     name = type(ev).__name__
@@ -213,7 +213,24 @@ def _describe(ev: Any) -> dict[str, str] | None:
         v = getattr(ev, attr, None)
         if v is not None and str(v) != "0":
             bits.append(f"{sym}${v}")
-    return {"icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits)}
+    return {
+        "icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits),
+        # UI feature (2026-07-15): additive read-model fields so the frontend
+        # ACTIVITY feed can group items by day HONESTLY, without guessing.
+        # `at` mirrors the event's own ORD-11 lifecycle instant when the event
+        # carries one (CondorFilled, StopPlaced/Confirmed, ShortStopped,
+        # LongSaleStarted/Sold, SideClosed/Expired, EntryClosed,
+        # WatchdogEscalated, SettlementRecorded) -- None for events that never
+        # carry one (CondorProposed, ModeSwitchStaged) or predate ORD-11 in the
+        # journal. `date` mirrors an event's own "date" field (DayArmed,
+        # EntryWindowOpened, EntrySkipped, DayCompleted carry no `at` but DO
+        # carry their own ET trading-day string, DAY-03) -- None for events
+        # with no such field. Both None is honest absence, not a bug: the
+        # frontend falls back to `entry`'s ET-day-stamped prefix, then to the
+        # preceding item's day (never fabricates one, e.g. ModeSwitchStaged).
+        "at": getattr(ev, "at", None),
+        "date": getattr(ev, "date", None),
+    }
 
 
 def _floor(raw: Any) -> Decimal | None:
@@ -532,7 +549,7 @@ def create_app(
         return cards
 
     @app.get("/activity")
-    def get_activity() -> list[dict[str, str]]:
+    def get_activity() -> list[dict[str, str | None]]:
         """A human-readable feed of the most recent events (newest first),
         so the operator can watch the day unfold. Presentation only."""
         feed = [_describe(ev) for ev in events]

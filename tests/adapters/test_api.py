@@ -279,3 +279,45 @@ def test_entries_enricher_hook_enriches_both_rest_and_websocket_snapshot():
     with client.websocket_connect("/ws", headers={"origin": PANEL}) as ws:
         snap = ws.receive_json()
         assert snap["entries"][0]["live_pnl"] == "999"
+
+
+# --- activity feed day-separator feature (2026-07-15): additive `at`/`date` --
+# fields so the frontend can group by ET trading day (DAY-03) honestly, never
+# guessing from the browser's local date or fabricating a day for an event
+# that carries none.
+
+def test_activity_carries_at_when_the_event_has_one():
+    """CondorFilled/ShortStopped/etc. carry an ORD-11 `at` -- the feed line
+    mirrors it verbatim so the frontend can derive the ET day from the SAME
+    instant, never a second computation that could drift."""
+    client, _state, events = _client()
+    events.append(CondorFilled(entry_id="2026-07-14#1", net_credit=D("3.60"),
+                                at="2026-07-14T23:30:00+00:00"))
+    line = client.get("/activity").json()[0]
+    assert line["at"] == "2026-07-14T23:30:00+00:00"
+    assert line["date"] is None
+
+
+def test_activity_carries_date_for_events_with_no_at():
+    """DayArmed has no `at` at all, only its own `date` -- the feed line
+    mirrors THAT field so the frontend never has to fall back further than
+    necessary."""
+    client, _state, events = _client()
+    events.append(DayArmed(date="2026-07-14", entry_count=2))
+    line = client.get("/activity").json()[0]
+    assert line["at"] is None
+    assert line["date"] == "2026-07-14"
+
+
+def test_activity_both_null_when_the_event_has_neither():
+    """ModeSwitchStaged carries neither `at` nor `date` nor even an entry_id --
+    honest nulls, never a fabricated timestamp (the frontend inherits the
+    preceding item's day instead)."""
+    from meic.domain.events import ModeSwitchStaged
+
+    client, _state, events = _client()
+    events.append(ModeSwitchStaged(target="live", effective="next_day"))
+    line = client.get("/activity").json()[0]
+    assert line["at"] is None
+    assert line["date"] is None
+    assert line["entry"] == ""
