@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""NFR-07 wiring-audit CLI (v1.67) -- NOT hash-locked, NOT wired into CI yet.
+"""NFR-07 wiring-audit CLI (v1.67; ARMED v1.70 -- hash-locked, operator-owned).
 
-This file lives OUTSIDE `scripts/` deliberately: `scripts/` and
-`.github/workflows/ci.yml` are hash-locked and operator-owned (see
-`spec/05-architecture-ddd.md` NFR-07: "This gate is a locked guard (scripts/),
-operator-maintained like the traceability checker"), so a coding agent may
-not create or edit anything there. This is the thin CLI for the operator to
-review and, if satisfied, move into `scripts/check_wiring.py` and wire into
-the locked `ci.yml` alongside `check_traceability.py`/`verify_spec_lock.py`.
+Placed into locked `scripts/` by the operator 2026-07-15 (NFR-07: "a locked
+guard, operator-maintained like the traceability checker"). CI enforcement
+runs the SAME registry via the pytest gate (suite job); this CLI is the
+ON-BOX operational check -- it boots a real live_app() with real credentials
+and therefore MUST NEVER run in CI.
 
 It imports the SAME registry (`meic.composition.wiring_registry`) the pytest
 gate (tests/bdd/test_tc_nfr_07_wiring_registry.py) uses, so the two can never

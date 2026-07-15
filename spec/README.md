@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.70 — 2026-07-15
+- v1.70 changes (operator hand-actions — NFR-07 ARMED): `scripts/check_wiring.py` placed into the locked guard set (on-box operational CLI; boots a real live_app and must never run in CI); CI suite job gains an explicit NFR-07 registry-pytest gate step and flips from informational to REQUIRED (construction complete — green is the expectation; operator to set branch protection accordingly). **Fee model VERIFIED by falsification**: predicted-before-observation $5.60 fees / $34.40 net on the corrected 2026-07-10 own-scoped reconcile; the broker said exactly that, to the cent, on a day-shape the model was never fitted against. The last unverified number in the build is verified. THE GRADUATION CLOCK STARTS.
 - Version: 1.69 — 2026-07-14
 - v1.69 changes (operator ruling on NFR-07's NINTH finding — DAT-04's halt gate dead two ways: no provider AND inverted safety polarity, False-means-trade among False-means-block siblings): **DAT-04a** — uniform False-means-block polarity (unmeasured = unverified = blocked, RSK-07); provider = underlying trading-status via the EXISTING DXLink connection (DAY-03 pattern), stale > 300 s or not-active ⇒ blocked `market_halted`; freshness gates remain the independent second layer; PRE-RULED CONTINGENCY: if trading-status proves unusable, retire the input (stop_limit precedent) rather than fake a feed. TC-NFR-07 pins the ninth regression + a DAT-04a scenario. Agent's restraint (register known_gap + pin by test, don't invert a safety default unruled) endorsed as exactly correct.
 - Version: 1.68 — 2026-07-14

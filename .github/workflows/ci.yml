@@ -19,8 +19,8 @@ jobs:
       - name: traceability (every rule covered, every TC implemented)
         run: python scripts/check_traceability.py
   suite:
-    # INFORMATIONAL until the build is complete (red-by-design during phases).
-    # Operator flips this to a required check when green is the expectation.
+    # REQUIRED as of v1.70 (construction complete; green is the expectation).
+    # Operator: set branch protection to require THIS job alongside guards.
     runs-on: ubuntu-latest
     needs: guards
     steps:
@@ -29,8 +29,16 @@ jobs:
         with: { python-version: "3.11" }
       - name: extract features
         run: python scripts/extract_features.py
-      - name: install and test
+      - name: install
         run: |
           pip install -r requirements-dev.txt
           if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
-          pytest -q -m "not contract"
+      - name: NFR-07 wiring-audit gate (registry pytest — never the real-broker CLI)
+        run: |
+          if [ -f tests/bdd/test_tc_nfr_07_wiring_registry.py ]; then
+            pytest tests/bdd/test_tc_nfr_07_wiring_registry.py -q
+          else
+            echo 'spec-only checkout: registry gate enforced wherever the live composition exists'
+          fi
+      - name: full suite
+        run: pytest -q -m "not contract"
