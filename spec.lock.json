@@ -11,6 +11,7 @@
   "spec/10-results-dashboard.md": "43e39644fa30dda6cf0eb250d08482aacf82b47518ae6ab43e3cfe8188d7ad57",
   "spec/README.md": "c6ee22ea8081936906dd1e8030048fa782d3e52c4b1933cc72090161db5e4ba5",
   "scripts/check_traceability.py": "828d8baddf30f447f43be9bdf9ad0c0cdba3f2b035d5357bb1fe393f696211da",
+  "scripts/check_wiring.py": "b5dd264a23648a5cabcb8e86877921ccecfe285cdd1dfb5fdd201fc0bae5e25a",
   "scripts/extract_features.py": "797e8a5fb2336b7071c8c1b09b98f42ef4e906b7a4da7b5f0dfb0fe3a54a8aa0",
   "scripts/verify_spec_lock.py": "4ead9fb6c03dcbc08db5181fc6bc4b63ae90af0d1f2e1183c52358a795634ddf",
   ".github/workflows/ci.yml": "14567255dc55f36d76bbc9f527b7be4f0bae955f724b5e543779d064a8df4ccf",
