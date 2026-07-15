@@ -98,8 +98,7 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
   a residual renders an error state, never a silently adjusted bar.
 
 - **RPT-12 Intraday timeline + excursions.** Day drill-down timeline: SPX line
-  09:30–16:00 ET with markers (entry ▲, stop ✖, close ●, watchdog ⚡,
-  UNPROTECTED shaded). Per entry **MAE/MFE** from recorded `EntryMarkSample`
+  09:30–16:00 ET with markers (entry ▲ GREEN, stop-fill ✖ RED — operator-ruled v1.77; close ●, watchdog ⚡, UNPROTECTED shaded; shape + color together per UI-26, never color alone). Per entry **MAE/MFE** from recorded `EntryMarkSample`
   events (D8: 1-minute cadence per open entry + SPX spot — journals what the
   TPF monitor already computes; if samples are absent the view degrades to
   markers-only, D10: no interpolation ever, gaps render as gaps). Aggregate:

@@ -68,6 +68,8 @@ blackout machinery — this doc adds the data layer, the tagging model, and the 
   active tag ("Today: NO-TRADE — FOMC") whenever the current ET day is tagged,
   and skip reasons render the label. Colorblind-safe per UI-26 semantics.
 
+- **CAL-09 Daily auto-refresh from official sources (v1.77, operator-ruled — resolves CAL-01's open source mechanism).** Tier-1 schedules AUTO-POPULATE: once per trading day (off-hours, riding the daily self-init; plus at boot if the last success is > 24 h old), the bot fetches the OFFICIAL published calendars — federalreserve.gov (FOMC), bls.gov release schedule (CPI/PPI/Employment Situation), bea.gov (GDP/PCE) — read-only, unauthenticated, those named domains ONLY. Mandatory safety rules: (1) **parse-strict, reject-don't-replace** — a fetch that fails, parses empty, or fails plausibility (dates in publishable horizon; per-category count in its expected band, e.g. FOMC 6–10/yr) is REJECTED WHOLE; existing data is never overwritten or reduced by a bad fetch; one alert. (2) **Additive with a loud diff** — new events append (CAL-04 rules auto-tag them); a previously imported date ABSENT from today's fetch is marked DISPUTED and alerted, never silently dropped, and its NO-TRADE tag stands until the operator rules. (3) **Everything evented** — source URL, timestamp, counts, diff, success or rejection. (4) **Loud staleness** — CAL-02's banner keys off last SUCCESS; `cal_refresh_fail_alert_days` (default 3) consecutive failures raise a persistent alert. (5) **Polarity unchanged (CAL-07)** — a broken feed never blocks trading; stated honestly: auto-refresh reduces but does not eliminate the operator's responsibility to know the macro calendar. Manual paste import remains the always-available fallback. (6) **NFR-07-registered** — the refresh loop is a wiring-registry component. (7) `cal_auto_refresh` (bool, default true) for manual-only operators.
+
 ## Flagged decisions (reverse any)
 
 C1 blackouts block entries only, never management. C2 day-granular now,
@@ -76,4 +78,4 @@ speakers best-effort tier-2. C4 standing category rules auto-tag, removable
 per-day. C5 tags + rules join the REC-07 inventory. C6 manual fires
 warn-and-acknowledge rather than hard-block. C7 empty calendar = trade
 (operator-authored additions, unlike measured signals). C8 the gate input is
-NFR-07-registered. New config: `cal_stale_after_days` (7–365, default 45).
+NFR-07-registered. New config: `cal_stale_after_days` (7–365, default 45); v1.77 adds `cal_auto_refresh` (default true) and `cal_refresh_fail_alert_days` (1–14, default 3).

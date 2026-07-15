@@ -1616,6 +1616,26 @@ Scenario: Tier-2 events are never trusted silently
   Then they render visually distinct as tier-2 and days without data show no fabricated events
 ```
 
+**TC-CAL-03** — CAL-09 daily auto-refresh (v1.77)
+```gherkin
+Scenario: A successful refresh appends and auto-tags
+  Given a daily fetch returning next year's FOMC schedule
+  Then new events append with source and timestamp journaled
+  And a standing "always block FOMC" rule auto-tags the new dates
+
+Scenario: A garbage fetch can never damage existing data
+  Given a fetch that fails, parses empty, or returns 40 FOMC dates
+  Then it is rejected whole, existing events are byte-identical, and one alert fires
+
+Scenario: A vanished date is disputed, never dropped
+  Given a previously imported FOMC date absent from today's fetch
+  Then the event is marked DISPUTED with an alert and its NO-TRADE tag stands
+
+Scenario: Feed failure is loud but never blocks trading
+  Given cal_refresh_fail_alert_days consecutive failures
+  Then a persistent alert raises and entries remain ungated by the calendar's absence
+```
+
 **TC-CAL-02** — CAL-06 manual override (v1.71)
 ```gherkin
 Scenario: A manual fire on a tagged day warns and requires acknowledgment
@@ -1630,11 +1650,36 @@ Scenario: The guide renders from the spec with a version stamp
   Given the how-it-works tab
   Then it renders doc 12's content as single source stamped with the spec version it describes
   And a stamped-vs-running version mismatch renders a banner, never silent currency
+  And the master flowchart is clickable to a full-screen pannable zoomable view (v1.77)
   And every DOC-03 chapter is present (the completeness contract)
   And the tab carries no trading controls
 
-Scenario: Four-tab navigation (operator-specified)
-  Then the SPA's top-level tabs are exactly Trading, Results, Calendar, How it works
+Scenario: Five-tab navigation (operator-specified, v1.75)
+  Then the SPA's top-level tabs are exactly Trading, Results, Calendar, How it works, Getting started
+
+Scenario: Getting-started never leaks a secret (DOC-06/UI-32)
+  Then the tab renders variable NAMES and explanations only
+  And no current env value, password, token, or secret ever renders anywhere in it
+  And all five DOC-06 sections are present (the completeness contract)
+```
+
+**TC-UI-09** — UI-31 activity feed day boundaries + explanations (v1.73)
+```gherkin
+Scenario: Days are visually separated, never continuous
+  Given activity spanning 2026-07-13 and 2026-07-14
+  Then a sticky ET date header renders between the two days
+  And each row shows its own ET time
+  And days without activity render no header
+
+Scenario: Every activity explains itself on hover
+  Given any rendered activity row
+  Then a styled focus- and tap-capable tooltip explains the event in plain English
+  And the wording uses the doc-12 chapter vocabulary
+  And no native title attribute carries the explanation
+
+Scenario: An unexplained event type is a test failure
+  Given an event type renderable by the feed with no explanation entry
+  Then the suite fails naming the event type
 ```
 
 ## Traceability matrix
@@ -1671,7 +1716,8 @@ Scenario: Four-tab navigation (operator-specified)
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
 | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
-| CAL-01→08 / UI-30 | TC-CAL-01, TC-CAL-02 | | DOC-01→05 / UI-29 | TC-DOC-01 |
+| CAL-01→09 / UI-30 | TC-CAL-01→03 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
+| UI-31 | TC-UI-09 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |
