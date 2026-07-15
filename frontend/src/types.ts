@@ -534,3 +534,21 @@ export interface CalendarData {
   staleness?: Record<string, CalendarStaleness>;
   standing_rules?: Record<string, string | null>;
 }
+
+/** DOC-01..05 (doc 12) -- the How-it-works tab's single source (GET /guide).
+ * `guide_markdown` is the ratified guide content read straight from
+ * spec/12-how-it-works.md (never a frontend copy); `guide_version` is its
+ * own "describes spec vX.YY" stamp, `running_spec_version` the RUNNING
+ * build's own spec version (spec/README.md's changelog head); `version_mismatch`
+ * is the backend's own comparison (DOC-05) -- the frontend renders the
+ * banner off this flag rather than re-deriving the comparison itself.
+ * `version_unknown` is DOC-05's failure polarity: either version failing to
+ * PARSE means the comparison is unverifiable, and the banner must fail
+ * toward showing ("cannot verify") -- never toward false currency. */
+export interface GuideData {
+  guide_markdown: string;
+  guide_version: string | null;
+  running_spec_version: string | null;
+  version_mismatch: boolean;
+  version_unknown: boolean;
+}

@@ -13,6 +13,7 @@ import logging
 import re
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -31,6 +32,72 @@ from meic.reporting.folds import entry_day
 
 
 logger = logging.getLogger(__name__)
+
+# DOC-05 (doc 12): this file lives at backend/src/meic/adapters/api/app.py —
+# five parents up is the repo root, the SAME depth server.py's own ROOT
+# constant computes independently. spec/ is READ-ONLY law; the guide
+# endpoint below only ever reads it, never writes.
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+_GUIDE_HEADING = "# THE GUIDE"
+_GUIDE_STAMP_RE = re.compile(r"describes spec v(\d+\.\d+)")
+_README_VERSION_RE = re.compile(r"^- Version:\s*(\d+\.\d+)", re.MULTILINE)
+
+
+class GuideUnavailable(Exception):
+    """The guide cannot be rendered honestly (spec/12 has no "# THE GUIDE"
+    ratified-content marker). Rendering the WHOLE file instead would put the
+    Rules preamble — rule IDs, ratification commentary — in front of the
+    operator, a DOC-02 violation; refusing with an honest "unavailable" is
+    the only correct fallback."""
+
+
+def _load_guide(guide_path: Path, readme_path: Path) -> dict[str, Any]:
+    """DOC-05: read the guide markdown STRAIGHT from spec/12-how-it-works.md
+    (single source — never a build-time copy that can drift) and pair it with
+    the RUNNING build's own spec version, so the frontend can banner a
+    mismatch instead of pretending currency.
+
+    `guide_version` is parsed from the ratified "# THE GUIDE (... describes
+    spec vX.YY ...)" stamp (DOC-05). `running_spec_version` is parsed from
+    spec/README.md's own "## Status" block — its FIRST "- Version: X.Y" line
+    is the changelog head (entries are prepended, newest first; verified
+    against the current file: v1.72's line precedes v1.71's, v1.70's, ...).
+    That single "- Version:" line is a cleaner, unambiguous parse than
+    matching "- vX.Y changes" bullets, which can legitimately repeat a
+    version number across same-version addenda (e.g. three v1.71 entries in
+    a row) — the FLAGGED design decision this endpoint makes (DOC-05
+    "better existing source" call).
+
+    DOC-05 failure polarity (review, 2026-07-15): the banner must fail toward
+    SHOWING, never toward false currency. If EITHER version fails to parse,
+    the comparison is unverifiable — `version_unknown` reports that
+    distinctly (the frontend banners on it with "cannot verify" wording,
+    separate from a concrete vX-vs-vY mismatch). A parse failure silently
+    disabling the banner would be the lying-gate defect in words, inside the
+    feature built to prevent it."""
+    full_text = guide_path.read_text(encoding="utf-8-sig")
+    idx = full_text.find(_GUIDE_HEADING)
+    if idx == -1:
+        raise GuideUnavailable(
+            f"no '{_GUIDE_HEADING}' marker in {guide_path.name} — refusing to "
+            "render the Rules preamble as operator-facing guide content (DOC-02)")
+    guide_markdown = full_text[idx:]
+    stamp_match = _GUIDE_STAMP_RE.search(guide_markdown)
+    guide_version = stamp_match.group(1) if stamp_match else None
+
+    readme_text = readme_path.read_text(encoding="utf-8-sig")
+    running_match = _README_VERSION_RE.search(readme_text)
+    running_spec_version = running_match.group(1) if running_match else None
+
+    version_unknown = guide_version is None or running_spec_version is None
+    return {
+        "guide_markdown": guide_markdown,
+        "guide_version": guide_version,
+        "running_spec_version": running_spec_version,
+        "version_mismatch": (not version_unknown
+                             and guide_version != running_spec_version),
+        "version_unknown": version_unknown,
+    }
 
 
 def _strike_from_symbol(symbol: str) -> str:
@@ -293,6 +360,9 @@ def create_app(
     # 400 rather than reaching for a store that isn't wired -- every other route is
     # unaffected, same convention as `backfill_broker_reads` above.
     cal_stale_after_days: int = 45,  # CAL-02 (doc 06): staleness banner threshold, display-only
+    spec_root: Any = None,  # DOC-05 (doc 12): override for the directory containing spec/ —
+    # tests only; every real caller (paper_app/live_app, server.py) leaves this None and
+    # gets the real repo root (_REPO_ROOT), i.e. the actual hash-locked spec/ tree.
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -468,6 +538,33 @@ def create_app(
         feed = [_describe(ev) for ev in events]
         feed = [f for f in feed if f is not None]
         return list(reversed(feed))[:25]
+
+    # --- DOC-01..05 how-it-works guide (doc 12) ---------------------------------
+    # Read-only GET, origin-open like every other read model above (RPT-10
+    # precedent) -- no trading capability, no state mutation, spec/ is only
+    # ever READ here, never written (spec/ is hash-locked law).
+    _guide_root = Path(spec_root) if spec_root is not None else _REPO_ROOT
+
+    @app.get("/guide")
+    def get_guide() -> dict[str, Any]:
+        """DOC-05: the how-it-works tab's single source. Reads spec/12-how-
+        it-works.md fresh on every request (no build-time copy that can
+        drift) and reports the RUNNING build's own spec version (spec/
+        README.md's changelog head) alongside the guide's own "describes
+        spec vX.YY" stamp, so the frontend can banner a mismatch instead of
+        pretending currency."""
+        try:
+            return _load_guide(
+                _guide_root / "spec" / "12-how-it-works.md",
+                _guide_root / "spec" / "README.md",
+            )
+        # OSError covers FileNotFound/Permission/IsADirectory alike;
+        # UnicodeDecodeError a mangled file (NFR-05's incident class);
+        # GuideUnavailable a spec/12 with no ratified-content marker (DOC-02
+        # refusal, see _load_guide). Every one takes the same honest
+        # "guide unavailable" payload rather than an unhandled traceback.
+        except (OSError, UnicodeDecodeError, GuideUnavailable) as e:
+            raise HTTPException(status_code=500, detail=f"guide unavailable: {e}")
 
     # --- CAL-01..08 trading calendar (doc 11) -----------------------------------
     # Read-only GET is origin-open like every other read model above; every

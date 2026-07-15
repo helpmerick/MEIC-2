@@ -76,3 +76,21 @@ def vitest_ui07_result():
     )
     output = _ANSI.sub("", proc.stdout + proc.stderr)
     return proc.returncode, output
+
+
+@pytest.fixture(scope="session")
+def vitest_doc_result():
+    """TC-DOC-01's frontend halves (doc 12, slice 4, v1.72): the how-it-works
+    tab's DOC-05 single-source rendering (version stamp, mismatch banner,
+    DOC-03 chapter completeness, no-trading-controls) in HowItWorksPage.test.tsx,
+    plus the four-tab nav (App.test.tsx) -- same real-vitest binding strategy
+    as `vitest_result`/`vitest_cal_result` above. Session-scoped for the same
+    startup-cost reason."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/components/HowItWorksPage.test.tsx",
+         "src/App.test.tsx", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=180,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output

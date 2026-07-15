@@ -7,9 +7,9 @@ import { useEffect, useState } from "react";
 // without any backend route changes.
 // CAL-08/UI-30 (v1.71): "Calendar" is a separate client-side route, same
 // pattern as Results (UI-27). DOC-05/UI-29: "How it works" is ALSO a route —
-// visible in the nav even though its content (doc 12) is a later, still-
-// unratified slice (DOC-01 forbids rendering draft prose; HowItWorksPage
-// renders an honest placeholder instead).
+// v1.72 ratified doc 12's guide content, so HowItWorksPage now renders it
+// (fetched from GET /guide, DOC-05 single source) rather than the honest
+// placeholder this page showed before ratification.
 export type Route =
   | { page: "trading" }
   | { page: "results" }

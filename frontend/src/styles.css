@@ -417,3 +417,39 @@ body {
 .next-entry { font-size: 13px; padding: 2px 2px 10px; color: var(--good); font-weight: 600; }
 .next-entry.idle { color: var(--faint); font-weight: 400; }
 @keyframes auth-fade { 0% { opacity: 0; transform: translateY(-4px); } 10% { opacity: 1; transform: translateY(0); } 85% { opacity: 1; } 100% { opacity: 0; } }
+
+/* DOC-01..05 (doc 12) — the How-it-works tab. Compact design language: same
+   card surface + spacing scale as every other panel, but laid out as a long-
+   form document (readable measure, generous line-height) rather than a grid
+   of stat cards. UI-26: every honesty/warning signal below pairs colour with
+   text/shape, never colour alone. */
+.how-it-works-page { max-width: 900px; margin: 0 auto; }
+.guide-stamp { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; margin: -6px 0 var(--sp-4); }
+
+.guide-toc {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--sp-4) var(--sp-5); margin-bottom: var(--sp-5);
+}
+.guide-toc ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.guide-toc button {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text); font-size: 12px; font-weight: 700; padding: 6px 13px; cursor: pointer;
+}
+.guide-toc button:hover { border-color: var(--accent); color: var(--accent); }
+
+.guide-body {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--sp-5) 28px 28px; line-height: 1.65; color: var(--text);
+}
+.guide-body h2.guide-title { font-size: 13px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: var(--sp-3); }
+.guide-body h2 { font-size: 20px; font-weight: 800; margin: 34px 0 14px; scroll-margin-top: 16px; }
+.guide-body h2:first-of-type { margin-top: 0; }
+.guide-body p { margin: 0 0 14px; color: var(--text); }
+.guide-body ul, .guide-body ol { margin: 0 0 14px; padding-left: 22px; }
+.guide-body li { margin-bottom: 6px; }
+.guide-body strong { color: var(--text); font-weight: 800; }
+.guide-body code { background: var(--line); color: var(--accent); padding: 1px 6px; border-radius: 5px; font-size: 0.92em; }
+.guide-body hr { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
+
+.guide-flowchart { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: var(--sp-4); margin-bottom: 14px; }
+.guide-flowchart svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }

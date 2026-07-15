@@ -4,8 +4,8 @@
 
 import type {
   ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
-  FireResult, FloorCandidates, ManualSimulation, PanelState, Preflight, ReportSummary, ScheduleRow,
-  ScheduleView,
+  FireResult, FloorCandidates, GuideData, ManualSimulation, PanelState, Preflight, ReportSummary,
+  ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -230,6 +230,11 @@ export const api = {
     post<{ result: string; category: string }>("/calendar/rule", { category, label }),
   removeCalendarRule: (category: string) =>
     del<{ result: string; category: string }>(`/calendar/rule/${encodeURIComponent(category)}`),
+
+  // --- DOC-01..05 how-it-works guide (doc 12, slice 4) -----------------------
+  // Read-only, origin-open like every other read model above -- no trading
+  // capability, no state mutation (the guide route is pure GET).
+  getGuide: () => get<GuideData>("/guide"),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

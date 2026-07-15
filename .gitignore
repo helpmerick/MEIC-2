@@ -16,3 +16,4 @@ logs/
 
 # Build cache — churns on every frontend build; never a reviewable diff.
 frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo

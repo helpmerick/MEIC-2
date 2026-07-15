@@ -262,6 +262,15 @@ describe("App — nav (v1.71 four-tab commission)", () => {
   beforeEach(() => {
     window.location.hash = "";
     vi.spyOn(api, "getCalendar").mockResolvedValue({ available: true, tags: {}, staleness: {}, standing_rules: {} });
+    // DOC-05 (doc 12, slice 4): the guide's own read model. Harmless when the
+    // route never reaches How it works (most tests in this block); the
+    // "clicking How it works" test below overrides this with fuller content.
+    vi.spyOn(api, "getGuide").mockResolvedValue({
+      guide_markdown: "# THE GUIDE (ratified content, v1.72 — describes spec v1.72; DOC-05 stamp)\n\n"
+        + "## 1. What the bot trades\n\nbody\n",
+      guide_version: "1.72", running_spec_version: "1.72", version_mismatch: false,
+      version_unknown: false,
+    });
   });
   afterEach(() => { window.location.hash = ""; });
 
@@ -278,11 +287,12 @@ describe("App — nav (v1.71 four-tab commission)", () => {
     expect(await screen.findByTestId("calendar-page")).toBeInTheDocument();
   });
 
-  it("clicking How it works shows the honest placeholder, never draft content (DOC-01)", async () => {
+  it("clicking How it works renders the ratified guide, not a placeholder (DOC-01/DOC-05)", async () => {
     render(<App />);
     await userEvent.click(screen.getByRole("link", { name: "How it works" }));
     expect(await screen.findByTestId("how-it-works-page")).toBeInTheDocument();
-    expect(screen.getByTestId("how-it-works-placeholder")).toHaveTextContent(/awaiting ratified content/i);
+    expect(await screen.findByTestId("guide-version-stamp")).toHaveTextContent("v1.72");
+    expect(screen.queryByTestId("how-it-works-placeholder")).not.toBeInTheDocument();
   });
 
   it("the Calendar tab is not the Trading page — Outage drill/Flatten are hidden there too", async () => {

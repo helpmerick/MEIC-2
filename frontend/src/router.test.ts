@@ -27,7 +27,7 @@ describe("parseHash (UI-27)", () => {
     expect(parseHash("#/calendar")).toEqual({ page: "calendar" });
   });
 
-  it("resolves #/how-it-works to the How-it-works placeholder (DOC-05/UI-29)", () => {
+  it("resolves #/how-it-works to the How-it-works tab (DOC-05/UI-29)", () => {
     expect(parseHash("#/how-it-works")).toEqual({ page: "how-it-works" });
   });
 
