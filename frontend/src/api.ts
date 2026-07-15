@@ -3,7 +3,7 @@
 // state and sends commands; the backend validates everything.
 
 import type {
-  ActivityLine, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
+  ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
   FireResult, FloorCandidates, ManualSimulation, PanelState, Preflight, ReportSummary, ScheduleRow,
   ScheduleView,
 } from "./types";
@@ -59,6 +59,20 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    throw new ApiError(r.status, detail?.detail ?? r.statusText);
+  }
+  return (await r.json()) as T;
+}
+
+// CAL-03/04 (v1.71): DELETE /calendar/tag/{day} and /calendar/rule/{category}
+// carry the day/category in the PATH, no body — same auth header as `post`.
+async function del<T>(path: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = apiToken();
+  if (token) headers["x-api-token"] = token;
+  const r = await fetch(path, { method: "DELETE", headers });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
     throw new ApiError(r.status, detail?.detail ?? r.statusText);
@@ -130,8 +144,14 @@ export const api = {
   // --- ENT-09 manual fire (UI-22) -------------------------------------------
   firePreview: (n: number) => get<FirePreview>(`/entry/${n}/fire-preview`),
   // The press_id came from the preview: confirming twice is ONE attempt.
-  fire: (n: number, pressId: string) =>
-    post<FireResult>(`/entry/${n}/fire`, { press_id: pressId, confirmed: true }),
+  // `blackoutAck` (CAL-06, v1.71): the OK dialog's explicit acknowledgment
+  // checkbox — omitted entirely on an untagged day (the backend ignores it
+  // there anyway; omitting keeps the request identical to every pre-v1.71 call).
+  fire: (n: number, pressId: string, blackoutAck?: boolean) =>
+    post<FireResult>(`/entry/${n}/fire`, {
+      press_id: pressId, confirmed: true,
+      ...(blackoutAck !== undefined ? { blackout_ack: blackoutAck } : {}),
+    }),
 
   // --- ENT-11/UI-25 ad-hoc manual trade --------------------------------------
   // Read-only: places no order, appends no event. POST (not GET) because it
@@ -193,6 +213,23 @@ export const api = {
         };
       });
   },
+
+  // --- CAL-01..08 trading calendar (doc 11, slice 2) ------------------------
+  // Read-only, origin-open like every other read model (RPT-10 precedent);
+  // every mutation below is POST/DELETE, caught by the security middleware's
+  // origin/token check exactly like every other command.
+  getCalendar: () => get<CalendarData>("/calendar"),
+  importCalendarEvents: (params: {
+    category: string; dates: string[]; labels?: Record<string, string>; source?: string;
+  }) => post<{ result: string; category: string; count: number }>("/calendar/import", params),
+  tagCalendarDay: (day: string, label?: string) =>
+    post<{ result: string; day: string; label: string }>("/calendar/tag", { day, label }),
+  untagCalendarDay: (day: string) =>
+    del<{ result: string; day: string }>(`/calendar/tag/${encodeURIComponent(day)}`),
+  setCalendarRule: (category: string, label?: string) =>
+    post<{ result: string; category: string }>("/calendar/rule", { category, label }),
+  removeCalendarRule: (category: string) =>
+    del<{ result: string; category: string }>(`/calendar/rule/${encodeURIComponent(category)}`),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

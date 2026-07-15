@@ -9,6 +9,7 @@ unauthenticated.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from decimal import Decimal
@@ -27,6 +28,9 @@ from meic.domain.events import CondorFilled, EntrySkipped
 from meic.domain.projection import day_report, fold
 from meic.domain.schedule import ScheduleDefaults, resolve, validate_entry
 from meic.reporting.folds import entry_day
+
+
+logger = logging.getLogger(__name__)
 
 
 def _strike_from_symbol(symbol: str) -> str:
@@ -321,6 +325,33 @@ def create_app(
     @app.get("/state")
     def get_state() -> dict[str, Any]:
         """UI-05/07/12 dashboard contract: mode, kill/enable state, protection."""
+        # CAL-08 (v1.71, slice-2 ADDITIVE read-model field): today's ET
+        # NO-TRADE label, so the trading panel can show "Today: NO-TRADE —
+        # <label>" (CAL-08) without the frontend ever computing a trading day
+        # itself (UI-03/DAY-03) -- reuses the SAME "today" source
+        # get_entries() already uses, and the SAME fail-open calendar read
+        # (CAL-07) the gate itself calls through. None when uncalendared/
+        # unwired/untagged -- never a guessed label.
+        #
+        # The WHOLE computation is guarded (2026-07-15 review): /state is the
+        # panel's most critical poll (armed/stop_trading/entries_enabled), and
+        # a purely-informational banner field must never be able to 500 it --
+        # `label_for_day` fails open internally (CAL-07), but the `today`
+        # derivation feeding it did not. Fail-open, never fail-silent: the
+        # swallowed exception is logged with traceback, same discipline as
+        # calendar_store.label_for_day's own CAL-07 guard.
+        today_blackout_label = None
+        if calendar_store is not None:
+            try:
+                today = commands.day() if commands is not None else fold(events).date
+                if today is not None:
+                    today_blackout_label = calendar_store.label_for_day(today)
+            except Exception:
+                logger.exception(
+                    "CAL-08 fail-open: today_blackout_label unavailable -- "
+                    "/state serves None for the banner field (all other "
+                    "fields unaffected)")
+                today_blackout_label = None
         return {
             "armed": state.armed,
             "stop_trading": state.stop_trading,
@@ -328,6 +359,7 @@ def create_app(
             "trading_mode": state.trading_mode,
             "entries_enabled": state.entries_enabled(),
             "blocking_state": state.blocking_state(),
+            "today_blackout_label": today_blackout_label,
         }
 
     def _snapshot() -> dict[str, Any]:
@@ -451,14 +483,25 @@ def create_app(
 
         tags = calendar_store.tags()
         stale = calendar_store.staleness_report(stale_after_days=cal_stale_after_days)
+        # slice-2 ADDITIVE field: `imports` gives the Calendar year-view its
+        # per-category event dates (below) -- `tags`/`staleness` alone cannot
+        # render an event marker for an imported-but-untagged day (a category
+        # with no standing rule is never auto-tagged, CAL-04), and CAL-08
+        # requires "event markers by category", not just tagged days.
+        imports = calendar_store.state().imports
         return {
             "available": True,
             "tags": {day: {"label": t.label, "origin": t.origin, "category": t.category}
                      for day, t in tags.items()},
             # CAL-01: tier included per category so UI-30 can mark tier-2
             # (Fed speakers) visually distinct from the tier-1 official schedules.
+            # `dates` (slice-2 ADDITIVE): every imported date for the category,
+            # so the year view can show an honest event marker even on a day
+            # no standing rule ever auto-tagged -- never fabricated (CAL-01),
+            # just the same dates already in the (pre-existing) import event.
             "staleness": {cat: {"imported_at": s.imported_at, "horizon": s.horizon,
-                                "stale": s.stale, "tier": tier_for_category(cat)}
+                                "stale": s.stale, "tier": tier_for_category(cat),
+                                "dates": sorted(imports[cat].dates) if cat in imports else []}
                          for cat, s in stale.items()},
             "standing_rules": dict(calendar_store.state().standing_rules),
         }

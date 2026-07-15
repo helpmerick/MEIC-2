@@ -125,7 +125,15 @@ function floorFields(floors: FloorParams): Record<string, unknown> {
   return out;
 }
 
-export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean }) {
+export function ManualTradeCard({
+  entriesEnabled, todayBlackoutLabel = null,
+}: {
+  entriesEnabled: boolean;
+  // CAL-06 (v1.71): today's ET NO-TRADE label, or null when untagged/
+  // uncalendared. Drives the warn-and-acknowledge dialog below; never
+  // computed here (UI-03/DAY-03) — passed straight from the read model.
+  todayBlackoutLabel?: string | null;
+}) {
   const [params, setParams] = useState<ManualParams>({ ...BLANK });
   const [floors, setFloors] = useState<FloorParams>({ ...BLANK_FLOORS });
   const [floorCandidates, setFloorCandidates] = useState<FloorCandidates | null>(null);
@@ -201,12 +209,17 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
     }
   }
 
-  async function confirmFire() {
+  // CAL-06: `ack` is only meaningful (and only sent) when today carries a
+  // NO-TRADE tag — the dialog forces it true before OK is even reachable in
+  // that case (see ManualFireDialog below), so this never sends a false
+  // blackout_ack on a tagged day.
+  async function confirmFire(ack: boolean) {
     setFiring(true);
     try {
       const result = await api.manualFire({
         press_id: crypto.randomUUID(), confirmed: true,
         ...nonEmpty(params), ...floorFields(floors),
+        ...(todayBlackoutLabel ? { blackout_ack: ack } : {}),
       });
       setFireResult(result);
     } finally {
@@ -385,7 +398,7 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
           {fireResult && (
             <p className={`msg ${fireResult.result === "filled" ? "ok" : "warn"}`} role="status">
               {fireResult.result === "filled"
-                ? `filled (${fireResult.initiator})`
+                ? `filled (${fireResult.initiator})${fireResult.blackout_overridden ? " — blackout override" : ""}`
                 : `${fireResult.result}${fireResult.reason ? ` — ${fireResult.reason}` : ""}`}
             </p>
           )}
@@ -397,8 +410,9 @@ export function ManualTradeCard({ entriesEnabled }: { entriesEnabled: boolean })
           floors={floors}
           worstCase={lastWorstCase}
           busy={firing}
+          todayBlackoutLabel={todayBlackoutLabel}
           onCancel={() => setConfirmOpen(false)}
-          onConfirm={() => void confirmFire()}
+          onConfirm={(ack) => void confirmFire(ack)}
         />
       )}
     </section>
@@ -414,6 +428,7 @@ function ManualFireDialog({
   floors,
   worstCase,
   busy,
+  todayBlackoutLabel,
   onCancel,
   onConfirm,
 }: {
@@ -421,9 +436,20 @@ function ManualFireDialog({
   floors: FloorParams;
   worstCase: string | null;
   busy: boolean;
+  todayBlackoutLabel: string | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (blackoutAck: boolean) => void;
 }) {
+  // CAL-06: OK stays disabled until this is checked, ONLY when today is
+  // tagged NO-TRADE. An untagged day never shows the warning at all, and OK
+  // behaves exactly as it always has (ack defaults false, never sent).
+  const [ack, setAck] = useState(false);
+  // Informed consent tracks the LABEL (final review, 2026-07-15): if the tag
+  // changes underneath an open dialog (FOMC -> CPI), a previously-ticked
+  // checkbox must NOT stay ticked — the operator acknowledged a different
+  // label than the one the override would now land on. Any label change
+  // resets the acknowledgment, re-disabling OK until re-ticked.
+  useEffect(() => setAck(false), [todayBlackoutLabel]);
   const rows: [string, string][] = [
     ["Contracts", params.contracts === "" ? "(default)" : String(params.contracts)],
     ["Target premium", params.target_premium === "" ? "(default)" : `$${params.target_premium}`],
@@ -441,6 +467,21 @@ function ManualFireDialog({
       <div className="modal">
         <h3>Fire this trade now?</h3>
         <p className="sub">Ad-hoc entry — outside any scheduled window (ENT-11)</p>
+
+        {todayBlackoutLabel && (
+          <div className="cal-blackout-warning" role="alert" data-testid="blackout-warning">
+            <strong>⚠ Today is tagged NO-TRADE: {todayBlackoutLabel}</strong>
+            <label className="cal-ack-check">
+              <input
+                type="checkbox"
+                aria-label="acknowledge blackout override"
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+              />
+              I acknowledge this fire overrides today's NO-TRADE tag (CAL-06)
+            </label>
+          </div>
+        )}
 
         <div className="fire-params">
           {rows.map(([k, v]) => (
@@ -462,7 +503,12 @@ function ManualFireDialog({
 
         <div className="modal-actions">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onConfirm} disabled={busy} autoFocus>
+          <button
+            className="btn primary"
+            onClick={() => onConfirm(ack)}
+            disabled={busy || (!!todayBlackoutLabel && !ack)}
+            autoFocus
+          >
             {busy ? "Firing…" : "OK"}
           </button>
         </div>

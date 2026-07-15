@@ -50,8 +50,8 @@ beforeEach(() => {
   vi.spyOn(api, "getSchedule").mockResolvedValue(VIEW);
 });
 
-async function renderPanel(entriesEnabled = true) {
-  render(<SchedulePanel entriesEnabled={entriesEnabled} />);
+async function renderPanel(entriesEnabled = true, todayBlackoutLabel: string | null = null) {
+  render(<SchedulePanel entriesEnabled={entriesEnabled} todayBlackoutLabel={todayBlackoutLabel} />);
   await screen.findByRole("table");
 }
 
@@ -515,6 +515,77 @@ describe("ENT-09 manual fire (UI-22)", () => {
     fireEvent.click(screen.getByText("OK"));
 
     await waitFor(() => expect(fire).toHaveBeenCalledWith(2, "press-2"));
+  });
+});
+
+// CAL-06 (v1.71, TC-CAL-02): the scheduled-row ▶ fire dialog is the SAME
+// warn-and-acknowledge surface as the ad-hoc card's — a tagged day never
+// hard-blocks ENT-09's fresh-intent fire, but OK stays disabled until the
+// operator explicitly acknowledges the override.
+describe("CAL-06 — blackout warn-and-acknowledge dialog", () => {
+  it("shows no warning and calls api.fire with exactly 2 args when today is untagged", async () => {
+    vi.spyOn(api, "firePreview").mockResolvedValue(PREVIEW);
+    const fire = vi.spyOn(api, "fire").mockResolvedValue({ result: "filled", initiator: "manual_entry" });
+    await renderPanel(true, null);
+
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+    await screen.findByRole("dialog");
+    expect(screen.queryByTestId("blackout-warning")).not.toBeInTheDocument();
+    expect(screen.getByText("OK")).not.toBeDisabled();
+
+    fireEvent.click(screen.getByText("OK"));
+    await waitFor(() => expect(fire).toHaveBeenCalledWith(1, "press-abc"));
+  });
+
+  it("shows the blackout warning and keeps OK disabled until acknowledged", async () => {
+    vi.spyOn(api, "firePreview").mockResolvedValue(PREVIEW);
+    await renderPanel(true, "FOMC");
+
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+    await screen.findByRole("dialog");
+
+    expect(screen.getByTestId("blackout-warning")).toHaveTextContent("Today is tagged NO-TRADE: FOMC");
+    expect(screen.getByText("OK")).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    expect(screen.getByText("OK")).not.toBeDisabled();
+  });
+
+  it("sends blackout_ack:true once acknowledged and reports the override", async () => {
+    vi.spyOn(api, "firePreview").mockResolvedValue(PREVIEW);
+    const fire = vi.spyOn(api, "fire").mockResolvedValue({
+      result: "filled", initiator: "manual_entry", blackout_overridden: true,
+    });
+    await renderPanel(true, "FOMC");
+
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    fireEvent.click(screen.getByText("OK"));
+
+    await waitFor(() => expect(fire).toHaveBeenCalledWith(1, "press-abc", true));
+    expect(await screen.findByText(/blackout override/i)).toBeInTheDocument();
+  });
+
+  it("resets the acknowledgment when the label changes under an open dialog (informed consent tracks the label)", async () => {
+    // Final review (2026-07-15): tag swapped FOMC -> CPI while the dialog is
+    // open. A previously-ticked checkbox must NOT survive — the operator
+    // acknowledged FOMC, not CPI. Checkbox unchecked, OK disabled again.
+    vi.spyOn(api, "firePreview").mockResolvedValue(PREVIEW);
+    const { rerender } = render(
+      <SchedulePanel entriesEnabled todayBlackoutLabel="FOMC" />);
+    await screen.findByRole("table");
+
+    fireEvent.click(screen.getByLabelText("fire entry 1"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    expect(screen.getByText("OK")).not.toBeDisabled();
+
+    rerender(<SchedulePanel entriesEnabled todayBlackoutLabel="CPI" />);
+
+    expect(screen.getByTestId("blackout-warning")).toHaveTextContent("Today is tagged NO-TRADE: CPI");
+    expect(screen.getByLabelText("acknowledge blackout override")).not.toBeChecked();
+    expect(screen.getByText("OK")).toBeDisabled();
   });
 });
 

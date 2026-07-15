@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, getApiToken, setApiToken, type OutageDrill } from "./api";
 import { ActivityFeed } from "./components/ActivityFeed";
+import { CalendarPage } from "./components/CalendarPage";
 import { ControlPanel } from "./components/ControlPanel";
 import { DayDrilldown } from "./components/results/DayDrilldown";
+import { HowItWorksPage } from "./components/HowItWorksPage";
 import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
 import { EntryCards } from "./components/EntryCards";
@@ -16,10 +18,15 @@ import { useTheme } from "./useTheme";
 export function App() {
   const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
   const [theme, toggleTheme] = useTheme();
-  // UI-27: a separate client-side route for the Results dashboard, sharing
-  // this one shell (header, auth, theme, mode tag) — never a new app.
+  // UI-27/CAL-08/UI-30/DOC-05: every non-Trading page is a separate client-
+  // side route sharing this one shell (header, auth, theme, mode tag) — never
+  // a new app. The v1.71 commission fixes the nav at exactly four tabs.
   const route = useHashRoute();
   const onTrading = route.page === "trading";
+  // CAL-06 (v1.71): today's ET NO-TRADE label (or null), read straight off the
+  // read model (UI-03/DAY-03 — the frontend never computes an ET trading day
+  // itself) and threaded to both ▶ manual-fire surfaces below.
+  const todayBlackoutLabel = state?.today_blackout_label ?? null;
   const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
   const [drill, setDrill] = useState<OutageDrill | null>(null);
   const [drilling, setDrilling] = useState(false);
@@ -137,11 +144,17 @@ export function App() {
           <h1>MEIC<span className="dot">.</span></h1>
           <span className="muted">control panel</span>
         </div>
-        {/* UI-27: instant client-side switching between the Trading page and
-            the Results dashboard — a hash change, never a server round trip. */}
+        {/* UI-27/CAL-08/UI-30/DOC-05: instant client-side switching between
+            every page — a hash change, never a server round trip. Exactly
+            four tabs (the v1.71 commission): Trading | Results | Calendar |
+            How it works. */}
         <nav className="app-nav" aria-label="pages">
           <a className={`nav-link ${onTrading ? "active" : ""}`} href="#/">Trading</a>
-          <a className={`nav-link ${!onTrading ? "active" : ""}`} href="#/results">Results</a>
+          <a className={`nav-link ${route.page === "results" || route.page === "results-day" ? "active" : ""}`}
+             href="#/results">Results</a>
+          <a className={`nav-link ${route.page === "calendar" ? "active" : ""}`} href="#/calendar">Calendar</a>
+          <a className={`nav-link ${route.page === "how-it-works" ? "active" : ""}`}
+             href="#/how-it-works">How it works</a>
         </nav>
         <div className="spacer" />
         {onTrading && (
@@ -202,12 +215,14 @@ export function App() {
           {/* ENT-11/UI-25: the ad-hoc lane sits beside Control (operator layout
               2026-07-12) — fire NOW with explicit parameters, plus a read-only
               Simulate. Follows the same entries-enabled gate. */}
-          <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false} />
+          <ManualTradeCard entriesEnabled={state?.entries_enabled ?? false}
+                           todayBlackoutLabel={todayBlackoutLabel} />
           {/* ENT-10 / UI-24: visible evidence the schedule is being watched. */}
           <NextEntryCountdown />
           {/* UC-02 composition + ENT-09 fire. The fire button follows the three
               trade-enabling states, exactly as UI-22 requires. */}
-          <SchedulePanel entriesEnabled={state?.entries_enabled ?? false} />
+          <SchedulePanel entriesEnabled={state?.entries_enabled ?? false}
+                         todayBlackoutLabel={todayBlackoutLabel} />
           <div className="report"><DayReportView report={report} entries={entries} /></div>
           <div className="entries-col">
             <EntryCards entries={entries} onClose={closeEntry}
@@ -218,6 +233,10 @@ export function App() {
         </main>
       ) : route.page === "results-day" ? (
         <DayDrilldown date={route.date} />
+      ) : route.page === "calendar" ? (
+        <CalendarPage />
+      ) : route.page === "how-it-works" ? (
+        <HowItWorksPage />
       ) : (
         <ResultsPage entries={entries} />
       )}

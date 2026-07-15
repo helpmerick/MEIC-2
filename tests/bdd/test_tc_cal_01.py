@@ -6,7 +6,16 @@ Binds the BACKEND halves of every scenario: the tag/rule fold
 (application/execute_entry.py / application/run_trading_day.py). The
 frontend-only clauses ("visually distinct") are bound against the backend
 DATA that drives that rendering (the `origin` field) -- slice 2 owns the
-actual pixels; nothing here fakes a UI assertion.
+actual pixels.
+
+SLICE 2 (v1.71): the two "visually distinct" clauses (Scenario 2's auto-tag
+marking, Scenario 5's tier-2 marking) now ALSO bind their frontend halves --
+frontend/src/components/CalendarPage.tsx's structural (class/glyph, never
+colour-alone, UI-26) rendering of both splits -- via the real-vitest
+`vitest_cal_result` session fixture (tests/bdd/conftest.py), same binding
+strategy as TC-UI-05/06/07. Never a tautology: a CalendarPage regression
+fails the corresponding vitest test, and `vitest_cal_result`'s returncode
+goes non-zero, and these clauses fail with it.
 """
 from __future__ import annotations
 
@@ -139,23 +148,29 @@ def _(world):
 
 
 @then('every imported FOMC day is auto-tagged, visually distinct, and individually removable')
-def _(world):
+def _(world, vitest_cal_result):
     store = world["store"]
     tags = effective_tags(store.state())
     for d in ("2026-07-15", "2026-09-16", "2026-10-28"):
         assert tags[d].label == "FOMC"
-        # "visually distinct" (UI-30, slice 2) renders off THIS field --
-        # origin="auto" vs "manual" is the backend data the frontend keys its
-        # styling on; the pixels themselves are out of scope for this slice.
+        # "visually distinct" (UI-30) renders off THIS field -- origin="auto"
+        # vs "manual" is the backend data the frontend keys its styling on.
         assert tags[d].origin == "auto"
         assert tags[d].category == "FOMC"
+
+    # FRONTEND HALF (slice 2): CalendarPage.tsx renders an auto-tagged day
+    # with a DIFFERENT class/glyph than a manually-tagged one (never colour
+    # alone, UI-26) -- actually executed and passed via the real vitest suite.
+    rc, output = vitest_cal_result
+    assert rc == 0, output
+    assert "an auto-tagged day (standing rule) carries a distinct origin class from a manual tag" in output
 
     store.untag("2026-07-15")   # individually removable
     world["removed_day"] = "2026-07-15"
 
 
 @then('removing one day leaves the rule and other days intact')
-def _(world):
+def _(world, vitest_cal_result):
     store = world["store"]
     tags = effective_tags(store.state())
     assert world["removed_day"] not in tags
@@ -170,6 +185,17 @@ def _(world):
     tags = effective_tags(store.state())
     assert "2026-12-16" in tags and tags["2026-12-16"].origin == "auto"
     assert world["removed_day"] not in tags
+
+    # FRONTEND HALF (slice 2, CAL-04's dual-layer removal): CalendarPage.tsx's
+    # tag control is the two-step affordance the operator actually uses to
+    # remove a day covered by BOTH a manual tag and a standing rule's
+    # auto-tag -- "Remove manual tag" first, then (re-reading the SAME field
+    # this scenario just asserted on) "Suppress auto-tag (rule stays)" once
+    # the manual layer is gone and the auto layer alone remains effective.
+    rc, output = vitest_cal_result
+    assert rc == 0, output
+    assert ("shows 'Remove manual tag' first; after removing, a persisting "
+            "auto-tag shows 'Suppress auto-tag (rule stays)'") in output
 
 
 # --- Scenario 3: empty calendar means trade; staleness shown never blocking -
@@ -259,7 +285,7 @@ def _(world):
 
 
 @then("they render visually distinct as tier-2 and days without data show no fabricated events")
-def _(world):
+def _(world, vitest_cal_result):
     store = world["store"]
     # tier-2, distinctly from a tier-1 category (UI-30 keys its "tier-2,
     # display-only in trust terms" styling off THIS split).
@@ -272,3 +298,13 @@ def _(world):
     # a day with no import shows NOTHING -- never a fabricated event/tag.
     assert store.label_for_day("2026-07-17") is None
     assert "2026-07-17" not in effective_tags(store.state())
+
+    # FRONTEND HALF (slice 2): CalendarPage.tsx renders a tier-2 event marker
+    # with a DIFFERENT class AND a different glyph (shape) than a tier-1
+    # marker -- structural distinction, never colour alone (UI-26) -- and a
+    # day with no import shows no fabricated marker at all. Actually executed
+    # via the real vitest suite, never a tautology.
+    rc, output = vitest_cal_result
+    assert rc == 0, output
+    assert "renders a DIFFERENT class and shape glyph for a tier-2 event than a tier-1 one" in output
+    assert "a day with no import shows no fabricated event marker" in output

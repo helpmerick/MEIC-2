@@ -11,6 +11,12 @@ export interface PanelState {
   trading_mode: "paper" | "live";
   entries_enabled: boolean;
   blocking_state: BlockingState;
+  // CAL-08 (v1.71, slice-2 additive backend field): today's ET NO-TRADE
+  // label, or null when today is untagged/uncalendared. Drives the Trading
+  // panel's "Today: NO-TRADE — <label>" banner (Dashboard.tsx) and the CAL-06
+  // manual-fire dialogs' warning, without the frontend ever computing an ET
+  // trading day itself (UI-03/DAY-03).
+  today_blackout_label?: string | null;
 }
 
 export interface DayReport {
@@ -166,6 +172,12 @@ export interface FireResult {
   entry_id?: string;
   initiator?: string;
   fill_credit?: string;
+  // CAL-06 (v1.71): present on a `skipped` result refused for lack of the
+  // blackout acknowledgment checkbox (reason "blackout_unacknowledged:<label>").
+  blackout_label?: string;
+  // CAL-06: true on a `filled` result that proceeded via an ACKNOWLEDGED
+  // override of today's NO-TRADE tag — never present/true otherwise.
+  blackout_overridden?: boolean;
 }
 
 // ENT-09b (v1.57): the ▶ dialog's floor dropdown candidates, from the entry's
@@ -481,4 +493,44 @@ export interface DailyRow {
   wins: number | null;
   losses: number | null;
   entries: number | null;
+}
+
+// =============================================================================
+// Slice 2 — Trading calendar (doc 11 CAL-*, UI-30). Types mirror the GET
+// /calendar read model exactly (backend/src/meic/adapters/api/app.py
+// get_calendar); every day/date key is an ET calendar date string ("YYYY-MM-DD",
+// DAY-03) — never a browser-local date.
+// =============================================================================
+
+/** One currently-EFFECTIVE tagged day (CAL-03/04). `category` is populated
+ * only for an auto-tag (origin "auto"); a manual tag (origin "manual") may
+ * still SIT OVER an effective auto-tag underneath it — CAL-04's own layered-
+ * removal semantics (slice 1) mean the UI never needs to detect that ahead of
+ * time: removing once and re-reading this same field is how the operator SEES
+ * the auto-tag persist (or not). */
+export interface CalendarTag {
+  label: string;
+  origin: "manual" | "auto";
+  category: string | null;
+}
+
+/** CAL-02 per-category staleness + (slice-2 additive) the category's own
+ * imported dates, so the year view can mark an event on an imported-but-
+ * untagged day (a category with no standing rule is never auto-tagged).
+ * `dates` is OPTIONAL in the type because it is additive: a backend that
+ * predates it omits the field, and the tab must degrade to "no markers for
+ * this category", never crash (final review, 2026-07-15). */
+export interface CalendarStaleness {
+  imported_at: string;
+  horizon: string | null;
+  stale: boolean;
+  tier: 1 | 2;
+  dates?: string[];
+}
+
+export interface CalendarData {
+  available: boolean;
+  tags?: Record<string, CalendarTag>;
+  staleness?: Record<string, CalendarStaleness>;
+  standing_rules?: Record<string, string | null>;
 }

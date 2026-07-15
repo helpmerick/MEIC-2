@@ -123,6 +123,91 @@ describe("Fire (ENT-11)", () => {
   });
 });
 
+// CAL-06 (v1.71, TC-CAL-02): a manual fire on a tagged day warns and requires
+// an explicit acknowledgment before OK is even reachable.
+describe("CAL-06 — blackout warn-and-acknowledge dialog", () => {
+  it("shows no warning and behaves exactly as before when today is untagged", async () => {
+    const fire = vi.spyOn(api, "manualFire").mockResolvedValue({ result: "filled", initiator: "manual_entry" });
+    render(<ManualTradeCard entriesEnabled todayBlackoutLabel={null} />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    expect(screen.queryByTestId("blackout-warning")).not.toBeInTheDocument();
+    expect(screen.getByText("OK")).not.toBeDisabled();
+
+    fireEvent.click(screen.getByText("OK"));
+    await waitFor(() => expect(fire).toHaveBeenCalled());
+    expect(fire.mock.calls[0][0]).not.toHaveProperty("blackout_ack");
+  });
+
+  it("shows the blackout warning and keeps OK disabled until the checkbox is ticked", async () => {
+    render(<ManualTradeCard entriesEnabled todayBlackoutLabel="FOMC" />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    const warning = screen.getByTestId("blackout-warning");
+    expect(warning).toHaveTextContent("Today is tagged NO-TRADE: FOMC");
+    expect(screen.getByText("OK")).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    expect(screen.getByText("OK")).not.toBeDisabled();
+  });
+
+  it("sends blackout_ack:true and reports the override once acknowledged", async () => {
+    const fire = vi.spyOn(api, "manualFire").mockResolvedValue({
+      result: "filled", initiator: "manual_entry", blackout_overridden: true,
+    });
+    render(<ManualTradeCard entriesEnabled todayBlackoutLabel="FOMC" />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    fireEvent.click(screen.getByText("OK"));
+
+    await waitFor(() => expect(fire).toHaveBeenCalled());
+    expect(fire.mock.calls[0][0].blackout_ack).toBe(true);
+    expect(await screen.findByText(/blackout override/i)).toBeInTheDocument();
+  });
+
+  it("resets the acknowledgment when the label changes under an open dialog (informed consent tracks the label)", async () => {
+    // Final review (2026-07-15): tag swapped FOMC -> CPI while the dialog is
+    // open. A previously-ticked checkbox must NOT survive — the operator
+    // acknowledged FOMC, not CPI. Checkbox unchecked, OK disabled again.
+    const { rerender } = render(<ManualTradeCard entriesEnabled todayBlackoutLabel="FOMC" />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    expect(screen.getByText("OK")).not.toBeDisabled();
+
+    rerender(<ManualTradeCard entriesEnabled todayBlackoutLabel="CPI" />);
+
+    expect(screen.getByTestId("blackout-warning")).toHaveTextContent("Today is tagged NO-TRADE: CPI");
+    expect(screen.getByLabelText("acknowledge blackout override")).not.toBeChecked();
+    expect(screen.getByText("OK")).toBeDisabled();
+  });
+
+  it("refuses to fire — reason blackout_unacknowledged — surfaces plainly if somehow submitted unacknowledged", async () => {
+    // Defence in depth: even though OK is disabled client-side, the backend
+    // is authoritative (UI-03) — a refusal must still render honestly.
+    vi.spyOn(api, "manualFire").mockResolvedValue({
+      result: "skipped", reason: "blackout_unacknowledged:FOMC", blackout_label: "FOMC",
+    });
+    render(<ManualTradeCard entriesEnabled todayBlackoutLabel="FOMC" />);
+    fireEvent.click(screen.getByText("Fire manual trade"));
+    fireEvent.click(screen.getByText("Fire"));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByLabelText("acknowledge blackout override"));
+    fireEvent.click(screen.getByText("OK"));
+
+    expect(await screen.findByText(/blackout_unacknowledged:FOMC/)).toBeInTheDocument();
+  });
+});
+
 // ENT-09b v1.57 (finished to spec): the floor pickers are DROPDOWNS populated
 // from the live validated universe via api.manualFloorCandidates — free
 // numeric entry is gone (it could name a strike that doesn't exist).

@@ -3,9 +3,18 @@
 Binds the BACKEND half: a manual (Y) fire on a NO-TRADE-tagged ET day never
 hard-blocks (ENT-09's fresh-intent rationale) but requires the explicit
 `blackout_ack` flag -- refused with a distinct, label-carrying reason
-without it (the backend equivalent of "OK stays disabled until
-acknowledged" -- the dialog itself is slice 2's frontend), evented and
-report-tagged `blackout_overridden` with it.
+without it, evented and report-tagged `blackout_overridden` with it.
+
+SLICE 2 (v1.71): the "OK dialog shows the blackout warning and OK stays
+disabled until acknowledged" clause now ALSO binds its FRONTEND half --
+frontend/src/components/ManualTradeCard.tsx's `ManualFireDialog` and
+frontend/src/components/SchedulePanel.tsx's `FireDialog` (the ▶ scheduled-row
+dialog carries the identical warn-and-acknowledge surface, since both post
+through the same `ManualEntry.fire` pipeline this file's backend half
+exercises) -- via the real-vitest `vitest_cal_result` session fixture
+(tests/bdd/conftest.py), same binding strategy as TC-UI-05/06/07/TC-CAL-01.
+Never a tautology: a regression in either dialog fails its own vitest test,
+`vitest_cal_result`'s returncode goes non-zero, and this clause fails with it.
 """
 from __future__ import annotations
 
@@ -112,7 +121,7 @@ def _(world):
 
 
 @then("the OK dialog shows the blackout warning and OK stays disabled until acknowledged")
-def _(world):
+def _(world, vitest_cal_result):
     comp = world["comp"]
     result = world["unacked_result"]
     assert result["reason"] == "blackout_unacknowledged:FOMC"
@@ -124,9 +133,20 @@ def _(world):
     assert [o.intent for o in comp.broker._orders.values() if o.intent.kind == "iron_condor"] == []
     assert not any(isinstance(e, ManualFireBlackoutAcknowledged) for e in comp.events)
 
+    # FRONTEND HALF (slice 2): BOTH ▶ manual-fire dialogs (the ad-hoc card's
+    # ManualFireDialog and the scheduled-row's FireDialog, since both post
+    # through this identical backend pipeline) render the blackout warning
+    # and keep OK disabled until the acknowledgment checkbox is ticked --
+    # actually executed and passed via the real vitest suite, never a
+    # tautology.
+    rc, output = vitest_cal_result
+    assert rc == 0, output
+    assert "shows the blackout warning and keeps OK disabled until the checkbox is ticked" in output
+    assert "shows the blackout warning and keeps OK disabled until acknowledged" in output
+
 
 @then('an acknowledged fire proceeds, is evented, and reports tagged "blackout_overridden"')
-def _(world):
+def _(world, vitest_cal_result):
     comp, manual = world["comp"], world["manual"]
     # Final-review finding 3 (2026-07-15), pinned: the refused unacknowledged
     # press above must NOT have consumed its press_id -- the acknowledged
@@ -155,3 +175,12 @@ def _(world):
     assert dup == {"result": "duplicate_press", "press_id": "press-1"}
     assert len([e for e in comp.events if isinstance(e, CondorFilled)]) == 1
     assert len([e for e in comp.events if isinstance(e, ManualFireBlackoutAcknowledged)]) == 1
+
+    # FRONTEND HALF (slice 2): once the operator ticks the checkbox and
+    # presses OK, BOTH dialogs' fire requests carry `blackout_ack: true` (and
+    # nothing else changes shape) -- proven by actually calling api.manualFire/
+    # api.fire and inspecting the request, via the real vitest suite.
+    rc, output = vitest_cal_result
+    assert rc == 0, output
+    assert "sends blackout_ack:true and reports the override once acknowledged" in output
+    assert "sends blackout_ack:true once acknowledged and reports the override" in output

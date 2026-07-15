@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // The live hook opens a WebSocket — mock it so App renders controlled data.
@@ -252,6 +252,43 @@ describe("App — Results routing (UI-27)", () => {
     expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Results" }));
     await screen.findByTestId("results-page");
+    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
+  });
+});
+
+// CAL-08/UI-30 + DOC-01/DOC-05 (v1.71 commission): the nav is fixed at exactly
+// four tabs — Trading | Results | Calendar | How it works.
+describe("App — nav (v1.71 four-tab commission)", () => {
+  beforeEach(() => {
+    window.location.hash = "";
+    vi.spyOn(api, "getCalendar").mockResolvedValue({ available: true, tags: {}, staleness: {}, standing_rules: {} });
+  });
+  afterEach(() => { window.location.hash = ""; });
+
+  it("shows exactly the four nav tabs, in order", () => {
+    render(<App />);
+    const nav = screen.getByRole("navigation", { name: /pages/i });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual(["Trading", "Results", "Calendar", "How it works"]);
+  });
+
+  it("clicking Calendar switches instantly to the Calendar tab (CAL-08/UI-30)", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("link", { name: "Calendar" }));
+    expect(await screen.findByTestId("calendar-page")).toBeInTheDocument();
+  });
+
+  it("clicking How it works shows the honest placeholder, never draft content (DOC-01)", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("link", { name: "How it works" }));
+    expect(await screen.findByTestId("how-it-works-page")).toBeInTheDocument();
+    expect(screen.getByTestId("how-it-works-placeholder")).toHaveTextContent(/awaiting ratified content/i);
+  });
+
+  it("the Calendar tab is not the Trading page — Outage drill/Flatten are hidden there too", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("link", { name: "Calendar" }));
+    await screen.findByTestId("calendar-page");
     expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
   });
 });

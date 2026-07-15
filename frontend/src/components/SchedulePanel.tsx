@@ -171,7 +171,15 @@ function usedFraction(view: ScheduleView): number | null {
   return Number(view.day_total_estimate) / ceiling;
 }
 
-export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
+export function SchedulePanel({
+  entriesEnabled, todayBlackoutLabel = null,
+}: {
+  entriesEnabled: boolean;
+  // CAL-06 (v1.71): today's ET NO-TRADE label, or null. Passed straight from
+  // the read model (UI-03/DAY-03) to the ▶ fire dialog's warn-and-acknowledge
+  // panel — never computed here.
+  todayBlackoutLabel?: string | null;
+}) {
   const [view, setView] = useState<ScheduleView | null>(null);
   const [rows, setRows] = useState<ScheduleRow[]>([]);
   const [maxDayRisk, setMaxDayRisk] = useState("");
@@ -217,13 +225,20 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
     setDialog(await api.firePreview(n));
   }
 
-  async function confirmFire() {
+  // CAL-06: `ack` only ever travels to the backend when today is tagged (the
+  // dialog forces it true before OK is reachable in that case) — an
+  // untagged day's fire is byte-identical to every pre-v1.71 call.
+  async function confirmFire(ack: boolean) {
     if (!dialog) return;
     setFiring(true);
     try {
       // The press_id came from the preview. Confirming the same press twice is
       // ONE attempt (ENT-09) — the backend, not this button, guarantees that.
-      const result = await api.fire(dialog.entry_number, dialog.press_id);
+      // Byte-identical call shape to every pre-v1.71 caller when untagged —
+      // the third argument is omitted outright, never an explicit `undefined`.
+      const result = todayBlackoutLabel
+        ? await api.fire(dialog.entry_number, dialog.press_id, ack)
+        : await api.fire(dialog.entry_number, dialog.press_id);
       setFireResult({ n: dialog.entry_number, result });
     } finally {
       setFiring(false);
@@ -454,8 +469,9 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
         <FireDialog
           preview={dialog}
           busy={firing}
+          todayBlackoutLabel={todayBlackoutLabel}
           onCancel={() => setDialog(null)}
-          onConfirm={() => void confirmFire()}
+          onConfirm={(ack) => void confirmFire(ack)}
         />
       )}
 
@@ -463,7 +479,7 @@ export function SchedulePanel({ entriesEnabled }: { entriesEnabled: boolean }) {
         <p className={`msg ${fireResult.result.result === "filled" ? "ok" : "warn"}`} role="status">
           Entry {fireResult.n}:{" "}
           {fireResult.result.result === "filled"
-            ? `filled (${fireResult.result.initiator})`
+            ? `filled (${fireResult.result.initiator})${fireResult.result.blackout_overridden ? " — blackout override" : ""}`
             : `${fireResult.result.result}${fireResult.result.reason ? ` — ${fireResult.result.reason}` : ""}`}
         </p>
       )}
@@ -491,14 +507,25 @@ export function PreflightList({ preflight }: { preflight: Preflight }) {
 export function FireDialog({
   preview,
   busy,
+  todayBlackoutLabel = null,
   onCancel,
   onConfirm,
 }: {
   preview: FirePreview;
   busy: boolean;
+  // CAL-06 (v1.71): today's ET NO-TRADE label, or null/omitted for every
+  // pre-v1.71 caller and every untagged day — OK behaves exactly as before then.
+  todayBlackoutLabel?: string | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (blackoutAck: boolean) => void;
 }) {
+  const [ack, setAck] = useState(false);
+  // Informed consent tracks the LABEL (final review, 2026-07-15): if the tag
+  // changes underneath an open dialog (FOMC -> CPI), a previously-ticked
+  // checkbox must NOT stay ticked — the operator acknowledged a different
+  // label than the one the override would now land on. Any label change
+  // resets the acknowledgment, re-disabling OK until re-ticked.
+  useEffect(() => setAck(false), [todayBlackoutLabel]);
   const params: [string, string][] = [
     ["Contracts", String(preview.contracts)],
     ["Target premium", `$${preview.target_premium}`],
@@ -513,6 +540,21 @@ export function FireDialog({
         <p className="sub">
           {new Date(preview.now).toLocaleTimeString()} — outside any scheduled window (ENT-09)
         </p>
+
+        {todayBlackoutLabel && (
+          <div className="cal-blackout-warning" role="alert" data-testid="blackout-warning">
+            <strong>⚠ Today is tagged NO-TRADE: {todayBlackoutLabel}</strong>
+            <label className="cal-ack-check">
+              <input
+                type="checkbox"
+                aria-label="acknowledge blackout override"
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+              />
+              I acknowledge this fire overrides today's NO-TRADE tag (CAL-06)
+            </label>
+          </div>
+        )}
 
         <div className="fire-params">
           {params.map(([k, v]) => (
@@ -540,7 +582,12 @@ export function FireDialog({
 
         <div className="modal-actions">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onConfirm} disabled={busy} autoFocus>
+          <button
+            className="btn primary"
+            onClick={() => onConfirm(ack)}
+            disabled={busy || (!!todayBlackoutLabel && !ack)}
+            autoFocus
+          >
             {busy ? "Firing…" : "OK"}
           </button>
         </div>

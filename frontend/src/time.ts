@@ -48,8 +48,15 @@ export function instantToZone(iso: string, zone = localZone()): string | null {
   }).format(d);
 }
 
-/** The ET calendar date of an instant, "YYYY-MM-DD". */
-function etDateOf(d: Date): string {
+/**
+ * The ET calendar date of an instant, "YYYY-MM-DD" (defaults to now). Exported
+ * for CAL-08 (v1.71): the Calendar tab's year grid must identify "today" (and
+ * every day cell) as an ET DATE, never the browser's own local date (DAY-03) —
+ * this is the SAME conversion `etDayLabel` below already uses internally, so
+ * the grid's day identity and the schedule's own rollover labelling can never
+ * drift against each other.
+ */
+export function etDateOf(d: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: ET_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(d);

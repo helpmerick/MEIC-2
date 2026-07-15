@@ -79,6 +79,73 @@ def test_calendar_routes_400_when_no_store_is_wired():
     assert client.post("/calendar/rule", json={"category": "FOMC"}).status_code == 400
 
 
+# --- CAL-08: /state's today_blackout_label (slice 2, additive) ------------------
+
+class _DayCommands:
+    """Minimal `commands` double: the ONE method /state's banner field reads."""
+
+    def __init__(self, day):
+        self._day = day
+
+    def day(self):
+        return self._day
+
+
+class _ExplodingCommands:
+    def day(self):
+        raise RuntimeError("day source exploded")
+
+
+def _state_client(commands):
+    events = EventLog(config_version="v1.71")
+    store = CalendarStore(events, FastClock(NOW))
+    state = PersistentState(InMemoryStateStore())
+    app = create_app(state, events, commands=commands, calendar_store=store)
+    return TestClient(app), store
+
+
+def test_state_carries_todays_blackout_label(wired):
+    """CAL-08: the trading panel's "Today: NO-TRADE — <label>" reads this
+    field; tagged day -> the label, untagged -> None."""
+    client, _, store = wired
+    assert client.get("/state").json()["today_blackout_label"] is None  # untagged
+
+    c2, store2 = _state_client(_DayCommands("2026-07-15"))
+    store2.tag("2026-07-15", "FOMC")
+    assert c2.get("/state").json()["today_blackout_label"] == "FOMC"
+
+
+def test_state_blackout_label_is_none_without_a_calendar():
+    """Pre-v1.71 wiring (no store): the field exists and is None -- a stable
+    read-model shape, never a guess."""
+    state = PersistentState(InMemoryStateStore())
+    client = TestClient(create_app(state, EventLog()))
+    assert client.get("/state").json()["today_blackout_label"] is None
+
+
+def test_state_survives_a_broken_day_source_fail_open_never_500(caplog):
+    """2026-07-15 review SHOULD-FIX, pinned: /state is the panel's most
+    critical poll (armed/stop_trading/entries_enabled) -- a failure anywhere
+    in the banner field's today+label computation must degrade to
+    today_blackout_label None with EVERY other field intact and a 200, never
+    a 500. Fail-open is never fail-silent: a log record lands (the same
+    CAL-07 discipline calendar_store.label_for_day already applies)."""
+    client, _ = _state_client(_ExplodingCommands())
+
+    with caplog.at_level("ERROR", logger="meic.adapters.api.app"):
+        r = client.get("/state")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["today_blackout_label"] is None
+    # the critical fields are all present and typed as ever
+    assert body["armed"] is False and body["stop_trading"] is False
+    assert body["confirm_live"] is False and body["trading_mode"] == "paper"
+    assert body["entries_enabled"] is False and body["blocking_state"] == "DISARMED"
+    # fail-open, never fail-silent
+    assert any("CAL-08 fail-open" in rec.message for rec in caplog.records)
+
+
 # --- CAL input validation (2026-07-15 review): reject 422, never journal --------
 
 def _assert_nothing_journaled(events):

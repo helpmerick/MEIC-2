@@ -35,6 +35,15 @@ export function Dashboard({ state, connected }: { state: PanelState | null; conn
 
   return (
     <>
+      {/* CAL-08 (v1.71): whenever the current ET day carries a NO-TRADE tag,
+          the trading panel says so plainly — the frontend never computes the
+          ET day itself (DAY-03), it only renders what /state already read
+          off the calendar gate's own fail-open input. */}
+      {state.today_blackout_label && (
+        <div className="cal-blackout-banner" data-testid="today-blackout-banner" role="status">
+          Today: NO-TRADE — {state.today_blackout_label}
+        </div>
+      )}
       <div className={`hero ${enabled ? "good" : "idle"}`}>
         <span className={`status-emoji ${orb}`} role="img" aria-label={STATUS_LABEL[orb]}>
           {STATUS_EMOJI[orb]}

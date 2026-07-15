@@ -41,6 +41,25 @@ def vitest_result():
 
 
 @pytest.fixture(scope="session")
+def vitest_cal_result():
+    """TC-CAL-01/TC-CAL-02's frontend halves (slice 2, v1.71) -- tier-2 visual
+    distinction (CAL-01), the year-grid's tagged-day marking, and the CAL-06
+    manual-fire warn-and-acknowledge dialog (OK disabled until checked,
+    request carries blackout_ack) -- the same real-vitest binding strategy as
+    `vitest_result`/`vitest_ui07_result` above, over the three suites those
+    behaviours live in. Session-scoped for the same startup-cost reason."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/components/CalendarPage.test.tsx",
+         "src/components/ManualTradeCard.test.tsx",
+         "src/components/SchedulePanel.test.tsx", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=180,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output
+
+
+@pytest.fixture(scope="session")
 def vitest_ui07_result():
     """TC-UI-07's frontend halves (UI-28 contract-dollar display, UI-18a
     markup disclosure, UI-26a heatmap honesty, UI-28 slippage columns) — the

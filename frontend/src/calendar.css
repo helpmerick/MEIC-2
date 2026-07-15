@@ -1,0 +1,104 @@
+/* Trading calendar tab (doc 11 CAL-*, UI-30). Every colour keys off the
+   shared theme variables in styles.css; tier-2 vs tier-1 and manual-vs-auto
+   tags are distinguished STRUCTURALLY (different glyph/shape/class), never
+   by colour alone (UI-26 colorblind-safe semantics). */
+
+.calendar-page { display: flex; flex-direction: column; gap: var(--sp-4); }
+.calendar-page h1 { font-size: 20px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+
+/* --- staleness (CAL-02): displayed, never blocking --------------------------- */
+.calendar-staleness { display: flex; flex-direction: column; gap: 6px; }
+.cal-staleness-row {
+  font-size: 12px; padding: 8px 12px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.cal-staleness-row.none { color: var(--faint); font-style: italic; }
+.cal-staleness-row.stale { border-color: rgba(251, 191, 36, 0.35); background: var(--warn-dim); }
+.cal-stale-badge { color: var(--warn); font-weight: 700; }
+.cal-no-data-badge { color: var(--faint); font-style: italic; }
+
+/* --- layout: year grid + side panel ------------------------------------------ */
+.calendar-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--sp-5); align-items: start; }
+@media (max-width: 900px) { .calendar-layout { grid-template-columns: 1fr; } }
+
+.calendar-year-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.calendar-year-label { font-size: 16px; font-weight: 800; min-width: 4ch; text-align: center; }
+
+/* Months scrollable — a bounded-height strip, never expanding the page
+   itself sideways or endlessly downward (CAL-08: "months scrollable"). */
+.calendar-months {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-4); max-height: 640px; overflow-y: auto; padding-right: 4px;
+}
+.calendar-month { background: var(--surface-2); border: 1px solid var(--line); border-radius: 11px; padding: 10px; }
+.calendar-month-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.calendar-weekday-row, .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.calendar-weekday { font-size: 9px; text-align: center; color: var(--faint); }
+
+.calendar-day {
+  position: relative; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text); font-size: 10px; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  padding: 0; font-family: inherit;
+}
+.calendar-day.filler { visibility: hidden; border: none; background: none; cursor: default; }
+.calendar-day:hover { background: var(--hover); }
+.calendar-day.today { border-color: var(--accent); border-width: 2px; font-weight: 800; }
+.calendar-day.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Tagged days — colour PLUS a distinct border style so a colour-blind
+   operator still sees a tagged day is different in kind, not just shade. */
+.calendar-day.tagged { background: var(--bad-dim); border-style: double; border-width: 3px; }
+.calendar-day.tagged.origin-manual { border-color: var(--bad); }
+.calendar-day.tagged.origin-auto { border-color: var(--accent-2); border-style: dashed; }
+
+.calendar-day-num { font-variant-numeric: tabular-nums; }
+.calendar-day-marks { display: flex; gap: 1px; font-size: 8px; line-height: 1; }
+
+/* Tier-1 vs tier-2 event markers: DIFFERENT GLYPHS (circle vs triangle), not
+   merely different colours on the same shape (UI-26). */
+.cal-evt { display: inline-block; }
+.cal-evt-tier1 { color: var(--info); }
+.cal-evt-tier2 { color: var(--accent-2); }
+
+/* Manual vs auto tag markers: different glyphs (square vs diamond) too. */
+.cal-tag-mark { display: inline-block; font-weight: 700; }
+.cal-tag-mark.origin-manual { color: var(--bad); }
+.cal-tag-mark.origin-auto { color: var(--accent-2); }
+
+.calendar-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--muted); align-items: center; margin-top: 4px; }
+.calendar-legend .cal-evt, .calendar-legend .cal-tag-mark { margin-right: 2px; }
+
+/* --- side panel --------------------------------------------------------------- */
+.calendar-side { display: flex; flex-direction: column; gap: var(--sp-4); }
+.calendar-rules, .calendar-day-detail {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 11px; padding: 12px;
+}
+.calendar-rules h3, .calendar-day-detail h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.calendar-rules-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+
+.calendar-day-events { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.cal-tier-chip { color: var(--faint); font-size: 10px; margin-left: 6px; }
+.cal-tag-badge { font-size: 12px; padding: 6px 9px; border-radius: 8px; background: var(--bad-dim); border: 1px solid rgba(248,113,113,0.3); }
+.cal-tag-badge.origin-auto { background: rgba(168, 85, 247, 0.1); border-color: rgba(168, 85, 247, 0.3); }
+.calendar-day-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* --- Trading panel: today's blackout banner (CAL-08) -------------------------- */
+.cal-blackout-banner {
+  padding: 9px 14px; border-radius: 11px; margin-bottom: 10px;
+  background: var(--bad-dim); border: 1px solid rgba(248, 113, 113, 0.35); color: var(--bad);
+  font-size: 13px; font-weight: 700;
+}
+
+/* --- CAL-06 manual-fire warn-and-acknowledge dialog --------------------------- */
+.cal-blackout-warning {
+  margin: 0 0 14px; padding: 12px 14px; border-radius: 11px;
+  background: var(--bad-dim); border: 1px solid rgba(248, 113, 113, 0.35); color: var(--bad);
+}
+.cal-blackout-warning strong { display: block; margin-bottom: 8px; }
+.cal-ack-check { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); font-size: 12px; }
+
+/* --- How it works placeholder (DOC-01/DOC-05) --------------------------------- */
+.how-it-works-page { display: flex; flex-direction: column; gap: var(--sp-4); }
+.how-it-works-page h1 { font-size: 20px; font-weight: 800; margin: 0; }
