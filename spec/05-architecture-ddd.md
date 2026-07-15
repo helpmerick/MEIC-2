@@ -193,3 +193,16 @@ meic-bot/
 ```
 
 **Build order for the coding AI:** domain value objects + state machines → domain aggregates against doc-04 unit tests → event store + replay tests → application services with fakes against EC-* tests → tastytrade/DXLink adapters + contract tests → API + UI → paper-mode E2E → stop-independence drill (UC-12) → live.
+
+## Verification mode & the graduation clock (v1.74, operator-ratified)
+
+Each calendar trading day classifies as exactly one of: **CLEAN** (counts —
+the bot was GIVEN THE CHANCE to trade: armed, schedule enabled through the
+windows; AND zero RPT-15 corrections attributable to bot error, zero
+contract breaches, zero new unwired findings, EOD audit clean), **DIRTY**
+(resets the count to zero — any of those failed on a day the bot ran), or
+**NULL** (neither — disarmed/held through the windows; no evidence either
+way; NULLs stretch the calendar, never count). Ten CLEANs graduate the bot
+to unattended-eligible (Phase D checklist still applies). A build change
+RESTARTS the clock at zero — a streak certifies the binary that earned it,
+not its successor. Clock day one: 2026-07-16, on the deployed v1.73 batch.

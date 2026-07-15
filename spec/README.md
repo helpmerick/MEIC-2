@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.74 — 2026-07-15
+- v1.74 changes (reviewer-package rulings, all four briefs): **ORD-09a** — every recorded execution price is BROKER-ACTUAL, never the order's limit/intent (extends v1.52 from entries to LongSold/buybacks/floors/closes; the $15 divergence's suspected cause — recovery journaled at ladder rung 1.15/0.30 — becomes a pinned vector on confirmation; fees for 07-14 already agreed exactly at $7.76). **REC-01 ordering pinned** — JOURNAL-FIRST, raise on write failure (in-memory-first found live and rejected: a lie window after restart). **Health-loop guard approved** (sibling try/except + alert-once + done-callback). **Graduation clock ratified** (doc 05): CLEAN/DIRTY/NULL day classification, ten CLEANs graduate, build changes restart the clock — day one 2026-07-16 on the deployed batch; 07-14 stays DIRTY-or-pending in the ledger until the $15 resolves.
 - Version: 1.73 — 2026-07-15
 - v1.73 changes (operator-commissioned activity-feed usability): **UI-31** — the activity feed gains ET date headers between days (sticky, local-echo, activity-days only; rows show their ORD-11 timestamps — consecutive days never read as one stream) and plain-English hover explanations on every event (v1.63 tooltip standard; DOC-02 language drawn from doc 12's vocabulary — feed and guide speak one language), with COMPLETENESS ENFORCED: an event type without an explanation entry fails the suite (an unexplained event is the drift disease in miniature). TC-UI-09.
 - Version: 1.72 — 2026-07-15
