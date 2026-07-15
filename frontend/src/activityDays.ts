@@ -53,23 +53,54 @@ export function formatDaySeparator(day: string): string {
 }
 
 /**
- * Feed items (newest-first) with a separator row inserted before the first
- * item of each new ET day. An item whose day cannot be derived (see
- * `dayOfActivityItem`) inherits the PRECEDING item's day -- journal order is
- * chronological, so this is never a fabrication, just an honest carry-over.
+ * Feed items (newest-first) grouped under one separator row per ET day.
+ *
+ * The journal is WRITE-TIME monotonic, but an event's `at` can be BACKDATED
+ * routinely — not hypothetically: the EOD look-back captures settlements a
+ * day late, stamping `at` with the broker's own settlement instant (e.g.
+ * 07-13T20:00Z) while the event is journaled on 07-14. So day-of-item is NOT
+ * monotonic in journal order, and a naive single-pass walk fragments days
+ * into interleaved repeated headers (production bug, operator screenshot
+ * 2026-07-15: "Dates should always be continuous"). Hence:
+ *
+ *   1. derive each item's day in ORIGINAL newest-first journal order, with
+ *      the inheritance fallback (an item with no derivable day inherits its
+ *      preceding JOURNAL neighbour's day — resolved BEFORE any reordering,
+ *      so inheritance keeps its journal-context meaning);
+ *   2. stable-sort by derived day DESCENDING (newest day first), preserving
+ *      relative journal order within each day. Null-day items travel with
+ *      the day they inherited; a leading null-day run with nothing to
+ *      inherit stays at the top, headerless (never a fabricated date);
+ *   3. emit one separator per day — provably unique, since the sort makes
+ *      each day contiguous.
+ *
  * A pure function of the current activity array: live arrivals (ws/poll)
  * regroup correctly on every call, including a brand-new day's first item
  * getting its own separator at the top.
- *
- * NOTE: relies on the event journal being time-monotonic (append-only, in
- * chronological order) — a future backfill/import that appends out-of-order
- * historical events would need sorting upstream first, or real day-dedup here.
  */
 export function groupActivityByDay(activity: ActivityLine[]): ActivityRow[] {
+  // 1. day per item, in journal order, inheritance resolved here and only here.
+  let inherit: string | null = null;
+  const withDay = activity.map((item, i) => {
+    const day: string | null = dayOfActivityItem(item) ?? inherit;
+    inherit = day;
+    return { item, day, i };
+  });
+
+  // 2. stable sort: day descending; ties keep journal order. A null day can
+  // only be a leading run (inheritance fills every later gap), and it sorts
+  // before everything so it stays at the top, headerless.
+  const sorted = [...withDay].sort((a, b) => {
+    if (a.day === b.day) return a.i - b.i;
+    if (a.day === null) return -1;
+    if (b.day === null) return 1;
+    return a.day < b.day ? 1 : -1; // ISO YYYY-MM-DD sorts lexicographically
+  });
+
+  // 3. one separator per (now-contiguous) day.
   const rows: ActivityRow[] = [];
   let lastDay: string | null = null;
-  for (const item of activity) {
-    const day: string | null = dayOfActivityItem(item) ?? lastDay;
+  for (const { item, day } of sorted) {
     if (day !== null && day !== lastDay) {
       rows.push({ kind: "separator", day, label: formatDaySeparator(day) });
       lastDay = day;
