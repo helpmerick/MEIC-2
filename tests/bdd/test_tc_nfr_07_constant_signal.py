@@ -102,10 +102,9 @@ def _registry_given():
 def test_every_non_gap_safety_gate_input_is_live(booted_app):
     """Every entry WITHOUT a documented `known_gap` must resolve to a real,
     varying signal in the ACTUAL live composition -- not merely "some
-    callable exists". `known_gap` entries (currently exactly `halted`, the
-    NINTH finding) are asserted to be exactly, and only, that one documented
-    gap -- so a new, silent gap can never slip in unreported, and the
-    honestly-flagged one can never be forgotten."""
+    callable exists". DAT-04a (v1.69) closed the ninth finding (`halted` used
+    to be the ONE documented gap): the known_gap set must now be EMPTY, so a
+    new, silent gap can never slip in unreported."""
     app, _client = booted_app
     results = check_all_safety_gate_inputs(app.state)
 
@@ -115,15 +114,14 @@ def test_every_non_gap_safety_gate_input_is_live(booted_app):
     assert live_failures == [], f"NFR-07 constant-signal audit: {live_failures}"
 
     gap_inputs = {entry.gate_input for entry in SAFETY_GATE_REGISTRY if entry.known_gap}
-    assert gap_inputs == {"halted"}, (
-        "the ONLY documented, un-fixed constant-signal gap must be DAT-04's "
-        "halted provider (the NINTH finding) -- a new gap here needs the same "
-        "loud documentation, not silent inclusion")
-    # the gap entry's own live_check still runs, and honestly reports False --
-    # this pins the current (unfortunate) reality rather than silently
-    # pretending it passes OR silently omitting it from the registry.
-    gap_result = next(result for entry, result in results if entry.gate_input == "halted")
-    assert gap_result.live is False
+    assert gap_inputs == set(), (
+        "DAT-04a (v1.69): the ninth finding (halted) is fixed -- no known_gap "
+        "should remain documented; a new gap here needs the same loud "
+        "documentation, not silent inclusion")
+    # halted itself (formerly the gap) must now positively resolve live too.
+    halted_result = next(result for entry, result in results if entry.gate_input == "halted")
+    assert halted_result.live is True, (
+        f"DAT-04a's halted provider must be live against the real wiring: {halted_result.detail}")
 
 
 @then("a gate input bound to a constant or dead default fails the audit")
@@ -165,3 +163,36 @@ def test_flatten_in_progress_is_provably_live_against_the_real_wiring(booted_app
         f"RSK-01a's flatten_in_progress must resolve to a live signal against the "
         f"real live_app() wiring: {result.detail}")
     assert "flatten_in_progress" not in unexpectedly_not_live(app.state)
+
+
+@then("DAT-04's halt input (no provider, inverted polarity) is the ninth-finding pinned regression")
+def test_halted_ninth_finding_closed_and_still_pinned(booted_app):
+    """DAT-04a (v1.69) CLOSES the ninth finding: `halted` is now a bound,
+    live SAFETY_GATE_REGISTRY entry (`known_gap is None`), and its live_check
+    passes against the REAL wiring -- no monkeypatching. The regression stays
+    pinned exactly like `flatten_in_progress`'s own step above: reverting to
+    the historically broken shape (no provider bound at all) must fail the
+    audit."""
+    app, _client = booted_app
+    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "halted")
+    assert {"DAT-04", "DAT-04a"} <= set(entry.rule_ids)
+    assert entry.known_gap is None, "DAT-04a: the ninth finding is fixed -- no longer an excused gap"
+
+    result = entry.live_check(app.state)
+    assert result.live is True, (
+        f"DAT-04a's halted must resolve to a live signal against the real "
+        f"live_app() wiring: {result.detail}")
+    assert "halted" not in unexpectedly_not_live(app.state)
+
+    # THE historically broken shape, reintroduced: no provider bound at all
+    # (the dataclass default `None`, exactly as `_wire_live_day` left it
+    # before DAT-04a) must fail the audit, never silently pass.
+    gates = app.state.runtime.market_gates
+    real_provider = gates.halted
+    try:
+        gates.halted = None
+        failing = unexpectedly_not_live(app.state)
+        assert "halted" in failing, (
+            "no halted provider bound must fail the audit -- the ninth finding, reintroduced")
+    finally:
+        gates.halted = real_provider

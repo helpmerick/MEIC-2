@@ -34,6 +34,7 @@ import asyncio
 import importlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -335,34 +336,54 @@ def _buying_power_ok_live_check(state) -> LiveCheckResult:
     return LiveCheckResult(live, f"buying_power_ok provider closes over real state: {live}")
 
 
-def _halted_known_gap_check(state) -> LiveCheckResult:
-    """HONEST, DELIBERATELY NOT a pass -- the NINTH finding (2026-07-14
-    review, found auditing the OTHER gate inputs alongside the authorized
-    RSK-01a fix). DAT-04 ("market open and not halted") has NO live signal
-    source anywhere in this codebase: `_wire_live_day` (server.py) never
-    passes a `halted=` provider to `LiveMarketGates.for_live()`, so
-    `self.halted` stays the dataclass default `None` -- and
-    `LiveMarketGates.__call__` reads `market_halted=await
-    self._safe(self.halted, default=False) if open_now else True`, which
-    makes `market_halted` UNCONDITIONALLY False whenever the market is open
-    per the calendar. Worse: `default=False` is itself the PERMISSIVE answer
-    for this particular field (`evaluate_gates` blocks when `market_halted`
-    is TRUE, so the safe default on an unreadable signal would be `True`,
-    not `False`) -- every OTHER `_safe(...)` call in this file correctly
-    defaults to the blocking answer; this one is inverted. Not fixed here:
-    building a real halt-detection feed (and correcting the default's
-    polarity) is outside this change's authorized scope (the RSK-01a flatten
-    gate only) and needs an operator decision. Pinned so this module can
-    never silently claim DAT-04 is live."""
+def _halted_live_check(state) -> LiveCheckResult:
+    """BEHAVIORAL, sound (DAT-04a, v1.69 — the NINTH finding CLOSED).
+
+    HISTORY, preserved (this WAS `_halted_known_gap_check`, a deliberate,
+    documented FAIL): DAT-04 ("market open and not halted") had NO live
+    signal source anywhere in this codebase as of the 2026-07-14 review --
+    `_wire_live_day` (server.py) never passed a `halted=` provider to
+    `LiveMarketGates.for_live()`, so `self.halted` stayed the dataclass
+    default `None`, and `LiveMarketGates.__call__` read
+    `market_halted=await self._safe(self.halted, default=False) if open_now
+    else True` -- UNCONDITIONALLY False (not halted) whenever the market was
+    open per the calendar. Worse, `default=False` was itself the PERMISSIVE
+    answer for this field (`evaluate_gates` blocks when `market_halted` is
+    TRUE), inverted from every other `_safe(...)` call in that file.
+
+    FIXED (DAT-04a, this module's own SAFETY_GATE_REGISTRY entry now carries
+    `known_gap=None`): `composition.live_gates` defaults `halted` to `True`
+    (fail-closed, uniform with its three siblings), and
+    `meic.adapters.dxlink.trading_status.TradingStatusStore` is the real,
+    live provider -- fed by a dxfeed Profile subscription piggybacked onto
+    the SAME DXLink connection `chain_snapshot.snapshot_chain` already opens
+    (no new connection, no new dependency). This check flips the REAL store
+    `app.state.trading_status_store` owns and asserts the bound `halted`
+    gate input's OUTPUT tracks it -- exactly the shape
+    `_data_fresh_live_check` above uses, and exactly what would have caught
+    the ninth finding had it existed then. A constant/dead-default provider
+    (the historical shape) cannot pass this."""
     runtime = getattr(state, "runtime", None)
     gates = getattr(runtime, "market_gates", None)
-    provider = getattr(gates, "halted", "<unreachable>")
-    return LiveCheckResult(
-        False,
-        f"halted provider is {provider!r} -- no DAT-04 halt-detection signal is wired "
-        "anywhere in this codebase (NINTH finding, 2026-07-14 review; not fixed, "
-        "flagged for the operator; also note _safe(..., default=False) is the "
-        "permissive, not the safe, polarity for this field)")
+    store = getattr(state, "trading_status_store", None)
+    provider = getattr(gates, "halted", None)
+    if provider is None or store is None:
+        return LiveCheckResult(False, "runtime.market_gates.halted or "
+                                       "state.trading_status_store not reachable off app.state")
+    # The real provider reads `comp.clock.now()` (SystemClock, real wall
+    # time) — so the flip must stamp with real, near-"now" instants too,
+    # never a fixed fake instant that would read as arbitrarily stale.
+    prior = store.last
+    try:
+        store.record("HALTED", datetime.now(timezone.utc))
+        halted_reads_true = asyncio.run(provider())     # halted() should be True when status != ACTIVE
+        store.record("ACTIVE", datetime.now(timezone.utc))
+        halted_reads_false = asyncio.run(provider())     # and False when ACTIVE + fresh
+    finally:
+        store._reading = prior
+    live = (halted_reads_true is True) and (halted_reads_false is False)
+    return LiveCheckResult(live, f"flipping trading_status_store: HALTED->{halted_reads_true}, "
+                                  f"ACTIVE->{halted_reads_false}")
 
 
 @dataclass(frozen=True)
@@ -415,15 +436,13 @@ SAFETY_GATE_REGISTRY: tuple[SafetyGateInput, ...] = (
         live_check=_buying_power_ok_live_check,
     ),
     SafetyGateInput(
-        rule_ids=("DAT-04", "ENT-03"),
+        rule_ids=("DAT-04", "DAT-04a", "ENT-03"),
         gate_input="halted",
-        proof="app.state.runtime.market_gates.halted -- NEVER wired by _wire_live_day; "
-              "see _halted_known_gap_check's docstring (NINTH finding).",
-        live_check=_halted_known_gap_check,
-        known_gap="DAT-04 halt-detection has no live signal source anywhere in this "
-                  "codebase (2026-07-14 review); the _safe(..., default=False) polarity "
-                  "for this field is also inverted (permissive, not safe). Not fixed -- "
-                  "flagged for the operator.",
+        proof="app.state.runtime.market_gates.halted, flipped against the real "
+              "app.state.trading_status_store -- the ninth finding (2026-07-14 "
+              "review), CLOSED by DAT-04a (v1.69). See _halted_live_check's "
+              "docstring for the fixed regression's full history.",
+        live_check=_halted_live_check,
     ),
 )
 

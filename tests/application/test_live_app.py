@@ -934,7 +934,10 @@ def test_warmup_actually_primes_session_and_chain_and_locks_the_v155_baseline(mo
         spot=Decimal("6000"), stale=False, taken_at=now,
         put_side=_healthy_side(Decimal(-1)), call_side=_healthy_side(Decimal(1)))
 
-    async def _fake_snapshot_chain(session):
+    async def _fake_snapshot_chain(session, **kwargs):
+        # DAT-04a (v1.69): the real call site now also passes `now=`/
+        # `on_trading_status=` (the piggybacked halt-signal provider) --
+        # accept and ignore them here, matching the real signature.
         return fake_snap
 
     import meic.adapters.dxlink.chain_snapshot as _cs_mod

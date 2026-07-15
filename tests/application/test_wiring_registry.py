@@ -133,9 +133,20 @@ def test_flatten_in_progress_is_the_named_pinned_regression_in_the_registry():
     assert entry.known_gap is None   # this one must actually be proven live, never excused
 
 
-def test_halted_is_the_only_documented_known_gap_the_ninth_finding():
+def test_no_known_gaps_remain_dat_04a_closes_the_ninth_finding():
+    """DAT-04a (v1.69): `halted` was the ONE documented known_gap (the ninth
+    finding) -- now fixed (a real TradingStatusStore provider, fail-closed
+    polarity), so the known_gap list must be EMPTY. The ninth finding's
+    history stays on the record in `_halted_live_check`'s own docstring
+    (wiring_registry.py) rather than being silently dropped here."""
     gaps = {e.gate_input for e in SAFETY_GATE_REGISTRY if e.known_gap}
-    assert gaps == {"halted"}
+    assert gaps == set()
+
+
+def test_halted_is_now_a_bound_live_input_not_a_known_gap():
+    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "halted")
+    assert entry.known_gap is None, "DAT-04a: the ninth finding is fixed -- no longer excused"
+    assert "DAT-04a" in entry.rule_ids
 
 
 def test_check_all_safety_gate_inputs_returns_one_result_per_entry_and_fails_closed():
@@ -147,13 +158,14 @@ def test_check_all_safety_gate_inputs_returns_one_result_per_entry_and_fails_clo
     assert all(not result.live for _entry, result in results)
 
 
-def test_unexpectedly_not_live_excludes_the_documented_known_gap():
-    """Against an empty state every entry fails its live_check -- but the
-    hard-fail set must exclude `halted` (a DOCUMENTED gap, not a silent
-    regression) while still flagging every genuinely unproven input."""
+def test_unexpectedly_not_live_flags_every_unproven_input_including_halted():
+    """Against an empty state every entry fails its live_check. DAT-04a
+    (v1.69) closed the ninth finding: `halted` is no longer an excused
+    known_gap, so an empty state (no runtime, no trading_status_store) must
+    now flag it exactly like every other genuinely unproven input."""
     state = SimpleNamespace()
     failing = unexpectedly_not_live(state)
-    assert "halted" not in failing
+    assert "halted" in failing
     assert "flatten_in_progress" in failing   # unreachable off an empty state -> correctly flagged
 
 

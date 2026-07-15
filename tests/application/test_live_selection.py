@@ -178,8 +178,12 @@ class _Clock:
 
 
 def _gates(now, **kw):
+    # DAT-04a (v1.69): `halted` now defaults an unmeasured reading to BLOCKED
+    # (fail-closed, uniform with the three siblings below) -- so a test that
+    # wants the "all healthy, nothing blocks" case must supply an explicit
+    # not-halted provider too, exactly like it already does for the other three.
     defaults = dict(data_fresh=lambda: _async(True), session_valid=lambda: _async(True),
-                    buying_power_ok=lambda: _async(True))
+                    buying_power_ok=lambda: _async(True), halted=lambda: _async(False))
     defaults.update(kw)
     return asyncio.run(LiveMarketGates(clock=_Clock(now), **defaults)())
 
@@ -191,6 +195,14 @@ def test_gates_pass_during_rth_with_healthy_providers():
     g = _gates(OPEN_NOW)
     assert g.market_open and not g.market_halted and g.data_fresh
     assert g.session_valid and g.buying_power_ok
+
+
+def test_gates_block_on_halted_even_with_every_other_provider_healthy():
+    # DAT-04a: an unmeasured (absent) halted provider blocks -- this is the
+    # ninth finding's fix, pinned at this same "gates provider" level.
+    g = _gates(OPEN_NOW, halted=None)
+    assert g.market_open is True
+    assert g.market_halted is True
 
 
 def test_gates_block_outside_market_hours():

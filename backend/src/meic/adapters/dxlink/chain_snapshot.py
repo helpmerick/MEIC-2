@@ -131,6 +131,26 @@ async def _first_quote(streamer, quote_cls, symbol: str, timeout_s: float):
     return await asyncio.wait_for(_wait(), timeout=timeout_s)
 
 
+async def _first_trading_status(streamer, symbol: str, timeout_s: float) -> str | None:
+    """DAT-04a: bounded, best-effort wait for the underlying's dxfeed Profile
+    `trading_status`, piggybacked onto the SAME streamer session as the
+    quotes above -- no new connection. Returns None (never raises) on a
+    timeout or any hiccup; a missing reading this cycle is exactly what
+    `trading_status.TradingStatusStore`'s own staleness bound (300 s) is for
+    -- this helper must never fail or slow down the chain snapshot itself."""
+    from tastytrade.dxfeed import Profile   # module-level fn -- snapshot_chain's own
+                                             # import below is local to ITS frame only
+
+    async def _wait():
+        async for ev in streamer.listen(Profile):
+            if getattr(ev, "event_symbol", symbol) == symbol:
+                return ev.trading_status
+    try:
+        return await asyncio.wait_for(_wait(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return None
+
+
 async def snapshot_chain(
     session,
     *,
@@ -140,10 +160,22 @@ async def snapshot_chain(
     quote_timeout_s: float = 12.0,
     max_age_seconds: float = 5.0,
     now=None,
+    on_trading_status=None,           # DAT-04a: (status, at) sink -- see module docstring
+    trading_status_timeout_s: float = 5.0,
 ) -> ChainSnapshot:
-    """Snapshot the 0DTE chain. Never places an order; read-only."""
+    """Snapshot the 0DTE chain. Never places an order; read-only.
+
+    `on_trading_status`, when given, is called at most once with
+    (dxfeed trading_status, instant) -- DAT-04a's halt-signal provider,
+    piggybacked onto THIS SAME DXLink connection via a Profile subscription
+    for `index_symbol` (no new connection, no new dependency). Best-effort:
+    a slow or absent Profile reading never fails or delays this function
+    beyond `trading_status_timeout_s` -- `TradingStatusStore`'s own
+    staleness bound is what governs whether the last reading is still
+    usable, not this call.
+    """
     from tastytrade import DXLinkStreamer
-    from tastytrade.dxfeed import Quote
+    from tastytrade.dxfeed import Profile, Quote
     from tastytrade.instruments import NestedOptionChain
 
     chains = await NestedOptionChain.get(session, underlying)
@@ -165,37 +197,68 @@ async def snapshot_chain(
         idx = await _first_quote(streamer, Quote, index_symbol, spot_timeout_s)
         spot = (Decimal(str(idx.bid_price)) + Decimal(str(idx.ask_price))) / 2
 
-        # Two mappings per strike: STREAMER symbols to collect quotes by (DXLink),
-        # and OCC symbols for the returned `.symbols` (what orders would name).
-        strike_streamers: dict[Decimal, tuple[str, str]] = {}
-        strike_occ: dict[Decimal, tuple[str, str]] = {}
-        for s in expiration.strikes:
-            k = Decimal(str(s.strike_price))
-            if abs(k - spot) <= SUBSCRIBE_SPAN_PTS:
-                strike_streamers[k] = streamer_pair(s)
-                strike_occ[k] = occ_pair(s)
-        if not strike_streamers:
-            raise RuntimeError(f"no strikes within +/-{SUBSCRIBE_SPAN_PTS} of spot {spot}")
-
-        wanted = {sym for pair in strike_streamers.values() for sym in pair}
-        await streamer.subscribe(Quote, sorted(wanted))
-
-        quotes: dict[str, tuple] = {}
-        started = asyncio.get_event_loop().time()
-
-        async def _collect():
-            async for q in streamer.listen(Quote):
-                if q.event_symbol in wanted:
-                    quotes[q.event_symbol] = (q.bid_price, q.ask_price)
-                if len(quotes) >= len(wanted):
-                    return
+        status_task = None
+        if on_trading_status is not None:
+            # DAT-04a (v1.69): piggyback the halt-signal Profile subscription
+            # onto THIS SAME DXLink connection -- started concurrently with
+            # the strike-quote collection below so it adds no serial latency
+            # to the chain snapshot in the (expected) common case where the
+            # Profile reading arrives quickly.
+            await streamer.subscribe(Profile, [index_symbol])
+            status_task = asyncio.create_task(
+                _first_trading_status(streamer, index_symbol, trading_status_timeout_s))
 
         try:
-            await asyncio.wait_for(_collect(), timeout=quote_timeout_s)
-        except asyncio.TimeoutError:
-            pass  # partial book — STK-10 completeness decides usability
+            # Two mappings per strike: STREAMER symbols to collect quotes by
+            # (DXLink), and OCC symbols for the returned `.symbols` (what
+            # orders would name).
+            strike_streamers: dict[Decimal, tuple[str, str]] = {}
+            strike_occ: dict[Decimal, tuple[str, str]] = {}
+            for s in expiration.strikes:
+                k = Decimal(str(s.strike_price))
+                if abs(k - spot) <= SUBSCRIBE_SPAN_PTS:
+                    strike_streamers[k] = streamer_pair(s)
+                    strike_occ[k] = occ_pair(s)
+            if not strike_streamers:
+                raise RuntimeError(f"no strikes within +/-{SUBSCRIBE_SPAN_PTS} of spot {spot}")
 
-        elapsed = asyncio.get_event_loop().time() - started
+            wanted = {sym for pair in strike_streamers.values() for sym in pair}
+            await streamer.subscribe(Quote, sorted(wanted))
+
+            quotes: dict[str, tuple] = {}
+            started = asyncio.get_event_loop().time()
+
+            async def _collect():
+                async for q in streamer.listen(Quote):
+                    if q.event_symbol in wanted:
+                        quotes[q.event_symbol] = (q.bid_price, q.ask_price)
+                    if len(quotes) >= len(wanted):
+                        return
+
+            try:
+                await asyncio.wait_for(_collect(), timeout=quote_timeout_s)
+            except asyncio.TimeoutError:
+                pass  # partial book — STK-10 completeness decides usability
+
+            elapsed = asyncio.get_event_loop().time() - started
+
+            if status_task is not None:
+                # DAT-04a: best-effort, never fails the snapshot -- an
+                # unusable reading this cycle is exactly what the store's own
+                # staleness bound is for, not a reason to raise here.
+                try:
+                    status = await status_task
+                except Exception:  # noqa: BLE001 — the piggybacked read must never fail this call
+                    status = None
+                if status is not None:
+                    on_trading_status(status, instant)
+        finally:
+            # DAT-04a: never leak the background Profile task -- if anything
+            # above raised before the `await status_task` was reached (e.g.
+            # the "no strikes" RuntimeError), cancel it rather than letting it
+            # dangle past this function's return.
+            if status_task is not None and not status_task.done():
+                status_task.cancel()
 
     taken_at = instant  # same instant `today` was derived from above -- one clock read
     # build_sides matches quotes to strikes by the SUBSCRIPTION symbols (streamer).

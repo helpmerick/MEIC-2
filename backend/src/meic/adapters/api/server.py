@@ -1852,6 +1852,7 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     dataclass default) is what makes forgetting to pass it a loud call-site
     error instead of a silent green gate.
     """
+    from meic.adapters.dxlink.trading_status import TradingStatusStore
     from meic.application.timeouts import run_warmup
     from meic.application.warmup import ALERT_AT_SECONDS
     from meic.composition.live_gates import LiveMarketGates
@@ -1883,6 +1884,13 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     # is treated as unverified too. The session probe below feeds it.
     drift = BrokerClockProbe()
 
+    # DAT-04a (v1.69): the halt-signal provider seam — one store, fed by the
+    # Profile subscription `snapshot_chain` piggybacks onto the SAME DXLink
+    # connection it already opens for quotes below (no new connection, no
+    # new dependency). See trading_status.py's module docstring for the full
+    # ruling and the pre-ruled retirement contingency.
+    trading_status_store = TradingStatusStore()
+
     class _Snapshots:
         """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
         the UC-02 pre-flight — reflect the data the selector actually used.
@@ -1897,7 +1905,11 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
             # v1.51: no band_points — the subscription span is an internal
             # constant (SUBSCRIBE_SPAN_PTS); the STK-10 gate is trade-relative.
-            snap = await snapshot_chain(comp.broker._session)
+            # DAT-04a: piggyback the trading-status Profile subscription onto
+            # THIS same call/connection; `now` stamps the reading off the
+            # injected clock, never datetime.now() (DAY-03).
+            snap = await snapshot_chain(comp.broker._session, now=comp.clock.now,
+                                        on_trading_status=trading_status_store.record)
             self.stale = snap.stale
             self.last = snap
             return snap
@@ -1906,6 +1918,13 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
 
     async def _data_fresh() -> bool:
         return not snaps.stale
+
+    async def _halted() -> bool:
+        # DAT-04a: no reading, a non-ACTIVE status, or one stale beyond
+        # trading_status.HALT_READING_STALE_AFTER_SECONDS => halted. The
+        # freshness gates (DAT-02/STK-04/STK-10) are an independent second
+        # layer, untouched by this input.
+        return trading_status_store.halted(comp.clock.now())
 
     async def _session_valid() -> bool:
         # The ~60 s session probe (NFR-02) doubles as the DAY-03 clock reading:
@@ -1955,6 +1974,9 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     gates = LiveMarketGates.for_live(clock=comp.clock, data_fresh=_data_fresh,
                                      session_valid=_session_valid, buying_power_ok=_buying_power_ok,
                                      flatten_in_progress=flatten_in_progress,
+                                     # DAT-04a (v1.69, the ninth finding CLOSED): the live
+                                     # halt-signal provider — see trading_status_store above.
+                                     halted=_halted,
                                      holidays=holidays_near(_cal_anchor, years_ahead=10),
                                      half_days=half_days_near(_cal_anchor, years_ahead=10))
 
@@ -2170,6 +2192,10 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         # NFR-04 (2026-07-13): the QuoteHub the live quote-stream loop writes
         # and the enrichers/evaluator read live-first, snapshot-fallback.
         "quote_hub": quote_hub,
+        # DAT-04a (v1.69): the halt-signal store, exposed like quote_hub/
+        # chain_snapshots above so a test/operator/the NFR-07 constant-signal
+        # audit can flip it directly against the real live composition.
+        "trading_status_store": trading_status_store,
         "max_quote_age_ms": max_quote_age_ms,
         # EC-STP-06 (2026-07-14): exposed for the wiring capstone, mirroring
         # `stop_fill_poll_interval_s` -- proves the cutoff actually comes
@@ -2368,6 +2394,9 @@ def live_app():
     # NFR-04 (2026-07-13): the QuoteHub itself, exposed like `chain_snapshots`
     # above so a test/operator can inspect `.healthy`/`.mark(symbol)` directly.
     app.state.quote_hub = hub
+    # DAT-04a (v1.69): the halt-signal store, exposed like quote_hub above --
+    # the NFR-07 constant-signal audit flips it directly (see wiring_registry.py).
+    app.state.trading_status_store = live["trading_status_store"]
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None
