@@ -114,6 +114,29 @@ def alert_and_journal_crashed_attempt(comp, day: str, entry_number: int, *,
                     reason=f"attempt_crashed:{type(exc).__name__}",
                     put_floor=put_floor, call_floor=call_floor))
         except Exception as cb_exc:  # noqa: BLE001 — a broken callback must not kill the loop
+            # REC-01 (v1.74 review finding C): with the journal-first reorder,
+            # `comp.events.append` above can now RAISE on a journal write
+            # failure — landing here. A stderr-only print would lose the skip
+            # from BOTH stores (the journal refused it, memory never got it)
+            # invisibly: a double fault (crashed attempt + dead journal) the
+            # operator would never see. Still never propagate (the callback
+            # must not kill the loop), but ALERT so it reaches the panel —
+            # critical, matching this callback's own alert level: the entry's
+            # terminal outcome may now be recorded NOWHERE. The alert call is
+            # itself guarded (a dead alert sink must not kill the loop
+            # either); stderr remains the backstop of last resort.
+            try:
+                alerts = getattr(comp, "alerts", None)
+                if alerts is not None:
+                    alerts.alert(
+                        "critical",
+                        f"crash-callback for {entry_id} itself failed — the "
+                        "attempt_crashed skip may be journaled NOWHERE "
+                        "(possible journal write failure, REC-01); verify the "
+                        "event log and this entry's state by hand",
+                        error=repr(cb_exc))
+            except Exception:  # noqa: BLE001
+                pass
             print(f"alert_and_journal_crashed_attempt: callback itself failed for "
                   f"{entry_id}: {cb_exc!r}", file=sys.stderr)
     return _cb

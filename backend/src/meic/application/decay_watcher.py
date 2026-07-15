@@ -113,15 +113,48 @@ class DecayWatcher:
 
     async def complete(self, *, entry_id: str, side: str) -> None:
         """Buyback filled ⇒ side = SIDE_CLOSED_DECAY (long left to expire,
-        DCY-03), recorded as a `decay` close (CLS-04)."""
+        DCY-03), recorded as a `decay` close (CLS-04).
+
+        ORD-09a (v1.74): the buyback is a BUY-to-close limit resting at
+        `decay_buyback_trigger` -- a buy limit fills at its limit OR BETTER
+        (lower), so the trigger must never stand in for what the broker
+        actually paid. `fill` is sourced from the broker's own fill record
+        for THIS watcher's buyback order (`self._buyback_id`, set in
+        `buyback()`), falling back to the trigger only when no buyback was
+        placed on this instance or the broker fill record carries no price
+        (paper/simulated fills -- same documented fallback `RecoverLong.
+        _fill_price` uses) -- honest, never a silently-kept intent.
+
+        HONESTY NOTE (v1.74 review finding B): this method has NO live caller
+        today -- the wired production decay-close path is `stop_fill_watch.py`'s
+        detection pass, which journals the same ShortStopped/EntryClosed shape
+        and was ALREADY broker-actual there (`_resolve_by_order_id`). The
+        ORD-09a fix here is correct if/when this method is ever wired, but it
+        must not be credited as a live seam."""
         # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by contracts here.
         fee = fee_for_leg(self.fee_model, role="short", opening=False)
         at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
+        actual = await self._buyback_fill_price()
+        fill_price = actual if actual is not None else self.decay_buyback_trigger
         self.events.append(ShortStopped(
-            entry_id=entry_id, side=side, fill=self.decay_buyback_trigger,
+            entry_id=entry_id, side=side, fill=fill_price,
             slippage=Decimal("0"), initiator="decay", fee=fee, at=at))
         self.events.append(EntryClosed(entry_id=entry_id, initiator="decay", at=at))
+
+    async def _buyback_fill_price(self) -> Decimal | None:
+        """ORD-09a: the broker-ACTUAL fill price for this watcher's own
+        buyback order, mirroring `RecoverLong._fill_price`. None when no
+        buyback was ever placed on this instance, or the broker fill record
+        carries no price."""
+        order_id = getattr(self, "_buyback_id", None)
+        if order_id is None:
+            return None
+        for f in await self.broker.fills_since(None):
+            if _fill_matches(f, order_id):
+                legs = await self.broker.fill_legs(order_id)
+                return next((l.price for l in legs if l.price is not None), None)
+        return None
 
     # --- DCY-02.3 re-inflation guard ------------------------------------------
     async def reinflation_guard(

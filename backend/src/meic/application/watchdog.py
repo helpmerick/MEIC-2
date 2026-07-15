@@ -15,6 +15,7 @@ leg is ever bought twice.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal
 
 from meic.config.fee_model import FeeModel
@@ -40,6 +41,15 @@ class StopWatchdog:
     escalate_seconds: Decimal = Decimal("20")
     fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01
     clock: object = None  # ORD-11 (v1.67): injected clock for lifecycle `at` timestamps
+    # ORD-09a (v1.74 review finding A): the escalation's marketable buy fills
+    # a beat AFTER submit at a live broker -- resolving its price immediately
+    # would miss the record on the very next fills_since() GET and fall back
+    # to the ask (the intent price) nearly always in production, leaving the
+    # seam effectively unfixed. Bounded poll instead, mirroring
+    # execute_entry._await_fill's cadence discipline (constructor-injectable,
+    # defaulted here like lex_fill_poll_seconds/entry_fill_poll_seconds).
+    fill_price_poll_seconds: float = 2.0   # cadence between checks
+    fill_price_wait_seconds: float = 10.0  # total bound; then honest ask fallback
     _breaches: dict[tuple[str, str], _Breach] = field(default_factory=dict)
     resting_stop_ids: dict[tuple[str, str], str] = field(default_factory=dict)
     _escalated: set = field(default_factory=set)
@@ -124,7 +134,17 @@ class StopWatchdog:
             else:
                 await self.broker.cancel(resting_id)  # cancel the sleeping stop
 
-        fill_price = ask  # marketable-limit at the ask
+        # ORD-09a (v1.74): a marketable buy-to-close can fill AT OR BETTER
+        # than its cap (`ask`), so the cap must never stand in for what the
+        # broker actually paid. Source the broker-actual allocation for THIS
+        # escalation's own order via a BOUNDED POLL (review finding A: a live
+        # fill posts a beat after submit -- a single immediate read would
+        # miss it and record the ask nearly always); falls back to `ask` only
+        # when the fill record still hasn't appeared at the bound, or the
+        # record itself carries no price -- honest, never a silently-kept
+        # intent.
+        actual = await self._await_fill_price(order_id)
+        fill_price = actual if actual is not None else ask
         # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by contracts here.
         fee = fee_for_leg(self.fee_model, role="short", opening=False)
@@ -148,3 +168,39 @@ class StopWatchdog:
         working = await self.broker.working_orders()
         ids = {str(getattr(o, "order_id", None) or getattr(o, "id", None)) for o in working}
         return str(resting_id) not in ids
+
+    async def _resolve_fill(self, order_id) -> tuple[bool, Decimal | None]:
+        """ORD-09a: one read of the fills feed for `order_id` -- the same
+        `_fill_matches`/`fill_legs` lookup `RecoverLong._fill_price` and
+        `stop_fill_watch._resolve_by_order_id` use (reused normalizer, never
+        a new one). Returns (found, price): `found=False` means the fill
+        record has not APPEARED yet (poll again); `found=True, price=None`
+        means the record exists but carries no per-leg price (paper/simulated
+        fills -- honest, stop polling, fall back)."""
+        for f in await self.broker.fills_since(None):
+            if _fill_matches(f, order_id):
+                legs = await self.broker.fill_legs(order_id)
+                return True, next((l.price for l in legs if l.price is not None), None)
+        return False, None
+
+    async def _await_fill_price(self, order_id) -> Decimal | None:
+        """ORD-09a (review finding A): poll for `order_id`'s fill record for
+        up to `fill_price_wait_seconds`, every `fill_price_poll_seconds` --
+        the same first-check-is-immediate shape as `execute_entry._await_fill`
+        and `RecoverLong._await_fill`, so synchronous paper/fake fills return
+        with no wait. Distinguishes not-yet-visible (keep polling) from
+        visible-but-priceless (stop immediately -- more polling cannot invent
+        an allocation the broker never reported). Without an injected clock
+        (legacy/unit shape) it degrades to the single immediate check this
+        method replaced."""
+        found, price = await self._resolve_fill(order_id)
+        if found or self.clock is None:
+            return price
+        deadline = self.clock.now() + timedelta(seconds=self.fill_price_wait_seconds)
+        while self.clock.now() < deadline:
+            nxt = min(deadline, self.clock.now() + timedelta(seconds=self.fill_price_poll_seconds))
+            await self.clock.wait_until(nxt)
+            found, price = await self._resolve_fill(order_id)
+            if found:
+                return price
+        return None

@@ -704,6 +704,49 @@ async def _supervisor_tick(app_state, comp, alerts, todays_rows, runtime, now_fn
             alerts.alert("critical", f"ENT-10: day supervisor tick failed: {err}")
 
 
+async def _health_tick(app_state, alerts, probe_once) -> None:
+    """One GUARDED health-loop tick (v1.74 health-loop guard) — mirrors
+    `_supervisor_tick`'s pattern exactly. NFR-02's clock/session-liveness
+    probe must survive a tick exception (RSK-06): before this fix, an
+    unhandled exception in the health loop's body killed `health_task`
+    outright, and the clock/session-liveness reading would go stale forever
+    with nothing to say why. Alert once per DISTINCT error — not every
+    interval — by latching the last failure's repr on
+    `app_state.health_loop_error` (None when healthy)."""
+    try:
+        await probe_once()
+        app_state.health_loop_error = None   # a clean tick clears the latch
+    except Exception as exc:  # noqa: BLE001
+        err = repr(exc)
+        if err != app_state.health_loop_error:
+            app_state.health_loop_error = err
+            alerts.alert("critical", f"NFR-02: health loop tick failed: {err}")
+
+
+def _health_task_done_callback(alerts):
+    """v1.74 health-loop guard: build the done-callback for `health_task`,
+    mirroring `attempt_crash.alert_and_journal_crashed_attempt`'s pattern —
+    CRITICAL alert if the supervised task itself ever dies (an exception
+    `_health_tick`'s own guard somehow didn't catch, e.g. inside asyncio
+    machinery around it), since NFR-02's clock/session-liveness reading would
+    then silently stop updating with nothing else watching it. A cancelled
+    task (deliberate shutdown, see `_stop_health_loop`) is not a crash and is
+    never alerted. The whole callback is wrapped in a bare except — a
+    done-callback that itself raises is only logged by asyncio as an
+    unhandled exception in the callback machinery, never re-raised into the
+    loop, but this guard removes any dependence on that backstop."""
+    def _on_done(task) -> None:
+        try:
+            if task.cancelled():
+                return
+            exc = task.exception()  # retrieval — must run before anything else can fail
+            if exc is not None:
+                alerts.alert("critical", f"NFR-02: health_task died: {exc!r}")
+        except Exception as cb_exc:  # noqa: BLE001 — a broken callback must not kill the loop
+            logger.error("health task done-callback itself failed: %r", cb_exc)
+    return _on_done
+
+
 class _BrokerReadFacade:
     """RPT-15: the ONLY thing `ReportReconciler` ever sees of the broker --
     plain read-only forwards. Deliberately declared here (adapters/api), not
@@ -2577,15 +2620,24 @@ def live_app():
     # loop — the SAME loop comp.connect bound the broker session to — so awaiting
     # broker calls here is safe (unlike the threadpool pre-flight route).
     health_interval_s = float(env.get("MEIC_HEALTH_INTERVAL_S", "60"))
+    app.state.health_loop_error = None   # last tick failure, repr -- None when healthy
 
     @app.on_event("startup")
     async def _start_health_loop() -> None:
+        async def _tick() -> None:
+            if app.state.broker_connected:
+                await _probe_once()
+
         async def _loop() -> None:
             while True:
                 await asyncio.sleep(health_interval_s)
-                if app.state.broker_connected:
-                    await _probe_once()
+                # v1.74 health-loop guard: a per-tick exception must never
+                # kill this loop (RSK-06) -- see `_health_tick`'s docstring.
+                await _health_tick(app.state, alerts, _tick)
         app.state.health_task = asyncio.create_task(_loop())
+        # v1.74 health-loop guard: alert CRITICAL if the task itself ever
+        # dies (see `_health_task_done_callback`'s docstring).
+        app.state.health_task.add_done_callback(_health_task_done_callback(alerts))
 
     @app.on_event("shutdown")
     async def _stop_health_loop() -> None:

@@ -47,8 +47,19 @@ class EventLog(list):
 
 class DurableEventLog(EventLog):
     """An `EventLog` that write-throughs every append/extend to a durable
-    journal AFTER the config-version stamp — REC-01 ("persisted... BEFORE
-    being acted on") + REC-07 item 8.
+    journal — REC-01 + REC-07 item 8.
+
+    **Ordering pinned (v1.74, REC-01): JOURNAL-FIRST.** The event is durably
+    written to the journal BEFORE it is appended to the in-memory list (i.e.
+    before any in-memory state or actor can observe it). If the journal write
+    raises, this method RAISES too and the in-memory list is left UNCHANGED —
+    nothing ever acts on an event that durably never happened. The rejected
+    alternative (in-memory-first, journal after) was found live: a journal
+    failure there still left the in-memory event acted upon, so a restart
+    replayed a shorter, DIFFERENT history than the one the process had just
+    finished acting on — the process believed a lie until it next crashed.
+    Journal-first means in-memory and durable state can never diverge: either
+    both advance, or neither does.
 
     `journal` is duck-typed (only `.append(event) -> None` is required) so
     this application-layer class never imports the concrete adapter
@@ -62,14 +73,20 @@ class DurableEventLog(EventLog):
 
     def append(self, item) -> None:
         stamped = self._stamp(item)
-        list.append(self, stamped)
-        self._journal.append(stamped)
+        self._journal.append(stamped)  # REC-01: journal FIRST; a raise here
+        list.append(self, stamped)     # leaves the in-memory list untouched.
 
     def extend(self, items) -> None:
-        stamped = [self._stamp(i) for i in items]
-        list.extend(self, stamped)
-        for i in stamped:
-            self._journal.append(i)
+        # REC-01: journal-then-memory PER ITEM, not as two separate batch
+        # passes — a batch-journal-then-batch-memory split would let a
+        # mid-batch journal failure leave later items durably written but
+        # not yet in memory (or vice versa) for the span of this call. Per-
+        # item interleaving keeps the two never more than one item apart,
+        # and a raised item lands in NEITHER, matching `append`'s guarantee.
+        for i in items:
+            stamped = self._stamp(i)
+            self._journal.append(stamped)
+            list.append(self, stamped)
 
     def insert(self, index: int, item) -> None:
         # Not used by any current caller (services only append/extend); refusing

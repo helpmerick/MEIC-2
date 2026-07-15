@@ -163,7 +163,7 @@ class RecoverLong:
                 # whole ladder when the broker rejects the replace outright.
                 # Re-confirm not-filled immediately before every replace.
                 if await self._filled(working_id):
-                    return self._sold(entry_id, side, working_price, tried, qty)
+                    return await self._sold(entry_id, side, working_id, working_price, tried, qty)
                 try:
                     working_id = await self._broker.replace(working_id, intent)
                 except Exception:
@@ -174,7 +174,7 @@ class RecoverLong:
                     # filled, this was the race, not a genuine error. A real,
                     # unrelated replace failure still propagates unchanged.
                     if await self._filled(working_id):
-                        return self._sold(entry_id, side, working_price, tried, qty)
+                        return await self._sold(entry_id, side, working_id, working_price, tried, qty)
                     raise
             # LEX-01 order-id journaling (v1.62): every LEX order journals its
             # broker order id AT PLACEMENT — the initial submit AND every
@@ -194,18 +194,46 @@ class RecoverLong:
             # waiting the whole interval (that would delay a known fill) and
             # never repricing a filled order.
             if await self._await_fill(working_id, self._reprice_seconds):
-                return self._sold(entry_id, side, working_price, tried, qty)
+                return await self._sold(entry_id, side, working_id, working_price, tried, qty)
 
         # LEX-05 fallback: last guard — it may have filled right at the final
         # deadline, between the last poll and here.
         if working_id is not None and await self._filled(working_id):
-            return self._sold(entry_id, side, working_price, tried, qty)
+            return await self._sold(entry_id, side, working_id, working_price, tried, qty)
 
         await self._fallback(entry_id, side, long_symbol, quote.bid, qty)
         return LexResult("FALLBACK_WORKING", tuple(tried))
 
-    def _sold(self, entry_id: str, side: str, price: Decimal, tried: list[Decimal],
-             qty: int = 1) -> LexResult:
+    async def _fill_price(self, order_id) -> Decimal | None:
+        """ORD-09a (v1.74, the $15 divergence ruling): the broker's ACTUAL
+        allocated price for `order_id`'s fill -- mirrors
+        `stop_fill_watch._resolve_by_order_id` and EC-LEX-08(e)'s boot-
+        synthesis path exactly. A sell limit fills at its rung OR BETTER, so
+        the rung must never stand in for what the broker actually paid.
+        Returns None when the broker fill record itself carries no per-leg
+        price (paper/simulated fills -- `adapters/occ.py::simulated_fill_legs`
+        always reports `price=None`, honestly, since a simulator has no
+        broker allocation to report; or a real fill the broker reported
+        without one) -- the caller falls back to the rung/intent price ONLY
+        in that documented case, the same ORD-09 fallback
+        `execute_entry._record_fill` already uses for entry fills."""
+        for f in await self._broker.fills_since(None):
+            if _fill_matches(f, order_id):
+                legs = await self._broker.fill_legs(order_id)
+                return next((l.price for l in legs if l.price is not None), None)
+        return None
+
+    async def _sold(self, entry_id: str, side: str, order_id, intended_price: Decimal,
+                    tried: list[Decimal], qty: int = 1) -> LexResult:
+        # ORD-09a (v1.74): journal the BROKER'S actual fill price for
+        # `order_id`, never `intended_price` (the ladder rung it was placed
+        # at) -- the $15 divergence's suspected cause was exactly this: a
+        # sell limit filling BETTER than its rung recorded as the rung.
+        # Falls back to `intended_price` ONLY when the broker fill record
+        # itself carries no price (see `_fill_price`'s docstring) -- honest,
+        # never a silently-kept intent.
+        actual = await self._fill_price(order_id)
+        price = actual if actual is not None else intended_price
         # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by `qty` here.
         fee = fee_for_leg(self._fee_model, role="long", opening=False)
@@ -244,7 +272,15 @@ class RecoverLong:
         SideClosed), for a resting floor order discovered FILLED between
         ticks -- the floor order is never inside a `recover()` ladder call,
         so nothing else watches it; `stop_fill_watch._try_recover` resolves
-        its fill directly and calls this to close out the side honestly."""
+        its fill directly and calls this to close out the side honestly.
+
+        ORD-09a (v1.74): `recovery` MUST already be the broker-actual fill
+        price by the time it reaches here -- the caller (`stop_fill_watch.py`)
+        resolves it via the same `fill_legs`-backed lookup `_fill_price` uses,
+        falling back to the journaled floor price only when the broker fill
+        record itself carries none (v1.65's EC-LEX-08(e) boot-synthesis path,
+        pinned in tests/bdd/test_tc_lex_10.py). This method never re-derives
+        or second-guesses the price it is handed."""
         # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
         # (see domain/fees.py) -- never scaled by `qty` here.
         fee = fee_for_leg(self._fee_model, role="long", opening=False)
