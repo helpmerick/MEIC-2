@@ -3,6 +3,7 @@ Feature: TC-DOC-01
     Given the how-it-works tab
     Then it renders doc 12's content as single source stamped with the spec version it describes
     And a stamped-vs-running version mismatch renders a banner, never silent currency
+    And the master flowchart is clickable to a full-screen pannable zoomable view (v1.77)
     And every DOC-03 chapter is present (the completeness contract)
     And the tab carries no trading controls
 
