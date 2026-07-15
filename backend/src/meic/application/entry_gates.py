@@ -108,24 +108,54 @@ class FilterSnapshot:
     skip_dates: tuple[str, ...] = ()
     total_credit: Decimal | None = None
     min_total_credit: Decimal | None = None
+    # CAL-05 (v1.71): the calendar tag store's NO-TRADE label for the ET
+    # trading day this attempt falls on, or None if untagged. Populated by
+    # the CALLER (application/calendar_store.py's CalendarStore.label_for_day,
+    # itself fail-open per CAL-07) — this module stays pure/IO-free, exactly
+    # like every other FilterSnapshot field. Additive alongside the pre-v1.71
+    # `skip_dates` static list below: that path is unchanged, never replaced.
+    blackout_label: str | None = None
 
 
 # Skips from optional filters are info-level (ENT-06 / TC-ENT-04) — an expected,
 # non-alarming "not today", not a failure.
-SKIP_LEVEL = {
+class _SkipLevels(dict):
+    """CAL-05 (v1.71): the exact-match keys below don't cover the DYNAMIC
+    `blackout:<label>` reasons `evaluate_filters` now returns (the label
+    varies per tag, so it can never be a fixed key) — `__missing__`
+    classifies those info-level, identical to the static `blackout_date`
+    they sit beside, so a future consumer can never misclassify a calendar
+    blackout as alarming. Any OTHER unknown reason still raises KeyError,
+    never a silently-guessed level."""
+
+    def __missing__(self, reason):
+        if isinstance(reason, str) and reason.startswith("blackout:"):
+            return "info"    # CAL-05 calendar blackout — expected, non-alarming
+        raise KeyError(reason)
+
+
+SKIP_LEVEL = _SkipLevels({
     "vix_above_max": "info",
     "blackout_date": "info",
     "below_min_credit": "info",
-}
+})
 
 
 def evaluate_filters(f: FilterSnapshot) -> str | None:
     """ENT-06: checked at ENT-03 time, each filter independently toggleable.
-    Returns the first triggered filter's skip reason (info-level), else None."""
+    Returns the first triggered filter's skip reason (info-level), else None.
+
+    CAL-05 (v1.71): the calendar tag store is checked first, ahead of the
+    pre-existing static `skip_dates` list -- both are additive blackout
+    sources (the static list is UNCHANGED: same field, same trigger
+    condition, same `blackout_date` reason string), and either alone is
+    sufficient to skip the entry."""
     if f.vix_max is not None and f.vix is not None and f.vix > f.vix_max:
         return "vix_above_max"            # skip, info-level (ENT-06)
+    if f.blackout_label is not None:
+        return f"blackout:{f.blackout_label}"   # CAL-05: calendar tag store
     if f.date is not None and f.date in f.skip_dates:
-        return "blackout_date"            # explicit blackout (e.g. FOMC)
+        return "blackout_date"            # pinned pre-v1.71 path, additive
     if (f.min_total_credit is not None and f.total_credit is not None
             and f.total_credit < f.min_total_credit):
         return "below_min_credit"         # STK-06

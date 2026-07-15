@@ -73,6 +73,11 @@ class EntryProjection:
     # every scheduled or pre-v1.57 entry.
     put_floor: Decimal | None = None
     call_floor: Decimal | None = None
+    # CAL-06 (v1.71): True iff this entry fired via an acknowledged manual
+    # override of a NO-TRADE tag (CondorFilled.blackout_overridden) -- "the
+    # entry is report-tagged blackout_overridden". False for every scheduled
+    # entry and every pre-v1.71 fill.
+    blackout_overridden: bool = False
 
     @property
     def pnl(self) -> Decimal:
@@ -148,7 +153,8 @@ def apply(state: DayState, event: Event) -> DayState:
             e, net_credit=e.net_credit + event.net_credit, fees=e.fees + event.fee,
             short_premium=e.short_premium + event.short_premium,
             placed_at=event.at, legs=event.legs,
-            put_floor=event.put_floor, call_floor=event.call_floor)))
+            put_floor=event.put_floor, call_floor=event.call_floor,
+            blackout_overridden=event.blackout_overridden)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(

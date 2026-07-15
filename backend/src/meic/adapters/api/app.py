@@ -9,6 +9,8 @@ unauthenticated.
 """
 from __future__ import annotations
 
+import re
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -155,6 +157,57 @@ def _floor(raw: Any) -> Decimal | None:
         raise HTTPException(status_code=422, detail={"reason": "unparsable_floor"})
 
 
+# --- CAL-01/03/04 input validation (defence-in-depth, 2026-07-15 review) ----
+#
+# Everything these endpoints accept is JOURNALED verbatim (the calendar store
+# is event-sourced) and a tag's label is later ECHOED into `blackout:<label>`
+# skip reasons (CAL-05) and UI payloads. Nothing downstream parses or renders
+# reason strings unsafely today (verified at review), but an unbounded,
+# unvalidated operator string in a durable journal is a defence-in-depth gap:
+# validate BEFORE journaling, reject with 422, never truncate/clamp silently
+# (the UI-03 never-clamp precedent). `_CAL_DAY_RE` mirrors the exact
+# `re.fullmatch(r"\d{4}-\d{2}-\d{2}", ...)` convention /reports/reconcile/{day}
+# already uses (adapters/api/reports.py).
+
+# re.ASCII (final-review finding 4, 2026-07-15): without it `\d` matches any
+# Unicode decimal digit (Arabic-Indic, full-width, ...) -- a "day" that later
+# string comparisons against real ET day strings would silently never equal.
+_CAL_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+_CAL_LABEL_MAX = 64
+
+
+def _cal_day(raw: Any) -> str:
+    """A strict YYYY-MM-DD string naming a REAL date, or 422 -- never
+    journaled malformed. No stripping/normalising first: `"2026-07-15 "` is
+    rejected, not silently fixed up (the same reject-never-fix stance as the
+    reports route this mirrors, which fullmatches the raw string). The
+    `date.fromisoformat` round-trip (finding 4) rejects impossible dates the
+    shape check alone accepts (2026-13-45) -- a day that can never occur
+    would otherwise sit in the journal as an unfireable tag forever."""
+    day = str(raw or "")
+    if not _CAL_DAY_RE.fullmatch(day):
+        raise HTTPException(status_code=422, detail={"reason": "invalid_day"})
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"reason": "invalid_day"})
+    return day
+
+
+def _cal_label(raw: Any) -> str:
+    """A bounded, printable, single-line label, or 422. `str.isprintable()`
+    is False for newlines and every other control character, so a label can
+    never smuggle line breaks into the journal, a `blackout:<label>` skip
+    reason, or a report payload. Rejected, never truncated -- and STRINGS
+    only: a JSON null/number is rejected, never coerced (str(None) journaling
+    a literal "None" label would be exactly the silent fix-up this refuses)."""
+    if not isinstance(raw, str):
+        raise HTTPException(status_code=422, detail={"reason": "invalid_label"})
+    if not raw or len(raw) > _CAL_LABEL_MAX or not raw.isprintable():
+        raise HTTPException(status_code=422, detail={"reason": "invalid_label"})
+    return raw
+
+
 def _adhoc_row(params: dict[str, Any]):
     """ENT-11(4): an ad-hoc row validates through the IDENTICAL per-row rules as
     a schedule row (contracts 1-10, discrete stop set, width steps, per_side
@@ -231,6 +284,11 @@ def create_app(
     # day_settlements only) for POST /reports/backfill/{day}. None (paper's default) makes that one
     # endpoint 400 rather than reaching for a broker that isn't there -- every other
     # route on the panel is unaffected.
+    calendar_store: Any = None,  # CAL-01..08 (doc 11): optional CalendarStore (application/
+    # calendar_store.py). None (every pre-v1.71 caller) makes the /calendar/* routes
+    # 400 rather than reaching for a store that isn't wired -- every other route is
+    # unaffected, same convention as `backfill_broker_reads` above.
+    cal_stale_after_days: int = 45,  # CAL-02 (doc 06): staleness banner threshold, display-only
 ) -> FastAPI:
     app = FastAPI(title="MEIC control panel")
 
@@ -354,6 +412,9 @@ def create_app(
                 # this entry — derived structurally from the event log
                 # (ShortStopped already evented), never a second flag to drift.
                 "tpt_disarmed": bool(e.sides_stopped),
+                # CAL-06 (v1.71): True iff this entry fired via an acknowledged
+                # manual override of a NO-TRADE tag.
+                "blackout_overridden": e.blackout_overridden,
             }
             if target_level is not None:
                 # TPT-06: dollar feedback, from the ACTUAL net fill credit once
@@ -375,6 +436,119 @@ def create_app(
         feed = [_describe(ev) for ev in events]
         feed = [f for f in feed if f is not None]
         return list(reversed(feed))[:25]
+
+    # --- CAL-01..08 trading calendar (doc 11) -----------------------------------
+    # Read-only GET is origin-open like every other read model above; every
+    # mutation below is a POST/DELETE and so is already caught by the security
+    # middleware's origin/token check (NFR-06) -- no separate gate needed here.
+    @app.get("/calendar")
+    def get_calendar() -> dict[str, Any]:
+        """CAL-08 read model (backend half): every currently-tagged day, each
+        category's import + staleness, for the (slice-2) Calendar tab."""
+        if calendar_store is None:
+            return {"available": False}
+        from meic.domain.trading_calendar import tier_for_category
+
+        tags = calendar_store.tags()
+        stale = calendar_store.staleness_report(stale_after_days=cal_stale_after_days)
+        return {
+            "available": True,
+            "tags": {day: {"label": t.label, "origin": t.origin, "category": t.category}
+                     for day, t in tags.items()},
+            # CAL-01: tier included per category so UI-30 can mark tier-2
+            # (Fed speakers) visually distinct from the tier-1 official schedules.
+            "staleness": {cat: {"imported_at": s.imported_at, "horizon": s.horizon,
+                                "stale": s.stale, "tier": tier_for_category(cat)}
+                         for cat, s in stale.items()},
+            "standing_rules": dict(calendar_store.state().standing_rules),
+        }
+
+    @app.post("/calendar/import")
+    def calendar_import(body: dict[str, Any]) -> dict[str, Any]:
+        """CAL-01: operator-triggered, auth-gated import -- a pasted table of
+        dated events for one category. Never fabricated: exactly the dates
+        the operator supplied. Every date and label is validated BEFORE
+        journaling (see `_cal_day`/`_cal_label` above) -- a per-date label
+        can become an auto-tag's label (CAL-04) and hence a
+        `blackout:<label>` skip reason, so it gets the same charset/length
+        bound as a manual tag's."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        from meic.application.calendar_store import UnknownCalendarCategory
+
+        dates = [_cal_day(d) for d in body.get("dates", [])]
+        labels = {_cal_day(k): _cal_label(v)
+                  for k, v in (body.get("labels") or {}).items()}
+        try:
+            ev = calendar_store.import_events(
+                category=str(body.get("category", "")), dates=dates, labels=labels,
+                source=str(body.get("source", "pasted_table")))
+        except UnknownCalendarCategory:
+            raise HTTPException(status_code=422, detail={"reason": "unknown_category"})
+        return {"result": "imported", "category": ev.category, "count": len(ev.dates)}
+
+    @app.post("/calendar/tag")
+    def calendar_tag(body: dict[str, Any]) -> dict[str, Any]:
+        """CAL-03: tag one ET day NO-TRADE. `label` defaults to the day itself
+        when the operator leaves it blank -- CAL-03's own default is "the
+        event name"; a bare manual tag with no associated event has none to
+        borrow, so the day string is the honest fallback. Both fields are
+        validated BEFORE journaling: strict YYYY-MM-DD day, bounded
+        printable single-line label (422, never truncated)."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        day = _cal_day(body.get("day"))
+        label = _cal_label(body.get("label") or day)
+        calendar_store.tag(day, label)
+        return {"result": "tagged", "day": day, "label": label}
+
+    @app.delete("/calendar/tag/{day}")
+    def calendar_untag(day: str) -> dict[str, Any]:
+        """CAL-03/04: remove whatever NO-TRADE tag (manual, or one day of a
+        standing rule's auto-tag) is showing for `day`. The day is validated
+        like every other calendar mutation -- a malformed day string must
+        never be journaled as a `NoTradeTagRemoved` (it would sit in the
+        CAL-04 removed-days suppression set forever)."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        day = _cal_day(day)
+        calendar_store.untag(day)
+        return {"result": "untagged", "day": day}
+
+    @app.post("/calendar/rule")
+    def calendar_set_rule(body: dict[str, Any]) -> dict[str, Any]:
+        """CAL-04: "always block <category>" -- auto-tags every current and
+        later-imported event of the category. `category` must be a known
+        CAL-01 category (the store raises UnknownCalendarCategory, same as
+        imports); the optional label override gets the same charset/length
+        bound as a manual tag's (it becomes every auto-tag's label and hence
+        a `blackout:<label>` skip reason)."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        from meic.application.calendar_store import UnknownCalendarCategory
+
+        category = str(body.get("category", ""))
+        raw_label = body.get("label")
+        label = _cal_label(raw_label) if raw_label not in (None, "") else None
+        try:
+            calendar_store.set_standing_rule(category, label)
+        except UnknownCalendarCategory:
+            raise HTTPException(status_code=422, detail={"reason": "unknown_category"})
+        return {"result": "rule_set", "category": category}
+
+    @app.delete("/calendar/rule/{category}")
+    def calendar_remove_rule(category: str) -> dict[str, Any]:
+        """CAL-04: unknown categories rejected here too -- a
+        `StandingCategoryRuleRemoved` for a category that can never exist
+        would be journal noise, never a meaningful removal."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        from meic.domain.trading_calendar import KNOWN_CATEGORIES
+
+        if category not in KNOWN_CATEGORIES:
+            raise HTTPException(status_code=422, detail={"reason": "unknown_category"})
+        calendar_store.remove_standing_rule(category)
+        return {"result": "rule_removed", "category": category}
 
     # --- UC-02 schedule composition -------------------------------------------
     schedule = ScheduleService(state)
@@ -539,7 +713,8 @@ def create_app(
             return await commands.fire(press_id=press_id, entry_number=n,
                                        row=row, confirmed=bool(body.get("confirmed")),
                                        put_floor=_floor(body.get("put_floor")),
-                                       call_floor=_floor(body.get("call_floor")))
+                                       call_floor=_floor(body.get("call_floor")),
+                                       blackout_ack=bool(body.get("blackout_ack")))
 
         @app.post("/manual/simulate")
         async def manual_simulate(body: dict[str, Any]) -> dict[str, Any]:
@@ -574,7 +749,8 @@ def create_app(
             return await commands.fire(press_id=press_id, entry_number=n, row=row,
                                        confirmed=bool(body.get("confirmed")),
                                        put_floor=_floor(body.get("put_floor")),
-                                       call_floor=_floor(body.get("call_floor")))
+                                       call_floor=_floor(body.get("call_floor")),
+                                       blackout_ack=bool(body.get("blackout_ack")))
 
         @app.post("/close/{entry_id}")
         async def close_entry(entry_id: str) -> dict[str, Any]:

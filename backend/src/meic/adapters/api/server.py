@@ -201,6 +201,18 @@ def _chain_completeness_pct(env: dict[str, str]) -> Decimal:
     return raw if Decimal("50") <= raw <= Decimal("100") else Decimal("90")
 
 
+def _cal_stale_after_days(env: dict[str, str]) -> int:
+    """CAL-02 `cal_stale_after_days` (doc 06: range 7-365, default 45) -- the
+    calendar staleness banner threshold (display-only, CAL-07: never
+    blocks). Out-of-range falls back to the spec default, the same
+    reject-the-dial convention as `_chain_completeness_pct` above."""
+    try:
+        raw = int(env.get("MEIC_CAL_STALE_AFTER_DAYS", "45"))
+    except ValueError:
+        return 45
+    return raw if 7 <= raw <= 365 else 45
+
+
 def _drill_outage_seconds(env: dict[str, str]) -> float:
     """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) -- the
     stop-independence drill's default disconnect duration when a request
@@ -1853,6 +1865,7 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     error instead of a silent green gate.
     """
     from meic.adapters.dxlink.trading_status import TradingStatusStore
+    from meic.application.calendar_store import CalendarStore
     from meic.application.timeouts import run_warmup
     from meic.application.warmup import ALERT_AT_SECONDS
     from meic.composition.live_gates import LiveMarketGates
@@ -1890,6 +1903,12 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     # new dependency). See trading_status.py's module docstring for the full
     # ruling and the pre-ruled retirement contingency.
     trading_status_store = TradingStatusStore()
+
+    # CAL-01..08 (doc 11, v1.71): the tag/rule store is a pure fold over the
+    # SAME shared event log everything else journals to -- REC-07's own
+    # inventory extension needs no new persistence path (see
+    # application/calendar_store.py's module docstring).
+    calendar_store = CalendarStore(comp.events, comp.clock)
 
     class _Snapshots:
         """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
@@ -2039,12 +2058,14 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     runtime = build_live_runtime(comp, selector=selector, market_gates=gates,
                                  warmup=_entry_warmup, warmup_lead_seconds=lead_seconds,
                                  max_entries_per_day=_max_entries(comp),
-                                 drift=drift, max_clock_drift_ms=max_drift_ms)
+                                 drift=drift, max_clock_drift_ms=max_drift_ms,
+                                 calendar_label=calendar_store.label_for_day)  # CAL-05
 
     # ENT-09: the panel's ▶ crosses the identical rails (same ceiling, same book).
     manual = build_manual_entry(
         comp, selector=selector, market_gates=gates,
         max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
+        calendar_label=calendar_store.label_for_day,  # CAL-06
         # DAY-03 (THE confirmed live bug, 2026-07-13): this used to be
         # `datetime.now(timezone.utc).astimezone().date().isoformat()`, which
         # converts to the SYSTEM's local timezone (whatever the operator's
@@ -2201,6 +2222,10 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         # `stop_fill_poll_interval_s` -- proves the cutoff actually comes
         # from env, not a hardcoded value.
         "stop_fill_catchup_max_age_days": stop_fill_catchup_max_age_days,
+        # CAL-01..08: exposed so live_app can wire /calendar/* (create_app)
+        # and so the NFR-07 registry's behavioural live-check can flip the
+        # real store off app.state, mirroring quote_hub/trading_status_store.
+        "calendar_store": calendar_store,
     }
 
 
@@ -2371,9 +2396,14 @@ def live_app():
     app = create_app(comp.state, comp.events, api_token=token, commands=commands,
                      entries_enricher=entries_enricher,
                      reporting_config=reporting_config,
-                     backfill_broker_reads=_BrokerReadFacade(comp.broker))
+                     backfill_broker_reads=_BrokerReadFacade(comp.broker),
+                     calendar_store=live["calendar_store"],   # CAL-01..08
+                     cal_stale_after_days=_cal_stale_after_days(env))
     app.state.composition = comp
     app.state.commands = commands
+    # CAL-01..08: exposed like every other live signal above so a test/the
+    # NFR-07 registry's behavioural live-check can flip the real store.
+    app.state.calendar_store = live["calendar_store"]
     app.state.session_probe = live["session_probe"]   # DAY-03 clock reading source
     app.state.exit_monitor = live["exit_monitor"]     # TPF-03/TPT-04 bot-side monitor
     app.state.stop_fill_detector = live["stop_fill_detector"]  # EC-STP-06 catch-up (v1.60)

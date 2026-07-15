@@ -24,7 +24,9 @@ from typing import Awaitable, Callable
 
 from decimal import Decimal
 
-from meic.application.entry_gates import GateSnapshot, RiskSnapshot, clock_drift_blocks_entry
+from meic.application.entry_gates import (
+    FilterSnapshot, GateSnapshot, RiskSnapshot, clock_drift_blocks_entry,
+)
 from meic.application.execute_entry import Condor, ExecuteEntryAttempt, StopParams
 from meic.application.reconcile_boot import entries_blocked_by_reconcile
 from meic.domain.events import DayArmed, DayCompleted, EntrySkipped
@@ -116,6 +118,11 @@ class LiveRuntime:
     max_day_risk: Decimal | None = None       # RSK-04; mandatory before live (doc 06 §169)
     order_cap: OrderCap | None = None         # RSK-08
     buying_power: Callable[[], Decimal] | None = None   # ENT-03 BP vs this condor's margin
+    # CAL-05 (v1.71): (day) -> NO-TRADE label | None, from the calendar tag
+    # store. None (every pre-v1.71 wiring) means "no calendar wired" -- never
+    # a block; CAL-07 rules absence as trade, so an unwired provider must
+    # read the SAME way a wired-but-empty one does.
+    calendar_label: Callable[[str], str | None] | None = None
 
     def __post_init__(self) -> None:
         self._worst_case: dict[str, Decimal] = {}   # entry_id -> its structural worst case
@@ -207,11 +214,19 @@ class LiveRuntime:
             # reprice ladder, fill recording, RSK-04 bookkeeping and the STP-01
             # protect hand-off — is ONE shielded unit; ensure_future keeps a
             # strong reference so the inner task is never GC'd.
-            async def _attempt_and_protect(when=when, row=row, condor=condor, gates=gates):
+            # CAL-05: entries only -- the ONE call in this codebase's live
+            # scheduler that ever consults the calendar tag store. Management
+            # (stops/LEX/TPF/TPT/decay/EOD/reconcile) is driven by process
+            # managers elsewhere that never call this or `evaluate_filters`.
+            filters = (FilterSnapshot(date=day, blackout_label=self.calendar_label(day))
+                      if self.calendar_label is not None else None)
+
+            async def _attempt_and_protect(when=when, row=row, condor=condor, gates=gates,
+                                           filters=filters):
                 nonlocal filled
                 outcome = await comp.execute.attempt(
                     day=day, scheduled=when, condor=condor, gates=gates,
-                    risk=await self._risk(), stop=row.stop)
+                    risk=await self._risk(), stop=row.stop, filters=filters)
                 if outcome.status == "FILLED":
                     filled += 1
                     # ExecuteEntryAttempt keys its events off condor.entry_number, so

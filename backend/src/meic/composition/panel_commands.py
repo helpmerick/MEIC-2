@@ -96,12 +96,13 @@ class PanelCommands:
         return self._manual.preview(press_id, entry_number, row)
 
     async def fire(self, *, press_id: str, entry_number: int, row, confirmed: bool,
-                   put_floor=None, call_floor=None) -> dict:
+                   put_floor=None, call_floor=None, blackout_ack: bool = False) -> dict:
         if self._manual is None:
             return {"result": "unavailable", "reason": "manual entry not wired (ENT-09)"}
         return await self._manual.fire(press_id=press_id, entry_number=entry_number,
                                        row=row, confirmed=confirmed,
-                                       put_floor=put_floor, call_floor=call_floor)
+                                       put_floor=put_floor, call_floor=call_floor,
+                                       blackout_ack=blackout_ack)
 
     def floor_candidates(self, row) -> dict:
         """ENT-09b v1.57: the ▶ dialog's floor dropdowns -- per-side candidate

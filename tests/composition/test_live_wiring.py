@@ -120,10 +120,38 @@ def test_every_liveruntime_rail_is_accounted_for():
     """A tripwire. Add a rail to LiveRuntime and this test fails until you either
     wire it in build_live_runtime or state, here, that it is not a rail."""
     NOT_RAILS = {"comp", "selector", "market_gates", "warmup", "max_entries_per_day",
-                 "warmup_lead_seconds", "max_clock_drift_ms", "measure_drift_ms"}
+                 "warmup_lead_seconds", "max_clock_drift_ms", "measure_drift_ms",
+                 # CAL-05/CAL-07 (v1.71): deliberately NOT a safety rail like
+                 # max_day_risk/order_cap/buying_power -- those three silently
+                 # becoming None would let UNLIMITED risk through unnoticed;
+                 # `calendar_label=None` is CAL-07's OWN ruled, intentional
+                 # state ("an empty or unimported calendar blocks nothing"),
+                 # not a safety gap. The real live wiring (_wire_live_day)
+                 # still binds it to a real CalendarStore -- see
+                 # test_composition/... wiring, not this rail tripwire.
+                 "calendar_label"}
     known = set(SAFETY_RAILS) | NOT_RAILS
     actual = {f.name for f in fields(LiveRuntime)}
     assert actual <= known, f"unclassified LiveRuntime field(s): {actual - known}"
+
+
+def test_calendar_label_threads_through_build_live_runtime_and_build_manual_entry():
+    """CAL-05/CAL-06 (v1.71): the SAME calendar-label provider `_wire_live_day`
+    binds off its real CalendarStore must reach both the scheduled runtime
+    (CAL-05's hard skip) and the manual-fire wiring (CAL-06's warn-and-
+    acknowledge) -- not just one of the two."""
+    comp = _Comp()
+    label = lambda day: "FOMC" if day == "2026-07-15" else None
+
+    runtime = build_live_runtime(comp, selector=_selector, market_gates=_gates,
+                                 calendar_label=label)
+    assert runtime.calendar_label is label
+    assert runtime.calendar_label("2026-07-15") == "FOMC"
+    assert runtime.calendar_label("2026-07-16") is None
+
+    manual = build_manual_entry(comp, selector=_selector, market_gates=_gates,
+                                calendar_label=label)
+    assert manual._calendar_label is label
 
 
 def test_a_missing_ceiling_is_none_not_a_silent_infinity():

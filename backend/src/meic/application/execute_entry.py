@@ -47,7 +47,9 @@ def _fill_matches(fill, order_id) -> bool:
         partial = "partial" in str(getattr(fill, "status", "")).lower()
     return str(fid) == str(order_id) and not partial
 
-from .entry_gates import GateSnapshot, RiskSnapshot, evaluate_gates, evaluate_risk
+from .entry_gates import (
+    FilterSnapshot, GateSnapshot, RiskSnapshot, evaluate_filters, evaluate_gates, evaluate_risk,
+)
 from .leg_book import crosscheck_leg_symbols
 from .order_intent import OrderIntent, condor_legs
 
@@ -201,6 +203,8 @@ class ExecuteEntryAttempt:
         initiator: str = "schedule",
         put_floor: Decimal | None = None,
         call_floor: Decimal | None = None,
+        filters: FilterSnapshot | None = None,
+        blackout_overridden: bool = False,
     ) -> EntryOutcome:
         """THE entry path. Scheduled entries and manual ENT-09 fires both come
         through here, and `bypass_window` is the ONLY thing a manual fire changes
@@ -212,6 +216,20 @@ class ExecuteEntryAttempt:
         to the eventual `CondorFilled` so a manual fire's floors are recorded
         in the entry's events (never used to re-derive the selection here;
         the selector already applied them before `condor` was built).
+
+        `filters` (ENT-06/CAL-05, v1.71): optional — None (every pre-v1.71
+        caller, and ManualEntry's own fire path) means "no filters supplied",
+        never "blocked". A SCHEDULED entry's caller (RunTradingDay/LiveRuntime)
+        is the only production wiring that ever supplies one; a manual fire
+        handles a calendar blackout through its OWN warn-and-acknowledge path
+        (CAL-06, application/manual_entry.py) instead of this hard-skip filter
+        — the two are deliberately different rails for the same tag store.
+
+        `blackout_overridden` (CAL-06, v1.57-style audit passthrough): True
+        only when ManualEntry's own CAL-06 check already ran and the operator
+        acknowledged a blackout — carried through to `CondorFilled` so the
+        day report/entry card can show it, mirroring `put_floor`/`call_floor`
+        above. Always False for a scheduled entry.
         """
         n = condor.entry_number
 
@@ -223,6 +241,18 @@ class ExecuteEntryAttempt:
         reason = evaluate_gates(gates)
         if reason is not None:
             return self._skip(day, n, reason)
+
+        # 2b. ENT-06 filters (vix_max, the static skip_dates list, CAL-05's
+        # calendar blackout, min_total_credit) -- "checked at ENT-03 time,
+        # each filter independently toggleable" (entry_gates.py). Entries
+        # ONLY: nothing else in this codebase calls `evaluate_filters` or
+        # consults the calendar tag store (CAL-05's "everything else runs
+        # untouched" -- stops, LEX, TPF/TPT, decay, EOD, reconcile never
+        # reach this method at all).
+        if filters is not None:
+            reason = evaluate_filters(filters)
+            if reason is not None:
+                return self._skip(day, n, reason)
 
         # 3. RSK-08 order cap, then RSK-04 max exposure. Priced from THIS condor's
         # own width/credit/contracts — never from a number a caller passed in.
@@ -266,15 +296,18 @@ class ExecuteEntryAttempt:
 
         # 4. ORD-01/02/03 — one 4-leg limit, repriced down to the floor
         return await self._work_order(day, n, entry_id, condor, initiator,
-                                      put_floor=put_floor, call_floor=call_floor)
+                                      put_floor=put_floor, call_floor=call_floor,
+                                      blackout_overridden=blackout_overridden)
 
     async def _work_order(self, day, n, entry_id, condor: Condor,
                           initiator: str = "schedule",
                           put_floor: Decimal | None = None,
-                          call_floor: Decimal | None = None) -> EntryOutcome:
+                          call_floor: Decimal | None = None,
+                          blackout_overridden: bool = False) -> EntryOutcome:
         try:
             return await self._run_ladder(day, n, entry_id, condor, initiator,
-                                          put_floor=put_floor, call_floor=call_floor)
+                                          put_floor=put_floor, call_floor=call_floor,
+                                          blackout_overridden=blackout_overridden)
         finally:
             # CLS-03 seam: however the attempt ended (fill, skip, operator
             # cancel or error), this entry no longer has a working order to
@@ -285,7 +318,8 @@ class ExecuteEntryAttempt:
     async def _run_ladder(self, day, n, entry_id, condor: Condor,
                           initiator: str = "schedule",
                           put_floor: Decimal | None = None,
-                          call_floor: Decimal | None = None) -> EntryOutcome:
+                          call_floor: Decimal | None = None,
+                          blackout_overridden: bool = False) -> EntryOutcome:
         ladder = RepriceLadder(
             start=condor.mid_credit, ticks=self._ticks,
             attempts=self._reprice_attempts, floor=condor.min_total_credit)
@@ -333,7 +367,8 @@ class ExecuteEntryAttempt:
                 # fill went unprotected). Re-confirm not-filled immediately first.
                 if await self._filled(working_id):
                     return await self._record_fill(entry_id, working_id, condor, expiration,
-                                                   working_price, initiator)
+                                                   working_price, initiator,
+                                                   blackout_overridden=blackout_overridden)
                 try:
                     working_id = await self._broker.replace(working_id, intent)
                     self._register(entry_id, working_id)  # CLS-03: a replace mints a new id
@@ -349,7 +384,8 @@ class ExecuteEntryAttempt:
                     # replace failure (not a race) still propagates unchanged.
                     if await self._filled(working_id):
                         return await self._record_fill(entry_id, working_id, condor, expiration,
-                                                       working_price, initiator)
+                                                       working_price, initiator,
+                                                       blackout_overridden=blackout_overridden)
                     if self._cancel_requested(entry_id):
                         # CLS-03: the operator's cancel landed inside this
                         # replace round trip — not a genuine error. Stand down
@@ -366,7 +402,8 @@ class ExecuteEntryAttempt:
             if await self._await_fill(working_id, self._reprice_seconds, entry_id=entry_id):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
                                                working_price, initiator,
-                                               put_floor=put_floor, call_floor=call_floor)
+                                               put_floor=put_floor, call_floor=call_floor,
+                                               blackout_overridden=blackout_overridden)
 
         # ORD-03 / EC-ENT-05: floor reached unfilled ⇒ cancel and skip. Last guard:
         # it may have filled right at the final deadline.
@@ -374,7 +411,8 @@ class ExecuteEntryAttempt:
             if await self._filled(working_id):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
                                                working_price, initiator,
-                                               put_floor=put_floor, call_floor=call_floor)
+                                               put_floor=put_floor, call_floor=call_floor,
+                                               blackout_overridden=blackout_overridden)
             await self._broker.cancel(working_id)
             # REPRICE-RACE SWEEP (2026-07-11): the pre-check above narrows the
             # window but does not close it — a live fill can still land in the
@@ -389,7 +427,8 @@ class ExecuteEntryAttempt:
             if await self._filled(working_id):
                 return await self._record_fill(entry_id, working_id, condor, expiration,
                                                working_price, initiator,
-                                               put_floor=put_floor, call_floor=call_floor)
+                                               put_floor=put_floor, call_floor=call_floor,
+                                               blackout_overridden=blackout_overridden)
         if working_id is not None and self._cancel_requested(entry_id):
             # CLS-03: cancelled by the operator, not priced out at the floor —
             # recorded distinctly so the day report says WHY it never filled.
@@ -417,7 +456,8 @@ class ExecuteEntryAttempt:
     async def _record_fill(self, entry_id, working_id, condor: Condor, expiration: date,
                            fill_credit, initiator: str, *,
                            put_floor: Decimal | None = None,
-                           call_floor: Decimal | None = None) -> EntryOutcome:
+                           call_floor: Decimal | None = None,
+                           blackout_overridden: bool = False) -> EntryOutcome:
         legs = await self._fill_legs(working_id, condor, expiration)
         # BUG FIX (2026-07-09 incident): `fill_credit` here is only the working
         # ladder RUNG price (an estimate) — the day the rung read 3.50, the
@@ -451,7 +491,8 @@ class ExecuteEntryAttempt:
             initiator=initiator,             # ENT-09 / UC-08 tagging
             at=self._clock.now().isoformat(),  # UI card: fill time
             put_floor=put_floor, call_floor=call_floor,  # ENT-09b v1.57 audit
-            broker_order_id=str(working_id)))  # OWN-01/OWN-03: the entry's own order id
+            broker_order_id=str(working_id),  # OWN-01/OWN-03: the entry's own order id
+            blackout_overridden=blackout_overridden))  # CAL-06 (v1.71) audit
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:

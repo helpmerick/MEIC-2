@@ -31,7 +31,7 @@ from decimal import Decimal
 from typing import Any
 
 from meic.application.market_calendar import trading_day_str
-from meic.domain.events import EntrySkipped
+from meic.domain.events import EntrySkipped, ManualFireBlackoutAcknowledged
 from meic.domain.projection import day_report
 from meic.domain.walk import floor_inside_spot
 
@@ -104,7 +104,8 @@ class FirePreview:
 
 class ManualEntry:
     def __init__(self, comp, selector, market_gates, *, max_entries_per_day=None,
-                 risk=None, day=None, blocks=None, spot_provider=None) -> None:
+                 risk=None, day=None, blocks=None, spot_provider=None,
+                 calendar_label=None) -> None:
         self._comp = comp
         self._selector = selector          # async (when, n, config) -> (Condor|None, skip|None)
         self._gates = market_gates         # async () -> GateSnapshot
@@ -119,6 +120,11 @@ class ManualEntry:
         # the check is skipped rather than refusing on a guess (the same
         # honesty stance as `_risk`/`_blocks` being optional above).
         self._spot = spot_provider
+        # CAL-06 (v1.71): (day) -> NO-TRADE label | None, from the calendar tag
+        # store (fail-open per CAL-07). None (default, e.g. paper/pre-v1.71
+        # callers) means "no calendar wired" -- never refuses, same polarity
+        # as an unwired provider reads everywhere else in this feature.
+        self._calendar_label = calendar_label
         self._consumed: set[str] = set()   # press ids already acted on (idempotency)
 
     # --- UI-22 -------------------------------------------------------------------
@@ -177,18 +183,52 @@ class ManualEntry:
     # --- ENT-09 ------------------------------------------------------------------
     async def fire(self, *, press_id: str, entry_number: int, row,
                    confirmed: bool, put_floor: Decimal | None = None,
-                   call_floor: Decimal | None = None) -> dict[str, Any]:
+                   call_floor: Decimal | None = None,
+                   blackout_ack: bool = False) -> dict[str, Any]:
         """Fire one entry now. `press_id` makes a double-click idempotent.
 
         `put_floor`/`call_floor` (ENT-09b v1.57, manual-entry-only, per-press —
         never persisted schedule state): minimum short-strike floors from the
         ▶ dialog's optional toggle. `None`/`None` is every non-floor press and
         every pre-v1.57 caller.
+
+        `blackout_ack` (CAL-06, v1.71): the OK dialog's explicit acknowledgment
+        checkbox, required ONLY when today's ET day carries a NO-TRADE tag.
+        Never hard-blocks (ENT-09's fresh-intent rationale) — refused with a
+        distinct, label-carrying reason without it; evented and report-tagged
+        `blackout_overridden` with it. Default False is every pre-v1.71 caller
+        and every press made on an untagged day (where it has no effect).
         """
         # 1. UI-22: no OK, no order — and nothing recorded. A dismissed or
         # timed-out dialog must leave the log exactly as it found it.
         if not confirmed:
             return {"result": "not_confirmed"}
+
+        day = self.today()
+
+        # 1b. CAL-06 (v1.71): a NO-TRADE tag on today's ET day never hard-blocks
+        # a manual fire (ENT-09's whole rationale is FRESH operator intent) —
+        # but it is never silent either. Refused, distinctly, without the
+        # explicit acknowledgment checkbox; proceeds — evented, and the
+        # eventual fill report-tagged `blackout_overridden` — with it. "The
+        # operator overriding the operator's own rule is sovereignty, not a
+        # breach ... but it is never silent" (CAL-06).
+        #
+        # Checked BEFORE the press is claimed (final-review finding 3,
+        # 2026-07-15): a refused unacknowledged fire must NOT consume the
+        # press_id — the operator's acknowledged retry arrives with the SAME
+        # press_id (the dialog holds it), and a consumed press would come
+        # back `duplicate_press` and never fire. Safe pre-claim: the refusal
+        # is deterministic for identical inputs and places no order, so the
+        # dedupe's double-submit protection is preserved.
+        blackout_label = self._calendar_label(day) if self._calendar_label else None
+        blackout_overridden = blackout_label is not None and blackout_ack
+        if blackout_label is not None and not blackout_ack:
+            reason = f"blackout_unacknowledged:{blackout_label}"
+            self._comp.events.append(
+                EntrySkipped(date=day, entry_number=entry_number, reason=reason,
+                             put_floor=put_floor, call_floor=call_floor))
+            return {"result": "skipped", "reason": reason, "blackout_label": blackout_label}
 
         # 2. Idempotent per press. Claimed BEFORE any await, so two concurrent
         # confirmations of the same press cannot both pass this line.
@@ -196,7 +236,11 @@ class ManualEntry:
             return {"result": "duplicate_press", "press_id": press_id}
         self._consumed.add(press_id)
 
-        day = self.today()
+        # 2b. CAL-06: the acknowledgment is evented AFTER the press claim, so
+        # a double-confirm of one press can never journal it twice.
+        if blackout_overridden:
+            self._comp.events.append(ManualFireBlackoutAcknowledged(
+                day=day, label=blackout_label, at=self._comp.clock.now().isoformat()))
 
         # 3. The ▶ enablement rule. Refused before an attempt runs, so no order
         # and no EntryWindowOpened — the card shows the skip reason.
@@ -260,7 +304,8 @@ class ManualEntry:
                 day=day, scheduled=when, condor=condor, gates=await self._gates(),
                 risk=await _maybe_await(self._risk),   # sync (paper) OR async (live)
                 bypass_window=True, stop=_stop(row), initiator=MANUAL,
-                put_floor=put_floor, call_floor=call_floor)   # ENT-09b v1.57 audit
+                put_floor=put_floor, call_floor=call_floor,   # ENT-09b v1.57 audit
+                blackout_overridden=blackout_overridden)      # CAL-06 (v1.71) audit
 
             if outcome.status != "FILLED":
                 return {"result": "skipped", "reason": outcome.reason}
@@ -270,7 +315,8 @@ class ManualEntry:
             await self._comp._on_filled(entry_id, condor, _stop(row),
                                         fill_credit=outcome.fill_credit)   # STP-01
             return {"result": "filled", "entry_id": entry_id,
-                    "initiator": MANUAL, "fill_credit": str(outcome.fill_credit)}
+                    "initiator": MANUAL, "fill_credit": str(outcome.fill_credit),
+                    "blackout_overridden": blackout_overridden}
 
         attempt_task = asyncio.ensure_future(_attempt_and_protect())
         attempt_task.add_done_callback(

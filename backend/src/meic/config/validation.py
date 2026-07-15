@@ -58,6 +58,14 @@ def validate_max_effective_stop_pct(pct) -> None:
         raise ConfigRejected("max_effective_stop_pct", "out_of_range")
 
 
+def validate_cal_stale_after_days(days) -> None:
+    """CAL-02 (doc 11/06): 7-365, default 45 -- reject-never-clamp, same
+    convention as `validate_max_effective_stop_pct` above. Staleness itself
+    never blocks (CAL-07); only this THRESHOLD's own range is enforced."""
+    if not (7 <= int(days) <= 365):
+        raise ConfigRejected("cal_stale_after_days", "out_of_range")
+
+
 def validate_bind(bind_host: str, api_token: str | None) -> None:
     """NFR-06: config validation refuses a non-localhost bind unless a token is
     set — the panel cannot be exposed unauthenticated, structurally."""
@@ -83,6 +91,8 @@ def validate_config(cfg: dict) -> None:
         validate_stop_basis(str(cfg["stop_basis"]))  # STP-02d gate (per_side rejected)
     if "max_effective_stop_pct" in cfg:
         validate_max_effective_stop_pct(cfg["max_effective_stop_pct"])  # STP-02b cage
+    if "cal_stale_after_days" in cfg:
+        validate_cal_stale_after_days(cfg["cal_stale_after_days"])  # CAL-02
     if "bind_host" in cfg:
         validate_bind(str(cfg["bind_host"]), cfg.get("api_token"))
     if "fee_model" in cfg:

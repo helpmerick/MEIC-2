@@ -215,6 +215,14 @@ class CondorFilled(Event):
     # trades — into "broker truth". Optional/None default so pre-existing log
     # entries still replay (same convention as `fee`/`at` above).
     broker_order_id: str | None = None
+    # CAL-06 (v1.71): True iff this entry fired via a manual (Y) press the
+    # operator explicitly acknowledged on a NO-TRADE-tagged ET day (the
+    # warn-and-acknowledge override, never a hard block -- ENT-09's fresh-
+    # intent rationale). "the entry is report-tagged blackout_overridden" --
+    # the day report / entry card read this straight off the fold
+    # (domain/projection.py), never a second flag to drift. False for every
+    # scheduled fill and every pre-v1.71 recorded event.
+    blackout_overridden: bool = False
 
 
 @dataclass(frozen=True)
@@ -716,4 +724,97 @@ class StanddownRecorded(Event):
     side: str            # "PUT" | "CALL" -- the leg whose long was found disposed of
     reason: str          # why the bot is standing down, e.g. "long_not_held_at_broker"
     broker_finding: str  # what the broker actually reported, e.g. "position absent"
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
+
+
+# --- Trading calendar (doc 11, CAL-01..08, v1.71) ----------------------------
+#
+# The calendar's tag/rule store is a PURE FOLD over these events
+# (domain/trading_calendar.py), the SAME event-sourced pattern REC-01's own
+# day projection already uses -- so REC-07's v1.71 inventory extension
+# ("calendar NO-TRADE tags and standing category rules ... are durable
+# inventory items, restored exactly on any boot") needs no new persistence
+# path: the journal IS the durable store, and a reboot simply replays it.
+
+@dataclass(frozen=True)
+class CalendarEventsImported(Event):
+    """CAL-01: one operator-triggered import of a category's dated events --
+    "each import is evented with `imported_at` and `source`". `category` is
+    one of the tier-1 official schedules (FOMC/CPI/NFP/PPI/PCE/GDP) or the
+    tier-2 best-effort FED_SPEAKER (domain/trading_calendar.py's TIER_1/
+    TIER_2 name the split -- CAL-01's "honestly separated" tiers). `dates`
+    are ET calendar days (YYYY-MM-DD, DAY-03); `labels` is positionally
+    parallel to `dates` (labels[i] labels dates[i]) -- empty means every date
+    defaults to the category name (CAL-03's "label ... defaults to the event
+    name"). A later import for the SAME category REPLACES its known date set
+    (a refresh, not an accumulation) -- CAL-04's "later-imported events of
+    that category" auto-tag against whichever import is CURRENT.
+
+    Never fabricated (CAL-01: "a day with no data shows no events"): this
+    event only ever carries what the operator actually pasted (or a future
+    read-only fetch actually returned), never a guessed/interpolated date.
+    """
+    category: str
+    dates: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()   # parallel to `dates`; "" means default-to-category
+    imported_at: str = ""
+    source: str = "pasted_table"   # CAL-01: "(or operator-pasted table)"
+
+
+@dataclass(frozen=True)
+class NoTradeTagSet(Event):
+    """CAL-03: the operator tagged one ET calendar `day` NO-TRADE. Always
+    `origin="manual"` -- auto-tags (CAL-04) are never WRITTEN as events of
+    their own; they are DERIVED by the fold from a live standing rule against
+    the current import (so a later import auto-tags without a backfill
+    write). `label` defaults to the event name in the caller (application/
+    calendar_store.py), never here -- this module is pure data."""
+    day: str
+    label: str
+    origin: str = "manual"
+
+
+@dataclass(frozen=True)
+class NoTradeTagRemoved(Event):
+    """CAL-03/CAL-04: the operator removed whatever NO-TRADE tag is showing
+    for one ET calendar `day` -- a manual tag (removed outright) or one
+    individual day of a standing rule's auto-tag (suppressed from then on,
+    even across a rule removal/re-add or a fresh import of the same date --
+    "removing one day does not resurrect individually-removed days" is the
+    fold's job in domain/trading_calendar.py, not this event's)."""
+    day: str
+
+
+@dataclass(frozen=True)
+class StandingCategoryRuleSet(Event):
+    """CAL-04: "always block <category>" -- auto-tags every CURRENT and
+    LATER-imported event of `category` (computed by the fold at read time,
+    never backfilled as individual tag events). `label` overrides every
+    auto-tag's label; None defaults to the category name."""
+    category: str
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class StandingCategoryRuleRemoved(Event):
+    """CAL-04: the standing rule is gone -- future imports no longer auto-tag
+    for `category`. Per-day auto-tags already individually removed stay
+    removed (they are never "resurrected" by a rule going away or coming
+    back); days the rule was still covering simply stop showing an auto-tag
+    for `category` once this folds."""
+    category: str
+
+
+@dataclass(frozen=True)
+class ManualFireBlackoutAcknowledged(Event):
+    """CAL-06: the operator explicitly acknowledged the blackout warning on
+    a NO-TRADE-tagged ET day before a manual (Y) fire proceeded -- "the
+    acknowledgment is evented and the entry is report-tagged
+    blackout_overridden". Written by application/manual_entry.py BEFORE the
+    entry attempt runs, so the acknowledgment is on the log even if the
+    attempt itself is later skipped by some other rail (RSK-04, etc.) --
+    consenting to override the blackout is a distinct operator act from the
+    entry actually filling."""
+    day: str
+    label: str
     at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at

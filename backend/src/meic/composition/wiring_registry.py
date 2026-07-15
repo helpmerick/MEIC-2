@@ -386,6 +386,32 @@ def _halted_live_check(state) -> LiveCheckResult:
                                   f"ACTIVE->{halted_reads_false}")
 
 
+def _calendar_blackout_live_check(state) -> LiveCheckResult:
+    """STRUCTURAL/HEURISTIC (see module docstring) -- CAL-05/C8 (v1.71).
+
+    Unlike `flatten_in_progress`/`data_fresh`/`halted` above, this input's
+    real provider (`CalendarStore.label_for_day`) cannot be flipped
+    behaviourally here without a real, PERMANENT side effect: the calendar
+    tag store is event-sourced (the journal IS the durable store, REC-07's
+    v1.71 extension) and has no revertible in-memory flag to flip back --
+    appending a synthetic `NoTradeTagSet`/`NoTradeTagRemoved` pair to prove
+    liveness would leave two fabricated events in the SAME production
+    journal RSK-04/exposure/REC-01 all fold over, forever. An audit must
+    never mutate live state to prove itself, so this is the same honest
+    fallback `_session_valid_live_check`/`_buying_power_ok_live_check` use
+    for a real authenticated broker call this offline audit must not place:
+    the bound provider is not a bare constant callable -- `label_for_day` is
+    a bound method on a real `CalendarStore` instance (`__self__` is the
+    store, never None), which `lambda: None` (a dead/unwired provider) can
+    never be."""
+    runtime = getattr(state, "calendar_store", None)
+    provider = getattr(runtime, "label_for_day", None) if runtime is not None else None
+    if provider is None:
+        return LiveCheckResult(False, "app.state.calendar_store.label_for_day not reachable")
+    live = _closes_over_real_state(provider)
+    return LiveCheckResult(live, f"calendar_store.label_for_day closes over real state: {live}")
+
+
 @dataclass(frozen=True)
 class SafetyGateInput:
     """One INPUT to `application.entry_gates.evaluate_gates` that
@@ -443,6 +469,18 @@ SAFETY_GATE_REGISTRY: tuple[SafetyGateInput, ...] = (
               "review), CLOSED by DAT-04a (v1.69). See _halted_live_check's "
               "docstring for the fixed regression's full history.",
         live_check=_halted_live_check,
+    ),
+    SafetyGateInput(
+        rule_ids=("CAL-05", "CAL-07"),
+        gate_input="blackout_label",
+        proof="app.state.calendar_store.label_for_day closes over real state (heuristic -- "
+              "the store is event-sourced/journal-backed, so a behavioural flip-and-check "
+              "would leave permanent synthetic tag events in the production log; see "
+              "_calendar_blackout_live_check's docstring). Polarity is DELIBERATELY fail-OPEN "
+              "(CAL-07, the one ruled exception in this registry): an empty/unimported "
+              "calendar or an unreadable store means TRADE, not blocked -- never generalize "
+              "this polarity to any other gate input here.",
+        live_check=_calendar_blackout_live_check,
     ),
 )
 

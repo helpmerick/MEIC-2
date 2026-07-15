@@ -17,13 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Callable
 
 from meic.domain.events import DayArmed, DayCompleted, EntrySkipped
 from meic.domain.projection import fold
 from meic.domain.risk import OrderCap
 
 from .execute_entry import Condor, ExecuteEntryAttempt
-from .entry_gates import GateSnapshot, RiskSnapshot
+from .entry_gates import FilterSnapshot, GateSnapshot, RiskSnapshot
 from .persistent_state import PersistentState
 
 
@@ -47,6 +48,12 @@ class RunTradingDay:
         max_day_risk: Decimal | None = None,
         order_cap: OrderCap | None = None,
         buying_power=None,   # () -> Decimal: SimLedger.buying_power in paper, broker in live
+        # CAL-05 (v1.71): (day) -> NO-TRADE label | None, from the calendar tag
+        # store (application/calendar_store.CalendarStore.label_for_day, itself
+        # fail-open per CAL-07). None (every pre-v1.71 caller) means "no
+        # calendar wired" -- entries are filtered exactly as before, never
+        # blocked by an absent provider (CAL-07's polarity: absence => trade).
+        calendar_label: Callable[[str], str | None] | None = None,
     ) -> None:
         self._clock = clock
         self._state = state
@@ -63,6 +70,7 @@ class RunTradingDay:
         self._max_day_risk = max_day_risk          # RSK-04; mandatory before live (doc 06 §169)
         self._order_cap = order_cap                # RSK-08
         self._buying_power = buying_power          # ENT-03 BP, compared to THIS condor's margin
+        self._calendar_label = calendar_label      # CAL-05
         self._worst_case: dict[str, Decimal] = {}  # entry_id -> its structural worst case
 
     def _risk(self, day: str) -> RiskSnapshot:
@@ -98,6 +106,14 @@ class RunTradingDay:
             buying_power_ok=self._market.buying_power_ok,
         )
 
+    def _filters(self, day: str) -> FilterSnapshot | None:
+        """CAL-05: entries only -- this is the ONE place RunTradingDay reads
+        the calendar tag store; no other call in this module (or anywhere
+        stops/LEX/TPF/TPT/decay/EOD/reconcile run) ever does."""
+        if self._calendar_label is None:
+            return None
+        return FilterSnapshot(date=day, blackout_label=self._calendar_label(day))
+
     async def run(self, day: str, schedule: list[ScheduledEntry]) -> int:
         """Run one trading day's entry cadence. Returns the fill count."""
         self._events.append(DayArmed(date=day, entry_count=len(schedule)))
@@ -115,7 +131,7 @@ class RunTradingDay:
                 continue
             outcome = await self._execute.attempt(
                 day=day, scheduled=entry.when, condor=entry.condor,
-                gates=self._gates(), risk=self._risk(day))
+                gates=self._gates(), risk=self._risk(day), filters=self._filters(day))
             if outcome.status == "FILLED":
                 filled += 1
                 entry_id = f"{day}#{n}"

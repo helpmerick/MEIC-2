@@ -3,6 +3,8 @@ Real decisions against the entry-gate module."""
 import inspect
 from decimal import Decimal as D
 
+import pytest
+
 from meic.application import protect_position, watchdog
 from meic.application.entry_gates import (
     SKIP_LEVEL,
@@ -37,6 +39,20 @@ def test_tc_ent_04_vix_above_max_and_blackout_skip_info_level():
     # below the minimum total credit -> skip (STK-06)
     assert evaluate_filters(FilterSnapshot(
         total_credit=D("1.50"), min_total_credit=D("2.00"))) == "below_min_credit"
+
+
+def test_cal_05_dynamic_blackout_reasons_classify_info_level():
+    """CAL-05 (v1.71): `evaluate_filters` returns DYNAMIC `blackout:<label>`
+    reasons whose label varies per tag, so they can never be exact-match
+    SKIP_LEVEL keys -- the lookup must classify them via the prefix (info,
+    identical to the static `blackout_date` beside them), and any OTHER
+    unknown reason must still raise, never guess a level."""
+    r = evaluate_filters(FilterSnapshot(date="2026-07-15", blackout_label="FOMC"))
+    assert r == "blackout:FOMC"
+    assert SKIP_LEVEL[r] == "info"                       # the dynamic reason itself
+    assert SKIP_LEVEL["blackout:any label at all"] == "info"
+    with pytest.raises(KeyError):
+        SKIP_LEVEL["some_future_unclassified_reason"]    # never silently guessed
 
 
 # --- TC-RSK-05: RSK-07 clock drift -------------------------------------------

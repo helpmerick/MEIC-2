@@ -119,6 +119,17 @@ def _sample_instances() -> dict[type, ev.Event]:
             reason="long_not_held_at_broker",
             broker_finding="broker reports no open position in SPXW  260710C07570000",
             at="2026-07-14T09:00:00-04:00"),
+        # CAL-01..06 (doc 11, v1.71): the trading-calendar tag/rule store's
+        # own events -- see domain/trading_calendar.py's fold.
+        ev.CalendarEventsImported: ev.CalendarEventsImported(
+            category="FOMC", dates=("2026-07-29", "2026-09-16"), labels=("", ""),
+            imported_at="2026-07-15T09:00:00-04:00", source="pasted_table"),
+        ev.NoTradeTagSet: ev.NoTradeTagSet(day="2026-07-15", label="FOMC", origin="manual"),
+        ev.NoTradeTagRemoved: ev.NoTradeTagRemoved(day="2026-07-15"),
+        ev.StandingCategoryRuleSet: ev.StandingCategoryRuleSet(category="FOMC", label="FOMC day"),
+        ev.StandingCategoryRuleRemoved: ev.StandingCategoryRuleRemoved(category="FOMC"),
+        ev.ManualFireBlackoutAcknowledged: ev.ManualFireBlackoutAcknowledged(
+            day="2026-07-15", label="FOMC", at="2026-07-15T10:07:00-04:00"),
     }
 
 

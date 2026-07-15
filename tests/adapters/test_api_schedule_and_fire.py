@@ -34,9 +34,11 @@ class _Commands:
                            wing_width=row.wing_width, stop_loss_pct=row.stop_loss_pct,
                            worst_case_estimate=worst_case_estimate(row))
 
-    async def fire(self, *, press_id, entry_number, row, confirmed, put_floor=None, call_floor=None):
+    async def fire(self, *, press_id, entry_number, row, confirmed, put_floor=None, call_floor=None,
+                   blackout_ack=False):
         self.fired.append((press_id, entry_number, confirmed))
         self.fired_floors.append((put_floor, call_floor))   # ENT-09b v1.57
+        self.fired_blackout_ack = blackout_ack   # CAL-06 (v1.71)
         if not confirmed:
             return {"result": "not_confirmed"}
         return {"result": "filled", "entry_id": f"d#{entry_number}", "initiator": "manual_entry"}

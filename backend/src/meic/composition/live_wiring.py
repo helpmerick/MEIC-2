@@ -184,6 +184,7 @@ def build_live_runtime(
     order_cap_buffer: int = DEFAULT_ORDER_CAP_BUFFER,
     drift: BrokerClockProbe | None = None,
     max_clock_drift_ms: float = 2000.0,   # DAY-03 v1.48 default
+    calendar_label: Callable[[str], str | None] | None = None,   # CAL-05 (v1.71)
 ) -> LiveRuntime:
     """Assemble the live day with EVERY rail armed.
 
@@ -212,6 +213,7 @@ def build_live_runtime(
         buying_power=buying_power,                  # ENT-03
         measure_drift_ms=drift.ms,                  # RSK-07 / DAY-03
         max_clock_drift_ms=max_clock_drift_ms,
+        calendar_label=calendar_label,              # CAL-05 (v1.71)
     )
     # RSK-04 counts the entries THIS COMPOSITION filled, wherever they were filled
     # from — the scheduled day or a manual ENT-09 fire. One book, one total.
@@ -223,7 +225,8 @@ def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None
                        day: Callable[[], str] | None = None,
                        drift: BrokerClockProbe | None = None,
                        max_clock_drift_ms: float = 2000.0,
-                       spot_provider: Callable[[], Any] | None = None) -> ManualEntry:
+                       spot_provider: Callable[[], Any] | None = None,
+                       calendar_label: Callable[[str], str | None] | None = None) -> ManualEntry:
     """ENT-09. The manual fire crosses the identical rails as a scheduled entry —
     the SAME max_day_risk, the SAME open worst cases, the SAME reconcile block and
     clock-drift check. Only the ENT-02 window is bypassed.
@@ -257,7 +260,8 @@ def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None
 
     return ManualEntry(comp, selector, market_gates,
                        max_entries_per_day=max_entries_per_day, risk=risk, day=day,
-                       blocks=blocks, spot_provider=spot_provider)
+                       blocks=blocks, spot_provider=spot_provider,
+                       calendar_label=calendar_label)
 
 
 def live_preflight_checks(comp, *, data_fresh: Callable[[], bool],
