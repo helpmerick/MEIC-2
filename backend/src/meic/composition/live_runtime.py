@@ -24,6 +24,7 @@ from typing import Awaitable, Callable
 
 from decimal import Decimal
 
+from meic.application.attempt_crash import alert_and_journal_crashed_attempt
 from meic.application.entry_gates import (
     FilterSnapshot, GateSnapshot, RiskSnapshot, clock_drift_blocks_entry,
 )
@@ -44,22 +45,6 @@ async def _maybe_await(provider):
         return None
     value = provider()
     return await value if inspect.isawaitable(value) else value
-
-
-def _alert_orphaned_failure(comp, context: str):
-    """done-callback for a shielded attempt task: if it fails AFTER its caller was
-    cancelled, nobody is left awaiting it — route the error to the alert sink
-    (RSK-06), never /dev/null. (When the caller was NOT cancelled the exception
-    also propagates through the shield await; the alert is the backstop for the
-    orphaned case.)"""
-    def _cb(task) -> None:
-        if not task.cancelled() and task.exception() is not None:
-            alerts = getattr(comp, "alerts", None)
-            if alerts is not None:
-                alerts.alert("critical",
-                             f"orphaned entry attempt failed after cancel: {context}",
-                             error=repr(task.exception()))
-    return _cb
 
 
 # (condor, skip_reason) — exactly one is non-None
@@ -240,9 +225,14 @@ class LiveRuntime:
                                          fill_credit=outcome.fill_credit)  # STP-01 hand-off
                 return outcome
 
+            # The done-callback is the ONLY guaranteed observer of this task's
+            # outcome (2026-07-14 incident: a crash mid-ladder died with its
+            # exception never retrieved and the entry journal-silent) — the
+            # shared helper alerts (RSK-06) and journals an
+            # `attempt_crashed:<Type>` skip iff no fill/skip landed first.
             attempt_task = asyncio.ensure_future(_attempt_and_protect())
             attempt_task.add_done_callback(
-                _alert_orphaned_failure(comp, f"{day}#{condor.entry_number}"))
+                alert_and_journal_crashed_attempt(comp, day, condor.entry_number))
             await asyncio.shield(attempt_task)
 
         comp.events.append(DayCompleted(date=day))

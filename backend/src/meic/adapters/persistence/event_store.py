@@ -13,6 +13,7 @@ import inspect
 import json
 import sqlite3
 import sys
+import threading
 from dataclasses import fields
 from datetime import date, datetime
 from decimal import Decimal
@@ -27,6 +28,20 @@ class SqliteEventStore:
     def __init__(self, path: str | Path) -> None:
         # check_same_thread=False: the ASGI server touches the store from its
         # threadpool; SQLite serializes writes and busy_timeout waits out locks.
+        #
+        # 2026-07 hotfix (production race, logs/panel-2026-07-13-own01.err.log):
+        # check_same_thread=False permits the SAME connection object to be
+        # entered from the threadpool (sync endpoints) and the event-loop
+        # thread (supervisor/watchers/attempt tasks) AT THE SAME TIME. SQLite's
+        # own serialization is per-call, not per-connection-object across
+        # Python threads holding no GIL-independent guard — two threads racing
+        # a single sqlite3.Connection corrupts its internal statement/cursor
+        # state ("bad parameter or other API misuse"), not just its data. This
+        # lock makes the whole connection single-writer/single-reader at a
+        # time, matching the class's own "single-writer" docstring promise
+        # above. Coarse and obviously-correct on purpose (doc 05 §4 recorder,
+        # not a hot path) — every method touching `self._conn` holds it.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")  # fsync before side effects
@@ -39,30 +54,34 @@ class SqliteEventStore:
         )
 
     def append(self, stream: str, events: list[Event]) -> None:
-        self._conn.execute("BEGIN")
-        try:
-            for e in events:
-                self._conn.execute(
-                    "INSERT INTO events (stream, payload) VALUES (?, ?)",
-                    (stream, json.dumps(e.to_dict())),
-                )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                for e in events:
+                    self._conn.execute(
+                        "INSERT INTO events (stream, payload) VALUES (?, ?)",
+                        (stream, json.dumps(e.to_dict())),
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def read(self, stream: str) -> list[Event]:
-        rows = self._conn.execute(
-            "SELECT payload FROM events WHERE stream = ? ORDER BY seq", (stream,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT payload FROM events WHERE stream = ? ORDER BY seq", (stream,)
+            ).fetchall()
         return [Event.from_dict(json.loads(p)) for (p,) in rows]
 
     def streams(self) -> list[str]:
-        rows = self._conn.execute("SELECT DISTINCT stream FROM events ORDER BY stream").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT DISTINCT stream FROM events ORDER BY stream").fetchall()
         return [s for (s,) in rows]
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 class SqliteStateStore:
@@ -75,6 +94,9 @@ class SqliteStateStore:
         self.path = Path(path)
         # check_same_thread=False: the ASGI server reads/writes state from its
         # request threadpool (see SqliteEventStore for the rationale).
+        # Same production race as SqliteEventStore above -- self._lock makes
+        # every method below single-caller-at-a-time on this connection.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
@@ -84,21 +106,25 @@ class SqliteStateStore:
         )
 
     def get(self, key: str) -> str | None:
-        row = self._conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
     def set(self, key: str, value: str) -> None:
-        self._conn.execute(
-            "INSERT INTO state (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
 
     def all(self) -> dict[str, str]:
-        return {k: v for k, v in self._conn.execute("SELECT key, value FROM state").fetchall()}
+        with self._lock:
+            return {k: v for k, v in self._conn.execute("SELECT key, value FROM state").fetchall()}
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 class InMemoryStateStore:
@@ -219,6 +245,13 @@ class EventJournal:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        # Same production race as SqliteEventStore/SqliteStateStore above --
+        # self._lock makes every method below single-caller-at-a-time on this
+        # connection (the event-loop thread journals through DurableEventLog
+        # while the ASGI threadpool can concurrently read via a sibling
+        # StateStore/EventStore on the same db file, or another endpoint that
+        # touches this journal directly).
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
@@ -246,10 +279,11 @@ class EventJournal:
                 "meic.domain.events — refusing to journal an unrecognized object")
         payload = json.dumps(encode_event(event))
         at = datetime.now().astimezone().isoformat()
-        self._conn.execute(
-            "INSERT INTO events (at, type, config_version, payload) VALUES (?, ?, ?, ?)",
-            (at, cls.__name__, event.config_version, payload),
-        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO events (at, type, config_version, payload) VALUES (?, ?, ?, ?)",
+                (at, cls.__name__, event.config_version, payload),
+            )
 
     def load(self) -> list[Event]:
         """Every journaled event, in seq (append) order. An unknown `type`
@@ -257,9 +291,10 @@ class EventJournal:
         build this process doesn't have yet) is SKIPPED with a stderr
         warning, never raised — the rest of the log must still replay."""
         registry = _event_registry()
-        rows = self._conn.execute(
-            "SELECT type, payload FROM events ORDER BY seq"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT type, payload FROM events ORDER BY seq"
+            ).fetchall()
         out: list[Event] = []
         for type_name, payload in rows:
             if type_name not in registry:
@@ -272,4 +307,5 @@ class EventJournal:
         return out
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()

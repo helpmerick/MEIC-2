@@ -30,6 +30,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from meic.application.attempt_crash import alert_and_journal_crashed_attempt
 from meic.application.market_calendar import trading_day_str
 from meic.domain.events import EntrySkipped, ManualFireBlackoutAcknowledged
 from meic.domain.projection import day_report
@@ -49,20 +50,6 @@ async def _maybe_await(provider):
         return None
     value = provider()
     return await value if inspect.isawaitable(value) else value
-
-
-def _alert_orphaned_failure(comp, context: str):
-    """done-callback for the shielded attempt task: if it fails AFTER its caller
-    was cancelled, nobody is left awaiting it — route the error to the alert sink
-    (RSK-06), never /dev/null."""
-    def _cb(task) -> None:
-        if not task.cancelled() and task.exception() is not None:
-            alerts = getattr(comp, "alerts", None)
-            if alerts is not None:
-                alerts.alert("critical",
-                             f"orphaned entry attempt failed after cancel: {context}",
-                             error=repr(task.exception()))
-    return _cb
 
 
 @dataclass(frozen=True)
@@ -318,9 +305,17 @@ class ManualEntry:
                     "initiator": MANUAL, "fill_credit": str(outcome.fill_credit),
                     "blackout_overridden": blackout_overridden}
 
+        # The done-callback is the ONLY guaranteed observer of this task's
+        # outcome once the awaiting request is gone (client disconnect
+        # cancels the handler; the shielded task runs on). Shared with the
+        # scheduled path (attempt_crash.py, 2026-07-14 incident): RSK-06
+        # critical alert + an `attempt_crashed:<Type>` skip journaled iff no
+        # CondorFilled/EntrySkipped landed first — carrying this press's
+        # ENT-09b floors for audit, like every other manual skip above.
         attempt_task = asyncio.ensure_future(_attempt_and_protect())
         attempt_task.add_done_callback(
-            _alert_orphaned_failure(self._comp, f"{day}#{condor.entry_number}"))
+            alert_and_journal_crashed_attempt(self._comp, day, condor.entry_number,
+                                              put_floor=put_floor, call_floor=call_floor))
         return await asyncio.shield(attempt_task)
 
     def _filled_today(self) -> int:
