@@ -85,26 +85,20 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await waitFor(() => expect(screen.getByText(/flattened 2 entries/i)).toBeInTheDocument());
   });
 
-  it("Outage drill runs and shows the evidence banner with the honesty caveat", async () => {
-    const spy = vi.spyOn(api, "outageDrill").mockResolvedValue({
-      outage_seconds: 2,
-      stops_before: [{ order_id: "s1", received_at: "t", entry_id: "e1", leg: "short_put" }],
-      stops_after: [{ order_id: "s1", received_at: "t", entry_id: "e1", leg: "short_put" }],
-      survived: true, timestamps_unbroken: true,
-      honesty_note: "PAPER: … not broker-side independence (SIM-06). … TC-STP-08 …",
-    });
-
-    render(<App />);
-    // v1.76: the drill button lives inside the collapsed "Operational tools"
-    // disclosure -- open it first (see the disclosure describe block below
-    // for the collapsed-by-default/aria-expanded coverage itself).
-    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
-    await userEvent.click(screen.getByRole("button", { name: /outage drill/i }));
-
-    expect(spy).toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByText(/stop independence drill passed/i)).toBeInTheDocument());
-    expect(screen.getByText(/timestamps unbroken/i)).toBeInTheDocument();
-    expect(screen.getByText(/SIM-06/)).toBeInTheDocument(); // honesty caveat shown
+  // 2026-07-16 operator order (an INFORMED reversal of v1.76 — the operator
+  // saw the "Removal was rejected" text and repeated the order): the drill's
+  // visible trigger — the "Operational tools" disclosure AND the Outage-drill
+  // button — is gone from the UI entirely. Only the trigger: the WIRING stays
+  // untouched (runOutageDrill's typed-DRILL gate, api.outageDrill, the
+  // /drill/outage endpoint and every backend UC-12 piece, all pinned by their
+  // own backend tests, which this change does not touch).
+  it("the UC-12 drill surface remains wired (api.outageDrill) even though its UI trigger is removed", () => {
+    // The frontend's half of the retained wiring: the API call the (removed)
+    // button used still exists and is callable — reinstatement needs only a
+    // trigger, never a rebuild. The backend /drill/outage endpoint's own
+    // tests (tests/application/test_drills.py, the drill-guidance test in
+    // tests/application/test_live_app.py) pin the other half.
+    expect(typeof api.outageDrill).toBe("function");
   });
 
   it("shows mode as a status tag reflecting the running process, not a switch", async () => {
@@ -251,63 +245,36 @@ describe("App — Results routing (UI-27)", () => {
     expect(settlementCell.closest("tr")).toHaveClass("imported-settlement-row");
   });
 
-  it("the Trading page keeps its Outage drill / Flatten all buttons; Results does not", async () => {
+  it("the Trading page keeps its Flatten all button; Results does not", async () => {
     render(<App />);
-    // v1.76: Operational tools is collapsed by default -- open it to reach
-    // the drill button (still present, never removed).
-    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
-    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /flatten all/i })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Results" }));
     await screen.findByTestId("results-page");
-    expect(screen.queryByRole("button", { name: /operational tools/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /flatten all/i })).not.toBeInTheDocument();
   });
 });
 
-// v1.76 (operator-ruled UI placement): the UC-12 outage-drill button moves
-// into a collapsed "Operational tools" disclosure on the Trading tab --
-// hidden by default, discoverable via DOC-06's first-run sequence, the
-// typed-DRILL gate (runOutageDrill in App.tsx) entirely untouched. Removal
-// was rejected outright (the drill is a mandated first-run/post-API-change
-// proof) -- these pin that it is collapsed, that it is reachable with a
-// click AND with a keyboard, and that it is never actually gone.
-describe("App — Operational tools disclosure (v1.76)", () => {
-  it("starts collapsed -- the outage drill button is not in the document until opened", () => {
+// 2026-07-16 operator order — an INFORMED reversal of v1.76 (the operator saw
+// the ratified "Removal was rejected ... never removed" text and repeated:
+// "remove it completely, the wiring can stay but the button must go"). These
+// pin the NEW truth: no "Operational tools" disclosure and no Outage-drill
+// button anywhere in the DOM — while the drill WIRING survives untouched
+// (runOutageDrill + typed-DRILL gate in App.tsx, api.outageDrill, the
+// /drill/outage endpoint and all backend UC-12 code + NFR-07 registry
+// entries, each pinned by its own backend tests). Until the adviser's spec
+// delta lands, DOC-06 step 9 / guide ch.7 describe a control that no longer
+// exists — known, flagged spec-text staleness handled by amendment.
+describe("App — the drill trigger is removed from the UI (operator order 2026-07-16)", () => {
+  it("renders no Operational tools disclosure on the Trading page", () => {
     render(<App />);
-    expect(screen.getByRole("button", { name: /operational tools/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /operational tools/i })).not.toBeInTheDocument();
+  });
+
+  it("renders no Outage drill button anywhere on the Trading page", () => {
+    render(<App />);
     expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
-  });
-
-  it("clicking the toggle reveals the drill button and flips aria-expanded", async () => {
-    render(<App />);
-    const toggle = screen.getByRole("button", { name: /operational tools/i });
-    await userEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
-
-    await userEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
-  });
-
-  it("is keyboard-operable -- a real <button>, opened via Enter with no mouse", async () => {
-    render(<App />);
-    const toggle = screen.getByRole("button", { name: /operational tools/i });
-    toggle.focus();
-    expect(toggle).toHaveFocus();
-    await userEvent.keyboard("{Enter}");
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
-  });
-
-  it("the drill button never removed -- always reachable inside the disclosure, gate untouched", async () => {
-    vi.spyOn(window, "prompt").mockReturnValue(null); // paper mode never prompts anyway
-    render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
-    const drill = screen.getByRole("button", { name: /outage drill/i });
-    expect(drill).toBeInTheDocument();
-    expect(drill).not.toBeDisabled();
+    // and no stray text remnant of the removed trigger either
+    expect(screen.queryByText(/operational tools/i)).not.toBeInTheDocument();
   });
 });
 
