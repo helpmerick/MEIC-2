@@ -14,6 +14,7 @@ completeness contract survives the read.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,20 @@ from meic.application.event_log import EventLog
 from meic.application.persistent_state import PersistentState
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+_README_VERSION_RE = re.compile(r"^- Version:\s*(\d+\.\d+)", re.MULTILINE)
+
+
+def readme_changelog_head() -> str:
+    """The RUNNING build's own spec version, read from the real spec/
+    README.md changelog head -- the version-agnostic anchor for the
+    real-tree currency pin below (v1.79 ruling; same helper as
+    test_api_getting_started.py's, duplicated because tests/ is not an
+    importable package)."""
+    text = (REPO_ROOT / "spec" / "README.md").read_text(encoding="utf-8-sig")
+    match = _README_VERSION_RE.search(text)
+    assert match is not None, "spec/README.md changelog head unparseable"
+    return match.group(1)
 
 GUIDE_WITH_STAMP = (
     "# 12 -- How It Works\n\n"
@@ -54,23 +69,32 @@ def _client_for(tmp_path: Path, guide_text: str, readme_text: str) -> TestClient
 
 @pytest.fixture
 def wired():
-    events = EventLog(config_version="v1.72")
+    events = EventLog(config_version="test")
     state = PersistentState(InMemoryStateStore())
     app = create_app(state, events)
     return TestClient(app)
 
 
 def test_doc05_serves_the_real_ratified_guide_with_no_mismatch(wired):
-    """The real spec/12-how-it-works.md's stamp currently matches spec/
-    README.md's changelog head (both v1.72 as of this ratification) -- so the
-    endpoint must NOT banner a mismatch against the actual, currently-shipped
-    spec tree (a false-positive would be exactly the "pretending currency"
-    failure DOC-05 forbids in the opposite direction)."""
+    """VERSION-AGNOSTIC real-tree pin (the v1.79 ruling; this test was red
+    from v1.73 through v1.78 while the guide's stamp lagged the changelog --
+    the mismatch banner working as designed -- and the v1.79 delta pass
+    re-ratified the guide current again): the guide's own stamp must EQUAL
+    spec/README.md's changelog head, whatever version that reads today, so
+    the endpoint must NOT banner against the actual, currently-shipped spec
+    tree (a false-positive would be exactly the "pretending currency"
+    failure DOC-05 forbids in the opposite direction). The crafted-tree
+    fixtures below keep hardcoded, unequal versions to prove the comparison
+    isn't a tautology. If a future amendment bumps the README without
+    re-stamping the guide, this goes red again -- that red IS the banner
+    firing correctly, resolved by the adviser's delta pass, never by editing
+    the expectation to match the drift."""
     r = wired.get("/guide")
     assert r.status_code == 200
     body = r.json()
-    assert body["guide_version"] == "1.72"
-    assert body["running_spec_version"] == "1.72"
+    head = readme_changelog_head()
+    assert body["guide_version"] == head
+    assert body["running_spec_version"] == head
     assert body["version_mismatch"] is False
     assert body["version_unknown"] is False
     assert body["guide_markdown"].startswith("# THE GUIDE")

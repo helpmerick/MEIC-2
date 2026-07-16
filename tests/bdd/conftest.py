@@ -101,7 +101,7 @@ def vitest_doc_result():
     """TC-DOC-01's frontend halves (doc 12, slices 4 and 6): the how-it-works
     tab's DOC-05 single-source rendering (version stamp, mismatch banner,
     DOC-03 chapter completeness, no-trading-controls) in HowItWorksPage.test.tsx,
-    the DOC-06/UI-32 Getting-started tab (its own v1.78 stamp, the no-secret-
+    the DOC-06/UI-32 Getting-started tab (its own section stamp, the no-secret-
     leak contract, DOC-06 five-section completeness) in
     GettingStartedPage.test.tsx, plus the five-tab nav (App.test.tsx) -- same
     real-vitest binding strategy as `vitest_result`/`vitest_cal_result` above.

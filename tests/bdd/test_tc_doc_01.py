@@ -25,13 +25,14 @@ Esc) are pinned once in frontend/src/components/ZoomableFigure.test.tsx, not
 re-verified through this indirection -- this scenario only pins that the
 flowchart is WIRED to it.
 
-DOC-06/UI-32 (doc 12 slice 6, v1.78): the remaining two scenarios --
-five-tab nav with "Getting started", and the no-secret-leak contract -- are
-now bound the same way, against GettingStartedPage.test.tsx and App.test.tsx
-(both in the `vitest_doc_result` run). Their backend halves (GET
-/getting-started's own v1.78 stamp parse, the two-section split of spec/12,
-the payload-is-exactly-the-hash-locked-spec-text structural secret pin, and
-the planted-.env-sentinel test) are pinned directly in
+DOC-06/UI-32 (doc 12 slice 6; template contract as amended by the v1.79
+live-only ruling): the remaining two scenarios -- five-tab nav with "Getting
+started", and the no-secret-leak contract -- are now bound the same way,
+against GettingStartedPage.test.tsx and App.test.tsx (both in the
+`vitest_doc_result` run). Their backend halves (GET /getting-started's own
+per-section stamp parse, the two-section split of spec/12, the
+payload-is-exactly-the-hash-locked-spec-text structural secret pin, and the
+planted-.env-sentinel test) are pinned directly in
 tests/adapters/test_api_getting_started.py.
 """
 from __future__ import annotations
@@ -99,7 +100,7 @@ def _(vitest_doc_result):
     tabs in the ruled order -- App.test.tsx's nav test asserts the full
     ordered list (an extra, missing, or reordered tab fails it), and the
     dedicated click-through test pins that the fifth tab renders the real
-    GettingStartedPage with its own v1.78 stamp."""
+    GettingStartedPage with its own section stamp."""
     rc, output = vitest_doc_result
     assert rc == 0, output
     assert "shows exactly the five nav tabs, in order" in output
@@ -108,7 +109,9 @@ def _(vitest_doc_result):
 
 
 # --- TC-DOC-01 scenario 3: "Getting-started never leaks a secret" ------------
-# DOC-06/UI-32 (doc 12 slice 6, v1.78). Frontend halves bound below through
+# DOC-06/UI-32 (doc 12 slice 6; v1.79 live-only template -- TT_PROD_ trio,
+# password, switches, data dir; no TT_CERT_ names). Frontend halves bound
+# below through
 # GettingStartedPage.test.tsx via the same vitest fixture; the backend halves
 # -- the served payload being byte-for-byte the hash-locked spec section's
 # text (the structural no-secret guarantee: the endpoint can only serve what

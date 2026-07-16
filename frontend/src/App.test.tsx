@@ -332,10 +332,10 @@ describe("App — nav (v1.75 five-tab commission)", () => {
     // started" test below actually renders it.
     vi.spyOn(api, "getGettingStarted").mockResolvedValue({
       getting_started_markdown:
-        "# GETTING STARTED (ratified content, v1.78 — describes spec v1.78 and the "
+        "# GETTING STARTED (ratified content, v1.79 — describes spec v1.79 and the "
         + "build's true run procedure; DOC-05 stamp)\n\n"
         + "## 1. Prerequisites, and how this build actually runs\n\nbody\n",
-      getting_started_version: "1.78", running_spec_version: "1.78",
+      getting_started_version: "1.79", running_spec_version: "1.79",
       version_mismatch: false, version_unknown: false,
     });
   });
@@ -367,9 +367,9 @@ describe("App — nav (v1.75 five-tab commission)", () => {
     render(<App />);
     await userEvent.click(screen.getByRole("link", { name: "Getting started" }));
     expect(await screen.findByTestId("getting-started-page")).toBeInTheDocument();
-    // v1.78 — this section's own stamp, not the guide's sibling v1.72 one
+    // v1.79 — this mock's own section stamp, not the guide mock's v1.72 one
     // (each tab banners against its own stamp; the two must never bleed).
-    expect(await screen.findByTestId("getting-started-version-stamp")).toHaveTextContent("v1.78");
+    expect(await screen.findByTestId("getting-started-version-stamp")).toHaveTextContent("v1.79");
   });
 
   it("the Calendar tab is not the Trading page — Outage drill/Flatten are hidden there too", async () => {

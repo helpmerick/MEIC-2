@@ -1,11 +1,12 @@
-// DOC-06/UI-32 (doc 12, slice 6, v1.78) -- the Getting-started tab renders
-// the ratified "# GETTING STARTED" section FROM THE BACKEND'S OWN READ of
+// DOC-06/UI-32 (doc 12, slice 6; template contract as amended by the v1.79
+// live-only ruling) -- the Getting-started tab renders the ratified
+// "# GETTING STARTED" section FROM THE BACKEND'S OWN READ of
 // spec/12-how-it-works.md (DOC-05 single source, GET /getting-started).
 // These tests pin TC-DOC-01's no-secret-leak scenario on the rendered side:
 // every template variable NAME renders literally, while NOTHING value-shaped
 // ever does -- plus the tab's own DOC-05 stamp/banner discipline (its OWN
-// v1.78 stamp, never the sibling guide section's v1.72 one) and that no
-// trading capability rides along on this read-only tab (UI-03).
+// section's stamp, never the sibling guide section's) and that no trading
+// capability rides along on this read-only tab (UI-03).
 //
 // The backend halves -- the payload being byte-for-byte the hash-locked spec
 // section's text, the planted-.env-sentinel never leaking, the two-section
@@ -18,11 +19,14 @@ import { api } from "../api";
 import type { GettingStartedData } from "../types";
 import { GettingStartedPage } from "./GettingStartedPage";
 
-// A faithful extract of the ratified v1.78 section: the real heading/stamp,
-// all five DOC-06 sections, and the annotated `.env` template as the GFM
-// table the spec ships (names and where-to-obtain guidance ONLY).
+// A crafted extract modeled on the ratified section (v1.79's template shape:
+// the real heading/stamp form, all five DOC-06 sections, and the annotated
+// `.env` template as the GFM table the spec ships — names and where-to-obtain
+// guidance ONLY). v1.79's live-only ruling REMOVED the three TT_CERT_*
+// literal names from the template and the DOC-06 contract, so they no longer
+// appear here nor in TEMPLATE_NAMES below.
 const SECTION_MARKDOWN = [
-  "# GETTING STARTED (ratified content, v1.78 — describes spec v1.78 and the build's true run procedure; DOC-05 stamp)",
+  "# GETTING STARTED (ratified content, v1.79 — describes spec v1.79 and the build's true run procedure; DOC-05 stamp)",
   "",
   "## 1. Prerequisites, and how this build actually runs",
   "",
@@ -33,8 +37,7 @@ const SECTION_MARKDOWN = [
   "| Variable name | What it is | Where you get it |",
   "|---|---|---|",
   "| `MEIC_USER_PASSWORD` | The password that unlocks this control panel. | You choose this yourself. |",
-  "| `TT_CERT_*` [the literal names: `TT_CERT_PROVIDER_SECRET`, `TT_CERT_REFRESH_TOKEN`, `TT_CERT_ACCOUNT`] | Sandbox credentials. | tastytrade's OAuth application settings. |",
-  "| `TT_PROD_*` [the literal names: `TT_PROD_PROVIDER_SECRET`, `TT_PROD_REFRESH_TOKEN`, `TT_PROD_ACCOUNT`] | Production credentials. | The same OAuth settings, production side. |",
+  "| `TT_PROD_*` [the literal names: `TT_PROD_PROVIDER_SECRET`, `TT_PROD_REFRESH_TOKEN`, `TT_PROD_ACCOUNT`] | Your broker credentials — the only ones this bot asks you for. | tastytrade's OAuth application settings, production side. |",
   "| `MEIC_LIVE_IS_TEST` | The first of the two deliberate switches. | You set this yourself. |",
   "| `MEIC_ALLOW_PRODUCTION` | The second deliberate switch. | Same as above. |",
   "| *(data directory location)* [`MEIC_DATA_DIR` — defaults to `data/`] | Where the bot keeps its durable record. | Chosen by you. |",
@@ -53,9 +56,11 @@ const SECTION_MARKDOWN = [
   "",
 ].join("\n");
 
+// DOC-06's expected-name contract as amended by v1.79 (live-only): the
+// TT_PROD_ production trio, the panel password, the two production switches,
+// and the data directory — no TT_CERT_ names.
 const TEMPLATE_NAMES = [
   "MEIC_USER_PASSWORD",
-  "TT_CERT_PROVIDER_SECRET", "TT_CERT_REFRESH_TOKEN", "TT_CERT_ACCOUNT",
   "TT_PROD_PROVIDER_SECRET", "TT_PROD_REFRESH_TOKEN", "TT_PROD_ACCOUNT",
   "MEIC_LIVE_IS_TEST", "MEIC_ALLOW_PRODUCTION", "MEIC_DATA_DIR",
 ];
@@ -63,8 +68,8 @@ const TEMPLATE_NAMES = [
 function fixture(overrides: Partial<GettingStartedData> = {}): GettingStartedData {
   return {
     getting_started_markdown: SECTION_MARKDOWN,
-    getting_started_version: "1.78",
-    running_spec_version: "1.78",
+    getting_started_version: "1.79",
+    running_spec_version: "1.79",
     version_mismatch: false,
     version_unknown: false,
     ...overrides,
@@ -87,8 +92,8 @@ describe("GettingStartedPage — DOC-06/UI-32 fifth tab", () => {
     vi.spyOn(api, "getGettingStarted").mockResolvedValue(fixture());
     render(<GettingStartedPage />);
 
-    // v1.78 — THIS section's own stamp, never the guide's sibling v1.72 one.
-    expect(await screen.findByTestId("getting-started-version-stamp")).toHaveTextContent("v1.78");
+    // The fixture's own stamp — THIS section's, never the sibling guide's.
+    expect(await screen.findByTestId("getting-started-version-stamp")).toHaveTextContent("v1.79");
     expect(screen.getByRole("heading", { name: /Prerequisites, and how this build actually runs/ }))
       .toBeInTheDocument();
     expect(screen.queryByTestId("getting-started-mismatch-banner")).not.toBeInTheDocument();
@@ -96,11 +101,11 @@ describe("GettingStartedPage — DOC-06/UI-32 fifth tab", () => {
 
   it("banners a stamped-vs-running version mismatch instead of pretending currency (DOC-05)", async () => {
     vi.spyOn(api, "getGettingStarted").mockResolvedValue(
-      fixture({ getting_started_version: "1.78", running_spec_version: "1.90", version_mismatch: true }));
+      fixture({ getting_started_version: "1.79", running_spec_version: "1.90", version_mismatch: true }));
     render(<GettingStartedPage />);
 
     const banner = await screen.findByTestId("getting-started-mismatch-banner");
-    expect(banner).toHaveTextContent(/v1\.78/);
+    expect(banner).toHaveTextContent(/v1\.79/);
     expect(banner).toHaveTextContent(/v1\.90/);
   });
 

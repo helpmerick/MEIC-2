@@ -1,5 +1,5 @@
 """GET /getting-started -- the DOC-06/UI-32 fifth tab's backend half (doc 12,
-slice 6, v1.78).
+slice 6; template contract as amended by the v1.79 live-only ruling).
 
 DOC-06: the Getting-started tab renders variable NAMES and where-to-obtain
 guidance from spec/12-how-it-works.md's own "# GETTING STARTED" ratified
@@ -9,14 +9,17 @@ byte-for-byte a substring of the hash-locked spec file's own text (the lock
 proves that text contains no secrets), and the endpoint never opens a .env
 file (pinned with a planted-sentinel test below, not just by inspection).
 
-The v1.78 two-section discipline is also pinned here: spec/12 now carries TWO
-independently-stamped ratified sections ("# THE GUIDE" describes v1.72;
-"# GETTING STARTED" describes v1.78) and each endpoint banners against ITS
-OWN section's stamp -- one section's stamp must never leak into the other's
-banner, and neither section's content may bleed into the other's payload
-(the pre-slice-6 /guide sliced to end-of-file, which would have silently
-swallowed this new section into the how-it-works tab; the section-boundary
-extract fixed that and is pinned in both directions below).
+The two-section discipline (introduced v1.78) is also pinned here: spec/12
+carries TWO independently-stamped ratified sections, and each endpoint
+banners against ITS OWN section's stamp -- one section's stamp must never
+leak into the other's banner, and neither section's content may bleed into
+the other's payload (the pre-slice-6 /guide sliced to end-of-file, which
+would have silently swallowed this new section into the how-it-works tab;
+the section-boundary extract fixed that and is pinned in both directions
+below). The REAL-tree tests are version-agnostic (each section's stamp must
+equal the README changelog head, whatever that reads today); the CRAFTED
+trees keep hardcoded versions on purpose -- they pin the comparison
+mechanism itself and prove it is not a tautology.
 """
 from __future__ import annotations
 
@@ -33,9 +36,31 @@ from meic.application.persistent_state import PersistentState
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The two-section shape the real spec/12 now has: Rules preamble, then
-# "# THE GUIDE" stamped v1.72, then "# GETTING STARTED" stamped v1.78 --
-# with the same "---" separators the real file uses between sections.
+_README_VERSION_RE = re.compile(r"^- Version:\s*(\d+\.\d+)", re.MULTILINE)
+
+
+def readme_changelog_head() -> str:
+    """The RUNNING build's own spec version, read from the real spec/
+    README.md changelog head. The real-tree stamp tests below assert against
+    THIS instead of a hardcoded number, so a routine ratification bump can
+    never go stale in a test name or assertion again -- the honest pin is
+    "the section's own stamp equals whatever the changelog head reads
+    today", i.e. the section is CURRENT. When a future amendment bumps the
+    README without re-stamping the section, that test goes red -- which is
+    the design working (the tab would be bannering a real mismatch), not a
+    stale expectation."""
+    text = (REPO_ROOT / "spec" / "README.md").read_text(encoding="utf-8-sig")
+    match = _README_VERSION_RE.search(text)
+    assert match is not None, "spec/README.md changelog head unparseable"
+    return match.group(1)
+
+# A crafted two-section spec/12 (Rules preamble, then "# THE GUIDE" stamped
+# v1.72, then "# GETTING STARTED" stamped v1.78, with the same "---"
+# separators the real file uses between sections). The versions here are
+# DELIBERATELY hardcoded and deliberately different: these fixtures pin the
+# per-section stamp-comparison mechanism (mismatch fires, sections banner
+# independently), which needs known, unequal values -- they do not track the
+# real tree's current ratification.
 TWO_SECTION_SPEC = (
     "# 12 -- How It Works\n\n"
     "## Rules\n\n- DOC-01 ... rule commentary that must never render ...\n\n"
@@ -60,9 +85,15 @@ README_V199 = (
 )
 
 # DOC-06's annotated template names -- every one must render as a NAME.
+# v1.79 (live-only ruling): the three TT_CERT_* literal names were REMOVED
+# from the template and the DOC-06 contract -- the tab documents only the
+# production credentials a live operator actually enters. (The bare
+# wildcard string "TT_CERT_*" legitimately survives once in the ratified
+# prose, inside the code-verified "appears nowhere else in production code"
+# note -- so its ABSENCE is not asserted, only the three full names are no
+# longer part of the expected-name contract.)
 TEMPLATE_NAMES = [
     "MEIC_USER_PASSWORD",
-    "TT_CERT_PROVIDER_SECRET", "TT_CERT_REFRESH_TOKEN", "TT_CERT_ACCOUNT",
     "TT_PROD_PROVIDER_SECRET", "TT_PROD_REFRESH_TOKEN", "TT_PROD_ACCOUNT",
     "MEIC_LIVE_IS_TEST", "MEIC_ALLOW_PRODUCTION", "MEIC_DATA_DIR",
 ]
@@ -92,21 +123,24 @@ def _client_for(tmp_path: Path, spec_text: str, readme_text: str) -> TestClient:
 @pytest.fixture
 def wired():
     """A panel wired to the REAL repo spec/ tree."""
-    events = EventLog(config_version="v1.78")
+    events = EventLog(config_version="test")
     state = PersistentState(InMemoryStateStore())
     return TestClient(create_app(state, events))
 
 
-def test_doc06_serves_the_real_ratified_section_with_its_own_v178_stamp(wired):
-    """The real "# GETTING STARTED" section stamps v1.78, which matches spec/
-    README.md's changelog head (v1.78) -- so THIS endpoint must not banner,
-    even while /guide (stamped v1.72) correctly does. Its own stamp, its own
-    comparison."""
+def test_doc06_serves_the_real_ratified_section_stamped_current(wired):
+    """VERSION-AGNOSTIC real-tree pin (the v1.79 ruling): the real "# GETTING
+    STARTED" section's own stamp must EQUAL spec/README.md's changelog head
+    -- whatever version that reads today -- so this endpoint must not
+    banner. Its own stamp, its own comparison; the crafted-tree fixtures
+    below keep hardcoded, unequal versions to prove the comparison isn't a
+    tautology."""
     r = wired.get("/getting-started")
     assert r.status_code == 200
     body = r.json()
-    assert body["getting_started_version"] == "1.78"
-    assert body["running_spec_version"] == "1.78"
+    head = readme_changelog_head()
+    assert body["getting_started_version"] == head
+    assert body["running_spec_version"] == head
     assert body["version_mismatch"] is False
     assert body["version_unknown"] is False
     assert body["getting_started_markdown"].startswith("# GETTING STARTED")
