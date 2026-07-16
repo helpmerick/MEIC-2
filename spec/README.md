@@ -39,6 +39,8 @@ Specification for an automated MEIC (Multiple Entry Iron Condor) bot trading SPX
 
 ## Status
 
+- Version: 1.79 — 2026-07-16
+- v1.79 changes (adviser-verified delta package, operator-ratified): guide refreshed v1.72→v1.79 (11 deltas incl. the operator-requested canonical "What LEX means" definition, which UI-31 tooltips must reuse); Getting Started goes LIVE-ONLY — TT_CERT_ template row removed + dropped from the DOC-06 contract, TT_PROD_ stands alone with the code-verified only-credentials fact, honest MEIC_LIVE_IS_TEST-defaults-to-true caveat added (a fresh real-money instance enters exactly one credential group; TC-DOC-01 name-list drops the three TT_CERT_ names in the accompanying code PR). All stamps now v1.79 — the guide banner clears. $4.00 house example untouched.
 - Version: 1.78 — 2026-07-16
 - v1.78 changes (adviser verification of the DOC-06 draft, operator-ratified): **Getting Started content RATIFIED** into spec/12 — the agent's draft carried nine [ADVISER] markers (every concrete fact the spec doesn't state: commands, port, literal env names, data dir, Docker status); all nine verified against the build and filled: Python 3.11 + .venv / Node 20+; paper_app vs live_app uvicorn factories (two wirings, one at a time, port 8010 always — 8000 held by stale Docker); TT_CERT_/TT_PROD_ PROVIDER_SECRET/REFRESH_TOKEN/ACCOUNT literal names; MEIC_DATA_DIR default data/; binding via --host argument with VPN-only remote guidance; plain process is the one true run path (Docker = REC-07 survival requirement only). Slice 6 (the fifth tab) is UNBLOCKED. The doc-12 v1.77 delta proposal is queued for the next verification pass; until then the guide's v1.72 stamp banners honestly per DOC-05.
 - Version: 1.77 — 2026-07-15
