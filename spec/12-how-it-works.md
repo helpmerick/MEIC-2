@@ -673,3 +673,161 @@ the halt check in Chapter 4, where silence or missing data means "assume the
 worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
+
+---
+
+# GETTING STARTED (ratified content, v1.78 — describes spec v1.78 and the build's true run procedure; DOC-05 stamp)
+
+## 1. Prerequisites, and how this build actually runs
+
+Before anything else, get the software installed and running on the machine
+that will trade. This section describes only what the spec requires to be
+true of the running system — the exact commands are filled in by the
+adviser from the real build.
+
+**What must be installed:**
+**Python 3.11**, with the project's own virtual environment (`.venv`) — install dependencies with `pip install -r requirements-dev.txt` and `pip install -r backend/requirements.txt` from inside it. **Node.js 20 or newer** for the control panel — `npm ci --prefix frontend` to install, `npm run build --prefix frontend` to build it (the backend serves the built panel itself; rebuild only after panel changes). On Windows, always use `.venv\Scripts\python.exe` — the global Python lacks the project's plugins.
+
+**What the spec itself guarantees about how this runs, regardless of the
+exact commands:**
+
+- Paper (practice) mode and live (real money) mode are **built as two
+  structurally separate wirings**, not one program with a switch flipped
+  inside it — the part of the software that can send a real order to the
+  broker is not even present when running in paper mode (EC-RSK-04, SIM-01).
+  In practice this means starting "the bot" is really a choice between two
+  different things to run: the paper build and the live build.
+- Whichever one is running, the control panel by default only listens on
+  the trading machine itself (`127.0.0.1`, meaning "this computer only") —
+  it does not expose itself to the rest of a network unless deliberately
+  configured to, and doing so requires an access token to be set first; this
+  is enforced, not merely recommended (NFR-06).
+- The **live** build specifically refuses to even finish starting up unless
+  the panel password is configured (Section 2, NFR-06a) — there is no such
+  thing as a live version of this bot with no password.
+
+**The actual step-by-step run procedure:**
+
+Open a terminal in the project folder. **Paper build:** `.venv\Scripts\python.exe -m uvicorn meic.adapters.api.server:paper_app --factory --host 127.0.0.1 --port 8010`. **Live build:** the same command with `:live_app` in place of `:paper_app` — they are two different factory functions producing two genuinely different wirings (the paper one never even constructs the real-broker adapter). Run ONE at a time, always on port **8010**, and open **http://127.0.0.1:8010** in your browser. (On the reference machine, port 8000 is held by a stale Docker — 8010 always.)
+
+This runs as a **plain process** — the procedure above is the one true way to start it. Docker appears in the spec only as a survival requirement (the bot must restore perfectly if a container it happens to live in restarts, REC-07) — it is not the documented run path today.
+
+Once it's running, the very first thing the panel will ask for is the
+password (Section 2) — nothing else is possible until it's unlocked.
+
+## 2. The `.env` file — names and where to get them, never values
+
+The bot reads its secrets and machine-specific settings from a file named
+`.env`, kept on the trading machine only. **This tab shows you the template
+below — the variable names and what each one is for — and nothing else. It
+will never show a current value, a password, a token, or any other secret,
+under any circumstance.** That's deliberate: a screen that could ever display
+a live secret is a screen that could leak one.
+
+The handling rule, stated plainly, because it matters more than any other
+sentence on this tab: **every value in this file is typed by hand, directly
+into the file, on the trading machine itself — never pasted into a chat
+window, an AI coding assistant's conversation, a support ticket, a
+screenshot, or anywhere else that leaves the machine.** If a credential is
+ever compromised or simply needs to change, the entire rotation procedure is:
+edit the `.env` file with the new value, then restart the bot. There is no
+other step.
+
+Annotated template (names and explanations only — **do not** put real values
+in a copy of this table anywhere they could be seen by anyone else):
+
+| Variable name | What it is | Where you get it |
+|---|---|---|
+| `MEIC_USER_PASSWORD` | The password that unlocks this control panel. Nothing that changes anything — arming, saving a schedule, firing an entry, closing a trade — is accepted until the panel is unlocked with it. The **live** build will not finish starting without this set at all (NFR-06a). | You choose this yourself. Pick something only you know; it is not issued by anyone. |
+| `TT_CERT_*` (a group of variables) | Your tastytrade **practice/sandbox** credentials: a provider secret, a refresh token, and an account identifier, used only for practice-mode/contract testing against tastytrade's non-real-money sandbox. [the literal names: `TT_CERT_PROVIDER_SECRET`, `TT_CERT_REFRESH_TOKEN`, `TT_CERT_ACCOUNT`] | tastytrade's own OAuth application settings, in your tastytrade developer/API account area — request sandbox (certification) credentials there. |
+| `TT_PROD_*` (a group of variables) | The same kind of credentials — a provider secret, a refresh token, an account identifier — but for your **real, production** tastytrade account. These are what the live build authenticates with. [the literal names: `TT_PROD_PROVIDER_SECRET`, `TT_PROD_REFRESH_TOKEN`, `TT_PROD_ACCOUNT`] | The same tastytrade OAuth application settings, but the production application/credentials, not the sandbox ones. |
+| `MEIC_LIVE_IS_TEST` | The first of the two deliberate switches that must both be set before the bot will ever place a real order (Section 5). It must be explicitly set to mean "this is not a test" before production trading is even possible — one switch alone is never enough (NFR-06a). | You set this yourself, deliberately, only when you intend to go live. Leave it alone otherwise. |
+| `MEIC_ALLOW_PRODUCTION` | The second of the two deliberate switches (Section 5) — a separate, explicit opt-in that must also be set, alongside `MEIC_LIVE_IS_TEST`, before production trading is possible (NFR-06a). | Same as above — you set this yourself, only when you deliberately mean to. |
+| *(data directory location)* | Where the bot keeps its permanent, durable record of everything: armed/disarmed state, the schedule, every trade and event ever logged, calendar tags, and more — everything that must survive a restart exactly as it was (REC-07). [`MEIC_DATA_DIR` — defaults to the `data/` folder inside the project] | Chosen by you (or left at its default) — a folder on the trading machine with enough disk space that you back up like any other important data. |
+| *(panel network binding, if you ever need remote access)* | Controls whether the panel is reachable only from this machine (the default and recommended setting) or from elsewhere on a network, and the access token required if you do open it up (NFR-06). [the listening address is chosen by the `--host` argument in the start command, not by `.env` — keep it `127.0.0.1`; for remote access the ratified guidance is a VPN to the localhost-bound panel, never a wider bind, and the panel password authenticates every change regardless (NFR-06a)] | You set these yourself only if you have a specific, deliberate reason to reach the panel remotely; otherwise leave the default alone. |
+
+## 3. The numbers live mode refuses to trade without
+
+Three settings have no safe value the bot can silently assume for real money
+— you must set them yourself before live trading is possible, because
+guessing on your behalf would be worse than refusing to start:
+
+- **`max_day_risk`** — the absolute dollar ceiling on how much the day's
+  trading, all together, could lose in the worst case. This has **no
+  default at all**; the bot will not let live mode turn on without it
+  (spec/06-configuration.md validation rule 4, RSK-04). It exists so that no
+  combination of entries you compose can ever add up to a risk you never
+  actually agreed to.
+- **`reporting_capital_base`** — the dollar figure the results dashboard
+  measures your return against (return on capital, Sharpe, and similar
+  figures). It also has no default, precisely because your account's total
+  balance is deliberately *not* used automatically — mixing in money that
+  has nothing to do with this strategy would quietly distort every
+  performance number the dashboard shows you (RPT-04).
+- **`min_buying_power`** — the buying-power floor below which the bot will
+  skip an entry rather than risk running your account too thin
+  (`insufficient_bp`). This one does ship with a conservative default
+  ($5,000), but it should be tuned to the actual size of your account — the
+  spec's own reference example runs it much lower, at $2,000, for a smaller
+  account (spec/06-configuration.md, ENT-03).
+
+## 4. The paper-first first-run sequence
+
+Every fresh install starts in the same safe state, on purpose: **disarmed,
+Confirm Live off, and in paper (practice) mode** — nothing can trade for
+real money until you deliberately change all three of those, one at a time
+(Chapter 3 of the "How it works" tab). The recommended order for a brand-new
+machine:
+
+1. Start the **paper** build with the command from Section 1, then open **http://127.0.0.1:8010**.
+2. **Unlock the panel** with the password you set in Section 2.
+3. **Confirm you're in PAPER mode.** A fresh install already boots this way
+   — practice money only, nothing real at stake yet.
+4. **Read the "How it works" tab.** It explains, in plain language, exactly
+   what every part of the bot does before you ever compose a real trade.
+5. **Compose a day's schedule** on the Trading tab — at least one entry row
+   (time, contracts, target premium, wing width, stop settings).
+6. **Run the pre-flight check** and confirm it passes.
+7. **Press Arm — in paper mode.** Watch at least one full paper trading day
+   run end to end before you touch live mode at all.
+8. **Import the trading calendar** (Calendar tab) and set any standing
+   blackout rules you want (for example, "always block FOMC days").
+9. **Open "Operational tools"** (a collapsed section on the Trading tab,
+   deliberately tucked out of the way so a brand-new install's screen shows
+   only ordinary trading controls) and run the **outage drill** at least
+   once — it proves, on demand, that your stop orders really do rest at the
+   broker and keep working even if the bot itself is disconnected. Do this
+   before you ever trust live mode with real money, and again any time
+   tastytrade's API changes.
+
+## 5. Going live — the two-switch ritual, and a plain warning
+
+Everything above can be done safely with nothing but practice money at
+stake. Going live is a deliberate, separate act, guarded by more than one
+switch on purpose, so that no single mistake can ever aim this bot at a real
+account by accident.
+
+**The three switches that must all read "go" before any entry can ever fire**
+(explained fully in Chapter 3 of "How it works"):
+
+- **Armed** — the standing schedule is live.
+- **Confirm Live** — a second, independent "yes, really" toggle.
+- **Stop Trading** — must be *off* (its very purpose is to block new entries
+  when turned on).
+
+**Underneath all three, and specific to real money:** turning this software
+loose on your actual brokerage account requires **two separate, deliberate
+switches in its configuration**, not one — `MEIC_LIVE_IS_TEST` must be
+explicitly set to mean "this is not a test," **and** `MEIC_ALLOW_PRODUCTION`
+must also be explicitly turned on. The bot additionally double-checks, on
+its own, that the broker credentials it was given are actually production
+credentials and not sandbox ones. Flip only one of these and the bot refuses,
+with a plain explanation of what's missing — by design, there is no way to
+end up live by mistake (NFR-06a).
+
+**The plain warning:** once every switch above is set, live means live —
+the very next entry your schedule fires will be a real order, for real
+money, at your real broker, arriving within minutes of arming. There is no
+practice-mode safety net once these switches are thrown. If you have any
+doubt at all, leave `MEIC_ALLOW_PRODUCTION` off and keep running in paper
+until you don't.
