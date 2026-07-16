@@ -27,6 +27,7 @@ math; see Delta 5 for the one honest sentence that was added instead.
 | 8 | Chapter 9 | UI-31 (v1.73) | Add a new paragraph on the activity feed's day headers and hover explanations |
 | 9 | Chapter 10 | CAL-09 (v1.77) | Amend the opening paragraph + insert a new paragraph on daily auto-refresh |
 | 10 | Master flowchart | DOC-05 (v1.77, readable diagrams) | Add one sentence noting the flowchart (and every diagram) is click-to-zoom |
+| 11 | Chapter 6 | Operator request 2026-07-16 (LEX-01→09, LEX-07, EC-LEX-04/08, DCY-03) | Add a "What LEX means" definition passage at the top of the long-recovery-ladder entry |
 
 **[ADVISER] markers in this file:** none. Every fact used below is stated
 directly in the ratified spec text cited beside it — there was nothing to
@@ -348,6 +349,107 @@ This diagram, and every other diagram in this guide, can be clicked to open
 a full-screen view with pan and zoom (scroll or pinch), with explicit zoom
 controls, for anyone who finds the default size too small to read
 comfortably; the full-screen view closes with a keypress (DOC-05).
+```
+
+---
+
+## Delta 11 — Chapter 6, "What LEX means" (operator request, 2026-07-16)
+
+Operator request, verbatim: *"Please make sure we add a section defining
+what lex is in the how this works."* The current Chapter 6 entry describes
+what the long-recovery ladder **does** (watches/acts/never) but never
+defines what "LEX" **is** — the acronym appears in the fill-detector entry
+and throughout the panel with no introduction. This delta adds a definition
+passage at the top of the ladder's entry, before the existing
+watches/acts/never text, which is left intact.
+
+**Acronym expansion, verified against the spec:** the spec never spells the
+acronym out letter-by-letter, but it names the mechanism itself in two
+places — spec/01's section 6 is titled "**Long leg exit** after short stop
+(LEX)", and spec/02's section C is "**Long-exit** edge cases (EC-LEX)"; the
+README's doc index likewise lists "long exit" as the LEX prefix's subject.
+The passage below therefore says LEX names the *long exit* (the spec's own
+title for it) rather than inventing a letter-by-letter expansion. No
+[ADVISER] marker needed.
+
+**Vocabulary note for the adviser:** this passage is also the canonical
+plain-English definition the UI-31 hover tooltips (queue slice 5) must
+reuse — UI-31 requires the feed and the guide to "speak one language," and
+its operator-verbatim example already calls LEX "the long-recovery ladder."
+One definition, two surfaces: if this wording is amended at ratification,
+the tooltip wording follows it, never forks from it.
+
+**Composition note:** Delta 5 amends a *later* sentence of this same
+watcher entry (the LEX-07 sentence). The two deltas touch disjoint text and
+apply independently, in either order.
+
+**Find** (Chapter 6, the opening of the long-recovery ladder's entry):
+
+```
+**The long-recovery ladder, and its floor orders.** *Watches:* the market
+price of a stopped side's surviving long leg. *Acts:* it sells that long
+starting at the market midpoint, walking the price down toward the buyer's
+price every fifteen seconds if unfilled, for a bounded number of steps,
+before falling back to a price aggressive enough to guarantee a fill
+(LEX-01 through LEX-06).
+```
+
+**Replace with** (the definition passage, then the original opening
+unchanged):
+
+```
+**What LEX means.** This chapter, the activity feed, and the day report all
+use the short name **LEX** for the mechanism this page describes. It names
+the **long exit** — the rulebook's own title for this machinery is "long-leg
+exit after a short stop" (LEX-01 through LEX-09) — and the whole idea fits
+in a paragraph.
+
+Every side of the condor is a pair: a short option that collected money up
+front, and a long option bought further out as that short's insurance. When
+a side stops out, the broker's stop order buys back the **short** — but the
+insurance, the long, is still sitting in the account, and because the market
+just moved toward it, it is now worth *more* than the small amount it cost
+at entry. LEX exists for exactly that moment: the instant a stop fills, it
+sells that side's surviving long and turns its remaining value back into
+cash (LEX-01).
+
+It sells carefully, not desperately: it offers the long at the market's
+midpoint and, if nobody takes it, lowers the asking price a notch every
+fifteen seconds toward what buyers are actually bidding, a bounded number of
+times, before switching to a price aggressive enough to be certain of
+filling (LEX-03, LEX-05). It never dumps the leg with an uncontrolled
+market order, and it never sells below what the option is genuinely worth —
+the higher of the current best bid and the option's built-in payout value
+(LEX-04, LEX-05). If there is truly no buyer at all, it does not invent a
+price: it rests a single sell order at the option's floor value and raises
+a one-time critical alert, so a degraded-liquidity recovery is announced
+rather than discovered (EC-LEX-04, EC-LEX-08).
+
+The one rule it never breaks: after a stop-out, the surviving long is
+**always** sold — there is no "too cheap to bother," and the leg is never
+abandoned to rot on the book (LEX-07). The single deliberate exception is
+not a stop-out at all: when a side is closed early by the decay buyback
+because its short had already decayed to nearly nothing, that side's
+far-out long — by then worth essentially zero — is intentionally left to
+expire as a free hedge (DCY-03). The always-sell promise is about
+stop-outs, where the long still has real value.
+
+And what the money means, on the house trade from Chapter 1: the condor
+banked $4.00 up front, and a one-sided stop-out pays $3.80 to close the
+stopped short — a guaranteed minimum of $20 kept, before costs (Chapter 5).
+Whatever LEX then recovers for that side's surviving long — an option that
+cost just $0.50 at entry and has been gaining value as the market moved
+toward it — is real dollars added on top of that minimum (STP-02). That
+recovery is why a one-sided stop day ends better than its guaranteed floor,
+and why the both-sides "whipsaw" loss in Chapter 5 usually lands below its
+stated maximum.
+
+**The long-recovery ladder, and its floor orders.** *Watches:* the market
+price of a stopped side's surviving long leg. *Acts:* it sells that long
+starting at the market midpoint, walking the price down toward the buyer's
+price every fifteen seconds if unfilled, for a bounded number of steps,
+before falling back to a price aggressive enough to guarantee a fill
+(LEX-01 through LEX-06).
 ```
 
 ---
