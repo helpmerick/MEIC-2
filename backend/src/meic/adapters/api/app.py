@@ -39,8 +39,24 @@ logger = logging.getLogger(__name__)
 # endpoint below only ever reads it, never writes.
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _GUIDE_HEADING = "# THE GUIDE"
-_GUIDE_STAMP_RE = re.compile(r"describes spec v(\d+\.\d+)")
+# DOC-06 (v1.78, doc 12 slice 6): spec/12-how-it-works.md now carries a
+# SECOND ratified top-level section after the guide -- the fifth tab's
+# "Getting started" content. Both share the "describes spec vX.YY" stamp
+# convention (DOC-05) and the same "- Version:" running-spec parse, so one
+# stamp regex and one running-version regex serve both sections.
+_GETTING_STARTED_HEADING = "# GETTING STARTED"
+_STAMP_RE = re.compile(r"describes spec v(\d+\.\d+)")
 _README_VERSION_RE = re.compile(r"^- Version:\s*(\d+\.\d+)", re.MULTILINE)
+# Any line starting with a single "# " (never "##") marks the start of the
+# NEXT top-level ratified section -- used to bound each section's extract so
+# one section's content never bleeds into a sibling's (see
+# _extract_ratified_section below).
+_TOP_HEADING_RE = re.compile(r"(?m)^# ")
+# A run of one or more "---" horizontal-rule separators (each on its own
+# line, with surrounding blank lines) that sits between two ratified
+# sections -- trimmed off the END of an extracted section so it never
+# trails into the next section's own separator.
+_TRAILING_RULE_RE = re.compile(r"(?:\n[ \t]*-{3,}[ \t]*\n+)+\Z")
 
 
 class GuideUnavailable(Exception):
@@ -51,22 +67,60 @@ class GuideUnavailable(Exception):
     the only correct fallback."""
 
 
-def _load_guide(guide_path: Path, readme_path: Path) -> dict[str, Any]:
-    """DOC-05: read the guide markdown STRAIGHT from spec/12-how-it-works.md
-    (single source — never a build-time copy that can drift) and pair it with
-    the RUNNING build's own spec version, so the frontend can banner a
-    mismatch instead of pretending currency.
+class GettingStartedUnavailable(Exception):
+    """DOC-06 sibling of GuideUnavailable: the Getting-started tab cannot be
+    rendered honestly (spec/12 has no "# GETTING STARTED" ratified-content
+    marker). The same DOC-02 refusal applies — never fall back to rendering
+    the Rules preamble or bleeding in "# THE GUIDE"'s own content."""
 
-    `guide_version` is parsed from the ratified "# THE GUIDE (... describes
-    spec vX.YY ...)" stamp (DOC-05). `running_spec_version` is parsed from
-    spec/README.md's own "## Status" block — its FIRST "- Version: X.Y" line
-    is the changelog head (entries are prepended, newest first; verified
-    against the current file: v1.72's line precedes v1.71's, v1.70's, ...).
-    That single "- Version:" line is a cleaner, unambiguous parse than
-    matching "- vX.Y changes" bullets, which can legitimately repeat a
-    version number across same-version addenda (e.g. three v1.71 entries in
-    a row) — the FLAGGED design decision this endpoint makes (DOC-05
-    "better existing source" call).
+
+def _extract_ratified_section(full_text: str, heading: str) -> str | None:
+    """Return the ratified section beginning at `heading`, up to (but not
+    including) the NEXT top-level "# " heading — or end of file if `heading`
+    is the last section. Returns None if `heading` isn't present at all.
+
+    This is the DOC-06 fix (v1.78, doc 12 slice 6): spec/12 now holds TWO
+    stamped top-level sections ("# THE GUIDE" then "# GETTING STARTED").
+    Before this section boundary existed, `_load_guide` sliced from its
+    heading to end-of-file, which silently swallowed the newer "# GETTING
+    STARTED" section into the how-it-works tab's own payload the moment doc
+    12 grew a second section — a real bug, not a hypothetical one (caught
+    while wiring the fifth tab). Bounding every extract at the next
+    top-level heading (or EOF for whichever section is last) keeps each
+    section's payload to exactly its own ratified content, regardless of
+    how many sibling sections spec/12 grows in the future."""
+    idx = full_text.find(heading)
+    if idx == -1:
+        return None
+    next_match = _TOP_HEADING_RE.search(full_text, idx + len(heading))
+    end = next_match.start() if next_match is not None else len(full_text)
+    section = full_text[idx:end]
+    # Strip a trailing run of "---" separator rule(s) that precede the next
+    # section (or trailing blank lines at EOF) — those rules delimit
+    # sections in the source file; they are not part of either section's own
+    # ratified content.
+    section = _TRAILING_RULE_RE.sub("", section)
+    return section.rstrip("\n") + "\n"
+
+
+def _load_ratified_section(
+    full_text: str, readme_text: str, heading: str, unavailable_message: str,
+    unavailable_cls: type[Exception],
+) -> dict[str, Any]:
+    """Shared DOC-05 read model behind both GET /guide and GET
+    /getting-started: extract one ratified top-level section (bounded per
+    `_extract_ratified_section` above), parse ITS OWN "describes spec vX.YY"
+    stamp, and pair it with the RUNNING build's own spec version so the
+    frontend can banner a mismatch instead of pretending currency.
+
+    `running_spec_version` is parsed from spec/README.md's own "## Status"
+    block — its FIRST "- Version: X.Y" line is the changelog head (entries
+    are prepended, newest first; verified against the current file: v1.78's
+    line precedes v1.77's, v1.76's, ...). That single "- Version:" line is a
+    cleaner, unambiguous parse than matching "- vX.Y changes" bullets, which
+    can legitimately repeat a version number across same-version addenda —
+    the FLAGGED design decision this endpoint makes (DOC-05 "better existing
+    source" call).
 
     DOC-05 failure polarity (review, 2026-07-15): the banner must fail toward
     SHOWING, never toward false currency. If EITHER version fails to parse,
@@ -74,29 +128,82 @@ def _load_guide(guide_path: Path, readme_path: Path) -> dict[str, Any]:
     distinctly (the frontend banners on it with "cannot verify" wording,
     separate from a concrete vX-vs-vY mismatch). A parse failure silently
     disabling the banner would be the lying-gate defect in words, inside the
-    feature built to prevent it."""
-    full_text = guide_path.read_text(encoding="utf-8-sig")
-    idx = full_text.find(_GUIDE_HEADING)
-    if idx == -1:
-        raise GuideUnavailable(
-            f"no '{_GUIDE_HEADING}' marker in {guide_path.name} — refusing to "
-            "render the Rules preamble as operator-facing guide content (DOC-02)")
-    guide_markdown = full_text[idx:]
-    stamp_match = _GUIDE_STAMP_RE.search(guide_markdown)
-    guide_version = stamp_match.group(1) if stamp_match else None
+    feature built to prevent it.
 
-    readme_text = readme_path.read_text(encoding="utf-8-sig")
+    IMPORTANT (v1.78, two-section split): each caller's OWN section stamp is
+    compared against the running spec version — never against the SIBLING
+    section's stamp. "# THE GUIDE" (v1.72) and "# GETTING STARTED" (v1.78)
+    are independently ratified and independently versioned; one section's
+    stamp must never leak into the other's banner."""
+    section_markdown = _extract_ratified_section(full_text, heading)
+    if section_markdown is None:
+        raise unavailable_cls(unavailable_message)
+    stamp_match = _STAMP_RE.search(section_markdown)
+    section_version = stamp_match.group(1) if stamp_match else None
+
     running_match = _README_VERSION_RE.search(readme_text)
     running_spec_version = running_match.group(1) if running_match else None
 
-    version_unknown = guide_version is None or running_spec_version is None
+    version_unknown = section_version is None or running_spec_version is None
     return {
-        "guide_markdown": guide_markdown,
-        "guide_version": guide_version,
+        "markdown": section_markdown,
+        "section_version": section_version,
         "running_spec_version": running_spec_version,
         "version_mismatch": (not version_unknown
-                             and guide_version != running_spec_version),
+                             and section_version != running_spec_version),
         "version_unknown": version_unknown,
+    }
+
+
+def _load_guide(guide_path: Path, readme_path: Path) -> dict[str, Any]:
+    """DOC-05: read the guide markdown STRAIGHT from spec/12-how-it-works.md
+    (single source — never a build-time copy that can drift) and pair it with
+    the RUNNING build's own spec version, so the frontend can banner a
+    mismatch instead of pretending currency. See `_load_ratified_section` for
+    the shared parse/compare behaviour both this and `_load_getting_started`
+    rest on."""
+    full_text = guide_path.read_text(encoding="utf-8-sig")
+    readme_text = readme_path.read_text(encoding="utf-8-sig")
+    result = _load_ratified_section(
+        full_text, readme_text, _GUIDE_HEADING,
+        f"no '{_GUIDE_HEADING}' marker in {guide_path.name} — refusing to "
+        "render the Rules preamble as operator-facing guide content (DOC-02)",
+        GuideUnavailable,
+    )
+    return {
+        "guide_markdown": result["markdown"],
+        "guide_version": result["section_version"],
+        "running_spec_version": result["running_spec_version"],
+        "version_mismatch": result["version_mismatch"],
+        "version_unknown": result["version_unknown"],
+    }
+
+
+def _load_getting_started(getting_started_path: Path, readme_path: Path) -> dict[str, Any]:
+    """DOC-06/UI-32 (v1.78, doc 12 slice 6): read the Getting-started tab's
+    content STRAIGHT from spec/12-how-it-works.md's own "# GETTING STARTED"
+    section (single source, same guarantee as `_load_guide` above — never a
+    build-time copy, never anything read from a live .env). Pairs it with
+    the running build's own spec version so the frontend can banner a
+    mismatch instead of pretending currency, exactly like DOC-05's guide
+    endpoint. This function and the endpoint behind it NEVER open, read, or
+    reference an actual `.env` file anywhere — the tab's whole promise
+    (DOC-06) is a template of variable NAMES read from the hash-locked spec
+    text, never a live value."""
+    full_text = getting_started_path.read_text(encoding="utf-8-sig")
+    readme_text = readme_path.read_text(encoding="utf-8-sig")
+    result = _load_ratified_section(
+        full_text, readme_text, _GETTING_STARTED_HEADING,
+        f"no '{_GETTING_STARTED_HEADING}' marker in {getting_started_path.name} — "
+        "refusing to render the Rules preamble as operator-facing content (DOC-02)",
+        GettingStartedUnavailable,
+    )
+    return {
+        "getting_started_markdown": result["markdown"],
+        "getting_started_version": result["section_version"],
+        "running_spec_version": result["running_spec_version"],
+        "version_mismatch": result["version_mismatch"],
+        "version_unknown": result["version_unknown"],
     }
 
 
@@ -592,6 +699,35 @@ def create_app(
         # "guide unavailable" payload rather than an unhandled traceback.
         except (OSError, UnicodeDecodeError, GuideUnavailable) as e:
             raise HTTPException(status_code=500, detail=f"guide unavailable: {e}")
+
+    # --- DOC-06/UI-32 Getting-started tab (doc 12, slice 6) ---------------------
+    # Read-only GET, origin-open like every other read model above -- no
+    # trading capability, no state mutation. Reads spec/12-how-it-works.md's
+    # OWN "# GETTING STARTED" section fresh on every request (single source,
+    # same guarantee as /guide directly above) -- and, per DOC-06, NEVER
+    # reads, opens, or references an actual .env file: the tab's whole
+    # promise is variable NAMES and where-to-obtain guidance read from the
+    # hash-locked spec text, never a live value or secret.
+    @app.get("/getting-started")
+    def get_getting_started() -> dict[str, Any]:
+        """DOC-06/UI-32: the fifth tab's single source. Reads spec/12-how-
+        it-works.md fresh on every request (no build-time copy that can
+        drift) and reports the RUNNING build's own spec version (spec/
+        README.md's changelog head) alongside this section's own "describes
+        spec vX.YY" stamp, so the frontend can banner a mismatch instead of
+        pretending currency -- independently of whatever "# THE GUIDE"'s own
+        stamp says (each section banners against ITS OWN stamp, v1.78)."""
+        try:
+            return _load_getting_started(
+                _guide_root / "spec" / "12-how-it-works.md",
+                _guide_root / "spec" / "README.md",
+            )
+        # Same honest-failure polarity as GET /guide directly above: every
+        # member of this except clause lands as a handled "unavailable"
+        # payload, never an unhandled traceback or a silent fallback to
+        # rendering the Rules preamble or another section's content.
+        except (OSError, UnicodeDecodeError, GettingStartedUnavailable) as e:
+            raise HTTPException(status_code=500, detail=f"getting started unavailable: {e}")
 
     # --- CAL-01..08 trading calendar (doc 11) -----------------------------------
     # Read-only GET is origin-open like every other read model above; every

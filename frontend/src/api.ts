@@ -4,8 +4,8 @@
 
 import type {
   ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
-  FireResult, FloorCandidates, GuideData, ManualSimulation, PanelState, Preflight, ReportSummary,
-  ScheduleRow, ScheduleView,
+  FireResult, FloorCandidates, GettingStartedData, GuideData, ManualSimulation, PanelState, Preflight,
+  ReportSummary, ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -235,6 +235,12 @@ export const api = {
   // Read-only, origin-open like every other read model above -- no trading
   // capability, no state mutation (the guide route is pure GET).
   getGuide: () => get<GuideData>("/guide"),
+
+  // --- DOC-06/UI-32 Getting-started tab (doc 12, slice 6, v1.78) -------------
+  // Read-only, pure GET, same guarantee as getGuide: the payload is spec/12's
+  // own "# GETTING STARTED" section text (names and guidance only, never a
+  // live env value or secret -- DOC-06).
+  getGettingStarted: () => get<GettingStartedData>("/getting-started"),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

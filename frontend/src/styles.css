@@ -495,3 +495,23 @@ body {
 
 .guide-flowchart { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: var(--sp-4); margin-bottom: 14px; }
 .guide-flowchart svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+/* DOC-06/UI-32 (doc 12 slice 6): the Getting-started tab shares the guide's
+   long-form styling above (same .how-it-works-page/.guide-body classes); the
+   additions below style its one structure the guide never had — the `.env`
+   annotated-template GFM table (variable NAMES and where-to-obtain guidance,
+   never a value). */
+.getting-started-page .guide-body table {
+  width: 100%; border-collapse: collapse; margin: 0 0 18px; font-size: 13.5px;
+}
+.getting-started-page .guide-body th {
+  text-align: left; font-weight: 800; color: var(--text);
+  border-bottom: 2px solid var(--line); padding: 8px 10px; vertical-align: bottom;
+}
+.getting-started-page .guide-body td {
+  border-bottom: 1px solid var(--line); padding: 8px 10px; vertical-align: top;
+}
+.getting-started-page .guide-body td:first-child { white-space: nowrap; }
+@media (max-width: 720px) {
+  .getting-started-page .guide-body td:first-child { white-space: normal; }
+}

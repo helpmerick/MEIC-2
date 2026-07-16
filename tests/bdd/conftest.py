@@ -98,14 +98,17 @@ def vitest_ui09_result():
 
 @pytest.fixture(scope="session")
 def vitest_doc_result():
-    """TC-DOC-01's frontend halves (doc 12, slice 4, v1.72): the how-it-works
+    """TC-DOC-01's frontend halves (doc 12, slices 4 and 6): the how-it-works
     tab's DOC-05 single-source rendering (version stamp, mismatch banner,
     DOC-03 chapter completeness, no-trading-controls) in HowItWorksPage.test.tsx,
-    plus the four-tab nav (App.test.tsx) -- same real-vitest binding strategy
-    as `vitest_result`/`vitest_cal_result` above. Session-scoped for the same
-    startup-cost reason."""
+    the DOC-06/UI-32 Getting-started tab (its own v1.78 stamp, the no-secret-
+    leak contract, DOC-06 five-section completeness) in
+    GettingStartedPage.test.tsx, plus the five-tab nav (App.test.tsx) -- same
+    real-vitest binding strategy as `vitest_result`/`vitest_cal_result` above.
+    Session-scoped for the same startup-cost reason."""
     proc = subprocess.run(
         ["npx", "vitest", "run", "src/components/HowItWorksPage.test.tsx",
+         "src/components/GettingStartedPage.test.tsx",
          "src/App.test.tsx", "--reporter=verbose"],
         cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
         shell=(sys.platform == "win32"), timeout=180,

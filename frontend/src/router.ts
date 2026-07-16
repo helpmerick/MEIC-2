@@ -10,12 +10,16 @@ import { useEffect, useState } from "react";
 // v1.72 ratified doc 12's guide content, so HowItWorksPage now renders it
 // (fetched from GET /guide, DOC-05 single source) rather than the honest
 // placeholder this page showed before ratification.
+// DOC-06/UI-32 (v1.75 commission, v1.78 ratified content): "Getting started"
+// is the FIFTH tab — same DOC-05 single-source pattern over spec/12's own
+// "# GETTING STARTED" section (GET /getting-started).
 export type Route =
   | { page: "trading" }
   | { page: "results" }
   | { page: "results-day"; date: string }
   | { page: "calendar" }
-  | { page: "how-it-works" };
+  | { page: "how-it-works" }
+  | { page: "getting-started" };
 
 const DAY_RE = /^\/results\/day\/(\d{4}-\d{2}-\d{2})$/;
 
@@ -26,6 +30,7 @@ export function parseHash(hash: string): Route {
   if (path === "/results") return { page: "results" };
   if (path === "/calendar") return { page: "calendar" };
   if (path === "/how-it-works") return { page: "how-it-works" };
+  if (path === "/getting-started") return { page: "getting-started" };
   return { page: "trading" }; // default hash ("" or "/") — Trading keeps its today
 }
 

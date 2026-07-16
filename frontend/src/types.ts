@@ -571,3 +571,20 @@ export interface GuideData {
   version_mismatch: boolean;
   version_unknown: boolean;
 }
+
+/** DOC-06/UI-32 (doc 12, slice 6, v1.78) -- the Getting-started tab's single
+ * source (GET /getting-started). Same DOC-05 shape and discipline as
+ * GuideData above, over spec/12's OWN "# GETTING STARTED" section: the
+ * markdown is that section read straight from the hash-locked spec (variable
+ * NAMES and where-to-obtain guidance, NEVER a live value or secret --
+ * DOC-06), `getting_started_version` is the SECTION'S OWN "describes spec
+ * vX.YY" stamp (independent of "# THE GUIDE"'s v1.72 stamp -- each tab
+ * banners against its own), and the mismatch/unknown flags carry the
+ * backend's own comparison with the same fail-toward-showing polarity. */
+export interface GettingStartedData {
+  getting_started_markdown: string;
+  getting_started_version: string | null;
+  running_spec_version: string | null;
+  version_mismatch: boolean;
+  version_unknown: boolean;
+}

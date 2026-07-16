@@ -311,9 +311,10 @@ describe("App — Operational tools disclosure (v1.76)", () => {
   });
 });
 
-// CAL-08/UI-30 + DOC-01/DOC-05 (v1.71 commission): the nav is fixed at exactly
-// four tabs — Trading | Results | Calendar | How it works.
-describe("App — nav (v1.71 four-tab commission)", () => {
+// CAL-08/UI-30 + DOC-01/DOC-05/DOC-06/UI-32 (v1.75 commission): the nav is
+// fixed at exactly five tabs, in the ruled order — Trading | Results |
+// Calendar | How it works | Getting started.
+describe("App — nav (v1.75 five-tab commission)", () => {
   beforeEach(() => {
     window.location.hash = "";
     vi.spyOn(api, "getCalendar").mockResolvedValue({ available: true, tags: {}, staleness: {}, standing_rules: {} });
@@ -326,14 +327,26 @@ describe("App — nav (v1.71 four-tab commission)", () => {
       guide_version: "1.72", running_spec_version: "1.72", version_mismatch: false,
       version_unknown: false,
     });
+    // DOC-06/UI-32 (doc 12, slice 6): the fifth tab's own read model. Same
+    // harmless-when-unvisited note as getGuide above; the "clicking Getting
+    // started" test below actually renders it.
+    vi.spyOn(api, "getGettingStarted").mockResolvedValue({
+      getting_started_markdown:
+        "# GETTING STARTED (ratified content, v1.78 — describes spec v1.78 and the "
+        + "build's true run procedure; DOC-05 stamp)\n\n"
+        + "## 1. Prerequisites, and how this build actually runs\n\nbody\n",
+      getting_started_version: "1.78", running_spec_version: "1.78",
+      version_mismatch: false, version_unknown: false,
+    });
   });
   afterEach(() => { window.location.hash = ""; });
 
-  it("shows exactly the four nav tabs, in order", () => {
+  it("shows exactly the five nav tabs, in order", () => {
     render(<App />);
     const nav = screen.getByRole("navigation", { name: /pages/i });
     const links = within(nav).getAllByRole("link");
-    expect(links.map((l) => l.textContent)).toEqual(["Trading", "Results", "Calendar", "How it works"]);
+    expect(links.map((l) => l.textContent))
+      .toEqual(["Trading", "Results", "Calendar", "How it works", "Getting started"]);
   });
 
   it("clicking Calendar switches instantly to the Calendar tab (CAL-08/UI-30)", async () => {
@@ -348,6 +361,15 @@ describe("App — nav (v1.71 four-tab commission)", () => {
     expect(await screen.findByTestId("how-it-works-page")).toBeInTheDocument();
     expect(await screen.findByTestId("guide-version-stamp")).toHaveTextContent("v1.72");
     expect(screen.queryByTestId("how-it-works-placeholder")).not.toBeInTheDocument();
+  });
+
+  it("clicking Getting started renders the ratified fifth tab with its OWN stamp (DOC-06/UI-32)", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("link", { name: "Getting started" }));
+    expect(await screen.findByTestId("getting-started-page")).toBeInTheDocument();
+    // v1.78 — this section's own stamp, not the guide's sibling v1.72 one
+    // (each tab banners against its own stamp; the two must never bleed).
+    expect(await screen.findByTestId("getting-started-version-stamp")).toHaveTextContent("v1.78");
   });
 
   it("the Calendar tab is not the Trading page — Outage drill/Flatten are hidden there too", async () => {

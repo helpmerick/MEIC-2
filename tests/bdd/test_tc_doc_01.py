@@ -25,10 +25,14 @@ Esc) are pinned once in frontend/src/components/ZoomableFigure.test.tsx, not
 re-verified through this indirection -- this scenario only pins that the
 flowchart is WIRED to it.
 
-The remaining two scenarios in the .feature (five-tab nav w/ "Getting
-started", and DOC-06's no-secret-leak contract) are UNBOUND here -- they are
-DOC-06/UI-32 content (later slice, not this one) and stay red; see the queue
-dispatch's "4 DOC reds remain (later slices)" note.
+DOC-06/UI-32 (doc 12 slice 6, v1.78): the remaining two scenarios --
+five-tab nav with "Getting started", and the no-secret-leak contract -- are
+now bound the same way, against GettingStartedPage.test.tsx and App.test.tsx
+(both in the `vitest_doc_result` run). Their backend halves (GET
+/getting-started's own v1.78 stamp parse, the two-section split of spec/12,
+the payload-is-exactly-the-hash-locked-spec-text structural secret pin, and
+the planted-.env-sentinel test) are pinned directly in
+tests/adapters/test_api_getting_started.py.
 """
 from __future__ import annotations
 
@@ -89,8 +93,46 @@ def _(vitest_doc_result):
     assert "carries no trading controls (DOC-05 read-only tab)" in output
 
 
-@then("the SPA's top-level tabs are exactly Trading, Results, Calendar, How it works")
+@then("the SPA's top-level tabs are exactly Trading, Results, Calendar, How it works, Getting started")
+def _(vitest_doc_result):
+    """UI-32 (v1.75 operator commission, slice 6): the nav is exactly FIVE
+    tabs in the ruled order -- App.test.tsx's nav test asserts the full
+    ordered list (an extra, missing, or reordered tab fails it), and the
+    dedicated click-through test pins that the fifth tab renders the real
+    GettingStartedPage with its own v1.78 stamp."""
+    rc, output = vitest_doc_result
+    assert rc == 0, output
+    assert "shows exactly the five nav tabs, in order" in output
+    assert ("clicking Getting started renders the ratified fifth tab with its OWN stamp "
+            "(DOC-06/UI-32)" in output)
+
+
+# --- TC-DOC-01 scenario 3: "Getting-started never leaks a secret" ------------
+# DOC-06/UI-32 (doc 12 slice 6, v1.78). Frontend halves bound below through
+# GettingStartedPage.test.tsx via the same vitest fixture; the backend halves
+# -- the served payload being byte-for-byte the hash-locked spec section's
+# text (the structural no-secret guarantee: the endpoint can only serve what
+# the spec lock proves contains no secrets), the planted-.env-sentinel never
+# leaking into either doc payload, and the two-section stamp independence --
+# are pinned directly in tests/adapters/test_api_getting_started.py.
+
+
+@then("the tab renders variable NAMES and explanations only")
 def _(vitest_doc_result):
     rc, output = vitest_doc_result
     assert rc == 0, output
-    assert "shows exactly the four nav tabs, in order" in output
+    assert "renders variable NAMES and where-to-obtain guidance only (DOC-06/UI-32)" in output
+
+
+@then("no current env value, password, token, or secret ever renders anywhere in it")
+def _(vitest_doc_result):
+    rc, output = vitest_doc_result
+    assert rc == 0, output
+    assert "never renders a value-shaped secret anywhere in the tab (DOC-06/UI-32)" in output
+
+
+@then("all five DOC-06 sections are present (the completeness contract)")
+def _(vitest_doc_result):
+    rc, output = vitest_doc_result
+    assert rc == 0, output
+    assert "all five DOC-06 sections are present (the completeness contract)" in output

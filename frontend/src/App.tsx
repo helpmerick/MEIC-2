@@ -4,6 +4,7 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { CalendarPage } from "./components/CalendarPage";
 import { ControlPanel } from "./components/ControlPanel";
 import { DayDrilldown } from "./components/results/DayDrilldown";
+import { GettingStartedPage } from "./components/GettingStartedPage";
 import { HowItWorksPage } from "./components/HowItWorksPage";
 import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
@@ -18,9 +19,10 @@ import { useTheme } from "./useTheme";
 export function App() {
   const { state, report, entries, activity, connected, error, optimistic, refresh } = useLiveBot();
   const [theme, toggleTheme] = useTheme();
-  // UI-27/CAL-08/UI-30/DOC-05: every non-Trading page is a separate client-
-  // side route sharing this one shell (header, auth, theme, mode tag) — never
-  // a new app. The v1.71 commission fixes the nav at exactly four tabs.
+  // UI-27/CAL-08/UI-30/DOC-05/UI-32: every non-Trading page is a separate
+  // client-side route sharing this one shell (header, auth, theme, mode tag)
+  // — never a new app. The v1.75 commission fixes the nav at exactly five
+  // tabs (Getting started joined the v1.71 four).
   const route = useHashRoute();
   const onTrading = route.page === "trading";
   // CAL-06 (v1.71): today's ET NO-TRADE label (or null), read straight off the
@@ -150,10 +152,11 @@ export function App() {
           <h1>MEIC<span className="dot">.</span></h1>
           <span className="muted">control panel</span>
         </div>
-        {/* UI-27/CAL-08/UI-30/DOC-05: instant client-side switching between
-            every page — a hash change, never a server round trip. Exactly
-            four tabs (the v1.71 commission): Trading | Results | Calendar |
-            How it works. */}
+        {/* UI-27/CAL-08/UI-30/DOC-05/UI-32: instant client-side switching
+            between every page — a hash change, never a server round trip.
+            Exactly five tabs, in the ruled order (v1.75 operator
+            commission): Trading | Results | Calendar | How it works |
+            Getting started. */}
         <nav className="app-nav" aria-label="pages">
           <a className={`nav-link ${onTrading ? "active" : ""}`} href="#/">Trading</a>
           <a className={`nav-link ${route.page === "results" || route.page === "results-day" ? "active" : ""}`}
@@ -161,6 +164,8 @@ export function App() {
           <a className={`nav-link ${route.page === "calendar" ? "active" : ""}`} href="#/calendar">Calendar</a>
           <a className={`nav-link ${route.page === "how-it-works" ? "active" : ""}`}
              href="#/how-it-works">How it works</a>
+          <a className={`nav-link ${route.page === "getting-started" ? "active" : ""}`}
+             href="#/getting-started">Getting started</a>
         </nav>
         <div className="spacer" />
         {onTrading && (
@@ -268,6 +273,8 @@ export function App() {
         <CalendarPage />
       ) : route.page === "how-it-works" ? (
         <HowItWorksPage />
+      ) : route.page === "getting-started" ? (
+        <GettingStartedPage />
       ) : (
         <ResultsPage entries={entries} />
       )}

@@ -26,7 +26,12 @@ import { api } from "../api";
 import type { GuideData } from "../types";
 import { ZoomableFigure } from "./ZoomableFigure";
 
-function slugify(text: string): string {
+// slugify/flattenText/buildToc/scrollToChapter/MermaidDiagram are exported
+// for GettingStartedPage.tsx (DOC-06/UI-32, doc 12 slice 6), which mirrors
+// this page's DOC-05 rendering over spec/12's OWN "# GETTING STARTED"
+// section — shared here rather than duplicated so the two tabs can never
+// drift apart in how they slug headings or render a ratified diagram.
+export function slugify(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, "")
@@ -38,14 +43,14 @@ function slugify(text: string): string {
 // almost always a single string here (the guide's headings and inline code
 // spans carry no nested markup) — this flattens whatever shape shows up
 // (string, number, array of the same) into plain text for slugging.
-function flattenText(node: unknown): string {
+export function flattenText(node: unknown): string {
   if (node === null || node === undefined) return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(flattenText).join("");
   return "";
 }
 
-interface TocEntry {
+export interface TocEntry {
   id: string;
   title: string;
 }
@@ -54,7 +59,7 @@ interface TocEntry {
  * (the ten DOC-03 chapters, plus "The master flowchart") — read straight out
  * of the fetched markdown, so it can never list a chapter the guide itself
  * doesn't have. */
-function buildToc(markdown: string): TocEntry[] {
+export function buildToc(markdown: string): TocEntry[] {
   const entries: TocEntry[] = [];
   const re = /^##\s+(.+)$/gm;
   let match: RegExpExecArray | null;
@@ -65,7 +70,7 @@ function buildToc(markdown: string): TocEntry[] {
   return entries;
 }
 
-function scrollToChapter(id: string): void {
+export function scrollToChapter(id: string): void {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -99,7 +104,7 @@ function useDomTheme(): "light" | "dark" {
  * client cannot influence, and (2) mermaid runs with securityLevel
  * "strict", its own sanitizing mode. Never point this component at any
  * other markdown source without revisiting both legs. */
-function MermaidDiagram({ code }: { code: string }) {
+export function MermaidDiagram({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const theme = useDomTheme();
