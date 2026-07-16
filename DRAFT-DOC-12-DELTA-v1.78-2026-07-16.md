@@ -1,25 +1,36 @@
-# DRAFT — DOC-12 delta package, v1.72 → v1.77
+# DRAFT — DOC-12 delta package, v1.72 → v1.78
 
 **Status: amendment-proposal for the adviser.** `spec/12-how-it-works.md` is
 hash-locked; nothing in it has been edited. This file lists, chapter by
 chapter, the exact prose the adviser should paste into the ratified guide so
-its rendered content matches spec v1.77 instead of the v1.72 it is currently
+its rendered content matches spec v1.78 instead of the v1.72 it is currently
 stamped with. Every delta below is sourced only from `spec/README.md`'s
-v1.73→v1.77 changelog entries and the underlying rule text in
+v1.73→v1.78 changelog entries and the underlying rule text in
 `spec/01-strategy-rules.md`, `spec/03-use-cases.md`, `spec/05-architecture-ddd.md`,
 `spec/11-trading-calendar.md`, and `spec/12-how-it-works.md` itself. The
 DOC-02 language standard (plain English, zero-background reader, rule IDs
 only as parenthetical citations) is maintained throughout. The house
-$4.00-credit example is **not** changed — no v1.73–v1.77 ruling altered its
+$4.00-credit example is **not** changed — no v1.73–v1.78 ruling altered its
 math; see Delta 5 for the one honest sentence that was added instead.
+
+**v1.78 verification (this refresh, 2026-07-16):** v1.78 ratified the
+Getting Started content INTO spec/12 — its entire diff to spec/12 is one
+purely additive hunk appending the new GETTING STARTED section after the
+guide (zero lines of the guide's chapters removed or changed; verified
+against the amendment commit's diff). It changes no operator-visible
+behaviour any guide chapter describes; the guide-facing consequence of the
+Getting-started tab's existence (v1.75, UI-32) was already carried by
+Delta 2's tab enumeration. **No new delta blocks were required for v1.78.**
+Every find-anchor below was re-verified byte-for-byte, and unique, against
+the current v1.78 spec/12 on 2026-07-16.
 
 ## Index of every delta, and every [ADVISER] marker
 
 | # | Chapter | Source ruling | Change |
 |---|---|---|---|
-| 1 | Version stamp line | — | "describes spec v1.72" → "describes spec v1.77" |
+| 1 | Version stamp line | — | "describes spec v1.72" → "describes spec v1.78" (stamp the changelog head at ratification time — see Delta 1's note) |
 | 2 | New paragraph before Ch. 1 | UI-29/30/32 (tab layout, v1.75) | Add the one place tabs are enumerated, naming Getting started |
-| 3 | Chapter 3 | NFR-06a | **No change** — already fully reflected since v1.72; nothing in v1.73–v1.77 touched it |
+| 3 | Chapter 3 | NFR-06a | **No change** — already fully reflected since v1.72; nothing in v1.73–v1.78 touched it |
 | 4 | Chapter 5 | ORD-09a (v1.74) | Add the one honest "what gets recorded" sentence |
 | 5 | Chapter 6 | ORD-09a (v1.74) | Add matching cross-reference sentence to the long-recovery-ladder paragraph |
 | 6 | Chapter 7 | v1.76 (drill placement) | Rewrite the outage-drill paragraph to state where the button now lives |
@@ -47,15 +58,24 @@ ground and carries several.)
 **Replace with:**
 
 ```
-# THE GUIDE (ratified content, v1.72 — describes spec v1.77; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.72 — describes spec v1.78; DOC-05 stamp)
 ```
+
+**Stamp the changelog head AT RATIFICATION TIME, not this file's number:**
+"v1.78" above is the head as of this refresh (2026-07-16), but the pending
+sandbox-removal ratification (the DOC-06 delta file alongside this one) may
+bump the spec again before this package lands. DOC-05 banners any mismatch
+between the stamped and running versions — a stamp one version stale at the
+moment of ratification would re-banner instantly, defeating the entire
+point of the pass. Whatever the changelog head reads on the day the adviser
+applies this package is the number that goes in the stamp.
 
 *(Only the "describes spec vX.YY" clause is in scope for this delta, per the
 commission. Note for the adviser: the "ratified content, v1.72" clause
 records when the base prose was last ratified as a whole; once this delta
-package itself is ratified, you may also want to bump that to v1.77 or to
-whatever version this ratification pass lands on — that's a judgment call
-for the ritual, not something this pass changes unilaterally.)*
+package itself is ratified, you may also want to bump that to the same
+ratification-time version — that's a judgment call for the ritual, not
+something this pass changes unilaterally.)*
 
 Separately, worth flagging (not a requested delta, just an observation): the
 document's own masthead line near the very top —
@@ -86,23 +106,32 @@ flowchart and before Chapter 1:
 This guide is itself one of five tabs across the top of the control panel:
 **Trading** (composing and watching the day), **Results** (the dashboard,
 Chapter 9), **Calendar** (Chapter 10), **How it works** (this guide), and
-**Getting started** (a separate, one-time walkthrough for setting the bot up
-on a new machine — this guide assumes that part is already done and picks up
-from there) (UI-29, UI-30, UI-32).
+**Getting started** (UI-29, UI-30, UI-32). If the bot isn't set up on this
+machine yet — no password chosen, nothing configured, nothing has ever
+traded — start with the Getting started tab: it walks that whole one-time
+setup end to end, and this guide assumes it's already done and picks up
+from there.
 ```
+
+*(Refresh note, 2026-07-16: verified this enumeration names all FIVE tabs
+including Getting started — it did from first draft, since v1.75 had
+already ruled the five-tab layout — and the closing sentence pointing
+first-time readers at the Getting-started tab was added per the operator's
+v1.78 refresh commission.)*
 
 ---
 
 ## Delta 3 — Chapter 3 / the password node — NO CHANGE
 
-Checked against every v1.73–v1.77 changelog entry: NFR-06a (the panel
+Checked against every v1.73–v1.78 changelog entry: NFR-06a (the panel
 password and the two-switch production opt-in) was ratified in **v1.72**,
 and the guide's Chapter 3 already states all of it correctly — the mandatory
 `MEIC_USER_PASSWORD`, the Locked/Unlocked control, and the two-switch
 production ritual (`MEIC_LIVE_IS_TEST` + `MEIC_ALLOW_PRODUCTION` plus the
 issuer assertion) are all present in the current Chapter 3 text and in the
 flowchart's `Access` node. Nothing in v1.73 (UI-31), v1.74 (ORD-09a/REC-01),
-v1.75 (DOC-06), v1.76 (drill placement), or v1.77 (CAL-09/DOC-05) touches
+v1.75 (DOC-06), v1.76 (drill placement), v1.77 (CAL-09/DOC-05), or v1.78
+(Getting Started content ratified into spec/12 — additive only) touches
 NFR-06a, the password, or the production switches. **No delta required.**
 
 ---
@@ -456,7 +485,7 @@ before falling back to a price aggressive enough to guarantee a fill
 
 ## Verified: no dollar-math changes needed anywhere else
 
-Checked every v1.73–v1.77 ruling against the guide's worked numbers
+Checked every v1.73–v1.78 ruling against the guide's worked numbers
 specifically for anything that would change a dollar figure the guide
 states as fact:
 
@@ -477,6 +506,10 @@ states as fact:
   amending for it, and no delta is proposed here for it — flagged for the
   adviser in case a future draft wants to add timeline-marker detail to
   Chapter 9.
+- **v1.78** (Getting Started content ratified into spec/12) — purely
+  additive to spec/12, setup-facing only; the run procedure, env template,
+  and go-live ritual it documents state no trading dollar the guide's
+  chapters carry. No dollar impact.
 
 The $4.00-credit house example (Chapter 1: $3.00/$0.50 put, $2.00/$0.50
 call, $4.00 net) and every dollar figure derived from it in Chapters 1 and 5
