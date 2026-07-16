@@ -178,10 +178,12 @@ def test_stop_fill_detector_drives_lex_with_a_real_quote_from_the_held_snapshot(
     marks + spot, and asserts recover() is actually invoked with a REAL
     Quote priced off those marks."""
     import asyncio
+    from datetime import datetime, timezone
     from decimal import Decimal as D
     from types import SimpleNamespace
 
     from meic.adapters.api.server import live_app
+    from meic.application.market_calendar import trading_day_str
     from meic.application.recover_long import Quote
     from meic.domain.chain import Mark
     from meic.domain.events import CondorFilled, FilledLeg, ShortStopped, StopPlaced
@@ -192,7 +194,19 @@ def test_stop_fill_detector_drives_lex_with_a_real_quote_from_the_held_snapshot(
     app = live_app()
     comp = app.state.composition
 
-    entry_id = "2026-07-10#1"
+    # The entry day is derived DYNAMICALLY (the same ET trading day the app
+    # itself will compute, via the one shared `trading_day_str` helper — the
+    # exact pattern the durability test below already uses). It was pinned
+    # "2026-07-10#1" until 2026-07-16, when the EC-STP-06 age cutoff
+    # (stop_fill_catchup_max_age_days, default 5, measured against the REAL
+    # clock) correctly aged the fixed date out of the catch-up window and the
+    # detector rightly skipped it — the production behaviour was correct; the
+    # TEST was time-anchored and expired. A dynamic-recent day keeps BOTH
+    # behaviours real: detection still runs THROUGH the live age gate (never
+    # cranked wide via the env dial), and the held-snapshot quote must still
+    # actually drive LEX.
+    entry_day = trading_day_str(datetime.now(timezone.utc))
+    entry_id = f"{entry_day}#1"
     call_short, call_long = "SPXW  260710C07550000", "SPXW  260710C07570000"
     comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.32"), legs=(
         FilledLeg(symbol="SPXW  260710P07505000", right="P", role="long", qty=1, price=D("0.10")),
