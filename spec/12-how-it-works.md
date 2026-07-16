@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.71, operator-commissioned 2026-07-15.** A complete, non-technical
+**v1.79 (operator-commissioned 2026-07-15; current through spec v1.79).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -59,7 +59,7 @@ exactly what is happening and why.
   as an annotated branch. Rendered alongside the prose; every node uses the
   chapter vocabulary, not rule IDs.
 
-- **DOC-06 Getting Started (v1.75, operator-commissioned — the freeze's final admission).** A FIFTH TAB ("Getting started", UI-32) telling a new operator how to configure the bot on their machine, DOC-02 language standard. Required sections (this list is the completeness contract): (1) prerequisites (what must be installed, how to start the server, exactly as the current build actually runs); (2) the `.env` file — an ANNOTATED TEMPLATE showing every variable NAME with a plain-English explanation of what it is and where to obtain it (panel password NFR-06a; TT_CERT_*/TT_PROD_* provider secret, refresh token, account from tastytrade's OAuth settings; MEIC_LIVE_IS_TEST; MEIC_ALLOW_PRODUCTION explained as the deliberate two-switch production ritual; data dir) — the tab NEVER renders a current value or any secret, template only, and states the ratified handling rule: credentials are typed by hand into .env on the trading machine, never pasted into chats, agents, or tickets, and rotation = edit .env + restart; (3) the numbers live mode refuses to trade without (max_day_risk, reporting_capital_base, min_buying_power) and what each protects; (4) the first-run sequence: start → unlock with the password → confirm PAPER (fresh installs boot disarmed, Confirm Live off, paper) → read How-it-works → compose → pre-flight → arm in paper; then calendar import + standing blackout rules, and the outage drill once before trusting live (found under the collapsed "Operational tools" disclosure on the trading tab, v1.76); (5) going live: the two-switch ritual, the three trade-enabling states, and a plain warning that live means real money at the broker within minutes of arming. Content follows the doc-12 build order: agent drafts FROM THE RATIFIED SPEC and the build's true run procedure, adviser verifies, operator ratifies, then it renders (version-stamped per DOC-05).
+- **DOC-06 Getting Started (v1.75, operator-commissioned — the freeze's final admission).** A FIFTH TAB ("Getting started", UI-32) telling a new operator how to configure the bot on their machine, DOC-02 language standard. Required sections (this list is the completeness contract): (1) prerequisites (what must be installed, how to start the server, exactly as the current build actually runs); (2) the `.env` file — an ANNOTATED TEMPLATE showing every variable NAME with a plain-English explanation of what it is and where to obtain it (panel password NFR-06a; TT_PROD_* provider secret, refresh token, account from tastytrade's OAuth settings (live-only v1.79 — TT_CERT_ retired from the operator template); MEIC_LIVE_IS_TEST; MEIC_ALLOW_PRODUCTION explained as the deliberate two-switch production ritual; data dir) — the tab NEVER renders a current value or any secret, template only, and states the ratified handling rule: credentials are typed by hand into .env on the trading machine, never pasted into chats, agents, or tickets, and rotation = edit .env + restart; (3) the numbers live mode refuses to trade without (max_day_risk, reporting_capital_base, min_buying_power) and what each protects; (4) the first-run sequence: start → unlock with the password → confirm PAPER (fresh installs boot disarmed, Confirm Live off, paper) → read How-it-works → compose → pre-flight → arm in paper; then calendar import + standing blackout rules, and the outage drill once before trusting live (found under the collapsed "Operational tools" disclosure on the trading tab, v1.76); (5) going live: the two-switch ritual, the three trade-enabling states, and a plain warning that live means real money at the broker within minutes of arming. Content follows the doc-12 build order: agent drafts FROM THE RATIFIED SPEC and the build's true run procedure, adviser verifies, operator ratifies, then it renders (version-stamped per DOC-05).
 - **DOC-05 Rendering (UI-29).** A separate client-side route in the existing
   SPA, rendered from this document (single source), stamped "describes spec
   vX.YY" — if the running build's spec version differs from the stamped one,
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.72 — describes spec v1.72; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.79 — describes spec v1.79; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -76,6 +76,10 @@ node uses plain-English chapter vocabulary, not rule IDs, per DOC-04; the
 gates that matter most for correctness — the market-halt check and the
 calendar blackout check — are called out explicitly, including that they
 lean in *opposite* directions on purpose (see Chapters 4 and 10 for why).
+This diagram, and every other diagram in this guide, can be clicked to open
+a full-screen view with pan and zoom (scroll or pinch), with explicit zoom
+controls, for anyone who finds the default size too small to read
+comfortably; the full-screen view closes with a keypress (DOC-05).
 
 ```mermaid
 flowchart TD
@@ -167,6 +171,15 @@ flowchart TD
 ```
 
 ---
+
+This guide is itself one of five tabs across the top of the control panel:
+**Trading** (composing and watching the day), **Results** (the dashboard,
+Chapter 9), **Calendar** (Chapter 10), **How it works** (this guide), and
+**Getting started** (UI-29, UI-30, UI-32). If the bot isn't set up on this
+machine yet — no password chosen, nothing configured, nothing has ever
+traded — start with the Getting started tab: it walks that whole one-time
+setup end to end, and this guide assumes it's already done and picks up
+from there.
 
 ## 1. What the bot trades, and the shape of the trade
 
@@ -400,6 +413,14 @@ deliberate outcome:
   the moment the trade opened, so the bot refuses that entry outright before
   it ever executes (STP-02c).
 
+One honest note belongs here before moving on: the dollars above are the
+trade's built-in math — target numbers the design is built around. What
+actually gets written to the permanent record for every stop, buyback, and
+long-leg sale is always the broker's own real execution price, never the
+bot's order price or an estimate along the way (ORD-09a) — so the real
+figures on a given day can differ slightly, usually in your favor, from the
+clean percentages described here.
+
 An operator can add a small dollar markup to the trigger to pre-credit some of
 the expected long-leg recovery, and can switch the trigger math to be based
 on each leg's own price instead of the whole trade's total — but the
@@ -430,6 +451,52 @@ selling that side's surviving long immediately (STP-08a). *Never:* it never
 re-processes a side that's already finished, and it never sells a long a
 second time — a sold long stays sold.
 
+**What LEX means.** This chapter, the activity feed, and the day report all
+use the short name **LEX** for the mechanism this page describes. It names
+the **long exit** — the rulebook's own title for this machinery is "long-leg
+exit after a short stop" (LEX-01 through LEX-09) — and the whole idea fits
+in a paragraph.
+
+Every side of the condor is a pair: a short option that collected money up
+front, and a long option bought further out as that short's insurance. When
+a side stops out, the broker's stop order buys back the **short** — but the
+insurance, the long, is still sitting in the account, and because the market
+just moved toward it, it is now worth *more* than the small amount it cost
+at entry. LEX exists for exactly that moment: the instant a stop fills, it
+sells that side's surviving long and turns its remaining value back into
+cash (LEX-01).
+
+It sells carefully, not desperately: it offers the long at the market's
+midpoint and, if nobody takes it, lowers the asking price a notch every
+fifteen seconds toward what buyers are actually bidding, a bounded number of
+times, before switching to a price aggressive enough to be certain of
+filling (LEX-03, LEX-05). It never dumps the leg with an uncontrolled
+market order, and it never sells below what the option is genuinely worth —
+the higher of the current best bid and the option's built-in payout value
+(LEX-04, LEX-05). If there is truly no buyer at all, it does not invent a
+price: it rests a single sell order at the option's floor value and raises
+a one-time critical alert, so a degraded-liquidity recovery is announced
+rather than discovered (EC-LEX-04, EC-LEX-08).
+
+The one rule it never breaks: after a stop-out, the surviving long is
+**always** sold — there is no "too cheap to bother," and the leg is never
+abandoned to rot on the book (LEX-07). The single deliberate exception is
+not a stop-out at all: when a side is closed early by the decay buyback
+because its short had already decayed to nearly nothing, that side's
+far-out long — by then worth essentially zero — is intentionally left to
+expire as a free hedge (DCY-03). The always-sell promise is about
+stop-outs, where the long still has real value.
+
+And what the money means, on the house trade from Chapter 1: the condor
+banked $4.00 up front, and a one-sided stop-out pays $3.80 to close the
+stopped short — a guaranteed minimum of $20 kept, before costs (Chapter 5).
+Whatever LEX then recovers for that side's surviving long — an option that
+cost just $0.50 at entry and has been gaining value as the market moved
+toward it — is real dollars added on top of that minimum (STP-02). That
+recovery is why a one-sided stop day ends better than its guaranteed floor,
+and why the both-sides "whipsaw" loss in Chapter 5 usually lands below its
+stated maximum.
+
 **The long-recovery ladder, and its floor orders.** *Watches:* the market
 price of a stopped side's surviving long leg. *Acts:* it sells that long
 starting at the market midpoint, walking the price down toward the buyer's
@@ -437,7 +504,9 @@ price every fifteen seconds if unfilled, for a bounded number of steps,
 before falling back to a price aggressive enough to guarantee a fill
 (LEX-01 through LEX-06). Every stopped-out long is **always** sold — there is
 no "too cheap to bother" threshold, because a residual long is still risk
-sitting on the book (LEX-07). If there is truly no buyer at any price and no
+sitting on the book (LEX-07). Whatever price it actually sells at is exactly
+the number written to that day's permanent record — never the ladder's
+asking price along the way (ORD-09a, Chapter 5). If there is truly no buyer at any price and no
 way to price the leg at all, it rests a single minimal order (an "intrinsic
 floor" order) and raises a one-time critical alert rather than inventing a
 price out of nothing (EC-LEX-08). *Never:* it never sells below what the
@@ -543,7 +612,14 @@ Flatten" button) (RSK-01a, RSK-01b).
 **The outage drill.** A supported way to prove, on demand, that the stops
 really do live at the broker and not inside the bot: the operator can
 deliberately sever the bot's own connections for a short window and watch the
-stop orders keep resting, untouched, the whole time (UC-12).
+stop orders keep resting, untouched, the whole time (UC-12). The button that
+starts it lives inside a collapsed **"Operational tools"** section on the
+Trading tab — tucked out of the way so a brand-new install's screen shows
+only ordinary trading controls, one click to reveal, with the same typed
+"DRILL" confirmation as before. It never goes away: the Getting Started
+guide (Chapter 3 of that tab's own walkthrough) sends every new operator
+here to run it once before trusting live mode, and it is worth re-running
+after any tastytrade API change.
 
 Close, Flatten, and every scheduled or watcher-driven exit all funnel through
 the exact same one closing procedure inside the bot, so a manual close and an
@@ -585,7 +661,11 @@ alert only, precisely because an unlogged standdown once let a real failure
 hide behind a plausible-sounding explanation for days (OWN-09, OWN-10,
 OWN-11, OWN-12).
 
-**What the bot does when it restarts mid-day:** it rebuilds its entire
+**What the bot does when it restarts mid-day:** before acting on anything at
+all — a fill, a stop, a new trade — the bot writes it to its own permanent
+record first; if that write itself were ever to fail, the bot stops rather
+than act on something it can't actually prove happened (REC-01). That
+discipline is what makes the rest of this possible: it rebuilds its entire
 picture of the day from its own saved history, then checks that picture
 against what the broker actually shows. Any open position it recognizes gets
 its management resumed — a still-missing stop is placed immediately, a
@@ -634,16 +714,48 @@ event recording both the old and new value, plus an alert, so a disagreement
 is always something the operator can go inspect, never something that simply
 changes behind their back (RPT-15).
 
+**The activity feed** — the running list of everything the bot has done —
+groups its entries under a date heading for each day, so two different
+trading days are never visually mistaken for one continuous stream; each row
+still shows its own time within that day. Hover over any entry and it
+explains itself in the same plain language as this guide — including
+spelling out any acronym in the row (LEX, TPF, TPT, decay, standdown,
+reconcile, and the rest) as if you'd never seen it before, not merely
+confirming that something happened. Every kind of event the feed can show
+is required to have one of these explanations — an event type with none is
+treated as a defect, the same as a chapter of this guide going unwritten
+(UI-31).
+
 ## 10. The calendar
 
 The calendar is a year-view list of scheduled market-moving events — the
 Fed's rate decisions, and the government's inflation, jobs, and growth
-releases, imported from official published schedules; Fed-speaker
-appearances are shown too, but honestly labeled as a best-effort layer, since
-no reliable official machine feed exists for them (CAL-01). The calendar
-never invents events for a day it has no data for — it shows "no data
-imported" instead of a blank that could be mistaken for "nothing happening"
-(CAL-02).
+releases, kept up to date automatically; Fed-speaker appearances are shown
+too, but honestly labeled as a best-effort layer, since no reliable official
+machine feed exists for them (CAL-01). The calendar never invents events for
+a day it has no data for — it shows "no data imported" instead of a blank
+that could be mistaken for "nothing happening" (CAL-02).
+
+**Kept current on its own, from official sources only.** Once a day, the
+bot fetches the official published calendars directly from the Federal
+Reserve, the Bureau of Labor Statistics, and the Bureau of Economic
+Analysis — the same three government sources a human would check by hand —
+and folds in anything new (CAL-09). A few fail-safe rules govern this so an
+automatic feed can never quietly make the calendar less trustworthy than a
+human-maintained one: a fetch that comes back malformed, empty, or
+implausible is thrown out **whole**, never allowed to partially overwrite or
+thin out what's already there; if a date that was previously on the calendar
+is simply missing from a new fetch, it is never silently dropped — it's
+marked **disputed** and flagged for you, and any no-trade tag on it stays in
+force until you say otherwise. Every fetch — successful or rejected — is
+logged, and the calendar raises a persistent alert if it fails several days
+in a row. This automatic refresh can be switched off if you'd rather manage
+the calendar by hand entirely; either way, pasting in a table of dates
+yourself remains available as a fallback at all times. And to be clear about
+what this feature does and doesn't change: it makes the calendar more
+convenient and more current, not more authoritative — you're still the one
+responsible for knowing what's on the macro calendar; this just does more of
+the legwork for you.
 
 The operator can tag any day "no-trade," with a label (defaulting to the
 event's own name, like "FOMC"), and can also set a standing rule such as
@@ -676,7 +788,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.78 — describes spec v1.78 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.79 — describes spec v1.79 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 
@@ -739,8 +851,7 @@ in a copy of this table anywhere they could be seen by anyone else):
 | Variable name | What it is | Where you get it |
 |---|---|---|
 | `MEIC_USER_PASSWORD` | The password that unlocks this control panel. Nothing that changes anything — arming, saving a schedule, firing an entry, closing a trade — is accepted until the panel is unlocked with it. The **live** build will not finish starting without this set at all (NFR-06a). | You choose this yourself. Pick something only you know; it is not issued by anyone. |
-| `TT_CERT_*` (a group of variables) | Your tastytrade **practice/sandbox** credentials: a provider secret, a refresh token, and an account identifier, used only for practice-mode/contract testing against tastytrade's non-real-money sandbox. [the literal names: `TT_CERT_PROVIDER_SECRET`, `TT_CERT_REFRESH_TOKEN`, `TT_CERT_ACCOUNT`] | tastytrade's own OAuth application settings, in your tastytrade developer/API account area — request sandbox (certification) credentials there. |
-| `TT_PROD_*` (a group of variables) | The same kind of credentials — a provider secret, a refresh token, an account identifier — but for your **real, production** tastytrade account. These are what the live build authenticates with. [the literal names: `TT_PROD_PROVIDER_SECRET`, `TT_PROD_REFRESH_TOKEN`, `TT_PROD_ACCOUNT`] | The same tastytrade OAuth application settings, but the production application/credentials, not the sandbox ones. |
+| `TT_PROD_*` (a group of variables) | Your broker credentials: a provider secret, a refresh token, and an account identifier, all for your **real, production** tastytrade account. These are the only broker credentials this bot asks you for — with the two production switches below set, the live build reads exactly this group and nothing else, so a fresh instance set up to trade real money never enters practice or test credentials of any kind. [the literal names: `TT_PROD_PROVIDER_SECRET`, `TT_PROD_REFRESH_TOKEN`, `TT_PROD_ACCOUNT`; code-verified: credential selection is `kind = "CERT" if is_test else "PROD"` in server.py — with the production switches set, only the `TT_PROD_*` names are read, and `TT_CERT_*` appears nowhere else in production code] | tastytrade's own OAuth application settings, in your tastytrade developer/API account area — the production application and its credentials. |
 | `MEIC_LIVE_IS_TEST` | The first of the two deliberate switches that must both be set before the bot will ever place a real order (Section 5). It must be explicitly set to mean "this is not a test" before production trading is even possible — one switch alone is never enough (NFR-06a). | You set this yourself, deliberately, only when you intend to go live. Leave it alone otherwise. |
 | `MEIC_ALLOW_PRODUCTION` | The second of the two deliberate switches (Section 5) — a separate, explicit opt-in that must also be set, alongside `MEIC_LIVE_IS_TEST`, before production trading is possible (NFR-06a). | Same as above — you set this yourself, only when you deliberately mean to. |
 | *(data directory location)* | Where the bot keeps its permanent, durable record of everything: armed/disarmed state, the schedule, every trade and event ever logged, calendar tags, and more — everything that must survive a restart exactly as it was (REC-07). [`MEIC_DATA_DIR` — defaults to the `data/` folder inside the project] | Chosen by you (or left at its default) — a folder on the trading machine with enough disk space that you back up like any other important data. |
@@ -820,10 +931,19 @@ loose on your actual brokerage account requires **two separate, deliberate
 switches in its configuration**, not one — `MEIC_LIVE_IS_TEST` must be
 explicitly set to mean "this is not a test," **and** `MEIC_ALLOW_PRODUCTION`
 must also be explicitly turned on. The bot additionally double-checks, on
-its own, that the broker credentials it was given are actually production
-credentials and not sandbox ones. Flip only one of these and the bot refuses,
+its own, that the broker credentials it was given really are production
+credentials. Flip only one of these and the bot refuses,
 with a plain explanation of what's missing — by design, there is no way to
 end up live by mistake (NFR-06a).
+
+One honest caveat, so the credentials story above stays true without fine
+print: out of the box, `MEIC_LIVE_IS_TEST` is set to "this IS a test" — the
+safe direction. If you start the live build without completing the
+two-switch ritual, it will therefore ask for test-account credentials this
+guide doesn't cover, and refuse to touch real money. Completing the ritual
+is exactly what makes those unnecessary: with both switches deliberately
+set, the bot reads your real-account credentials from Section 2's template,
+and nothing else, ever.
 
 **The plain warning:** once every switch above is set, live means live —
 the very next entry your schedule fires will be a real order, for real
