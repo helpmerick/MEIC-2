@@ -97,6 +97,13 @@ export interface ActivityLine {
   // preceding item's day).
   at?: string | null;
   date?: string | null;
+  // UI-31 (v1.73, queue slice 5, additive): the backend event-class name
+  // (e.g. "LongSold") this line was rendered from -- app.py's `_describe`
+  // table is the authority on what the feed can ever show. Looked up in
+  // activityVocabulary.ts for this row's hover tooltip; absent on a row the
+  // caller didn't populate (e.g. a hand-built test fixture) -- never
+  // fabricated, so that row simply renders with no tooltip.
+  type?: string;
 }
 
 export interface Snapshot {

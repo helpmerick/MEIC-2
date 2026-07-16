@@ -95,6 +95,10 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     });
 
     render(<App />);
+    // v1.76: the drill button lives inside the collapsed "Operational tools"
+    // disclosure -- open it first (see the disclosure describe block below
+    // for the collapsed-by-default/aria-expanded coverage itself).
+    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
     await userEvent.click(screen.getByRole("button", { name: /outage drill/i }));
 
     expect(spy).toHaveBeenCalled();
@@ -249,10 +253,61 @@ describe("App — Results routing (UI-27)", () => {
 
   it("the Trading page keeps its Outage drill / Flatten all buttons; Results does not", async () => {
     render(<App />);
+    // v1.76: Operational tools is collapsed by default -- open it to reach
+    // the drill button (still present, never removed).
+    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
     expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /flatten all/i })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Results" }));
     await screen.findByTestId("results-page");
+    expect(screen.queryByRole("button", { name: /operational tools/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
+  });
+});
+
+// v1.76 (operator-ruled UI placement): the UC-12 outage-drill button moves
+// into a collapsed "Operational tools" disclosure on the Trading tab --
+// hidden by default, discoverable via DOC-06's first-run sequence, the
+// typed-DRILL gate (runOutageDrill in App.tsx) entirely untouched. Removal
+// was rejected outright (the drill is a mandated first-run/post-API-change
+// proof) -- these pin that it is collapsed, that it is reachable with a
+// click AND with a keyboard, and that it is never actually gone.
+describe("App — Operational tools disclosure (v1.76)", () => {
+  it("starts collapsed -- the outage drill button is not in the document until opened", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: /operational tools/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
+  });
+
+  it("clicking the toggle reveals the drill button and flips aria-expanded", async () => {
+    render(<App />);
+    const toggle = screen.getByRole("button", { name: /operational tools/i });
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /outage drill/i })).not.toBeInTheDocument();
+  });
+
+  it("is keyboard-operable -- a real <button>, opened via Enter with no mouse", async () => {
+    render(<App />);
+    const toggle = screen.getByRole("button", { name: /operational tools/i });
+    toggle.focus();
+    expect(toggle).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /outage drill/i })).toBeInTheDocument();
+  });
+
+  it("the drill button never removed -- always reachable inside the disclosure, gate untouched", async () => {
+    vi.spyOn(window, "prompt").mockReturnValue(null); // paper mode never prompts anyway
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /operational tools/i }));
+    const drill = screen.getByRole("button", { name: /outage drill/i });
+    expect(drill).toBeInTheDocument();
+    expect(drill).not.toBeDisabled();
   });
 });
 

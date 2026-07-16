@@ -79,6 +79,24 @@ def vitest_ui07_result():
 
 
 @pytest.fixture(scope="session")
+def vitest_ui09_result():
+    """TC-UI-09's frontend halves (UI-31, v1.73 queue slice 5): the activity
+    feed's sticky ET date separators, per-row ET wall-clock times, and hover/
+    focus/tap tooltips explaining every event (ActivityFeed.test.tsx), plus
+    the app.py-authoritative completeness gate (activityVocabulary.test.ts) --
+    same real-vitest binding strategy as `vitest_result` above. Session-scoped
+    for the same startup-cost reason."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/components/ActivityFeed.test.tsx",
+         "src/activityVocabulary.test.ts", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=180,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output
+
+
+@pytest.fixture(scope="session")
 def vitest_doc_result():
     """TC-DOC-01's frontend halves (doc 12, slice 4, v1.72): the how-it-works
     tab's DOC-05 single-source rendering (version stamp, mismatch banner,

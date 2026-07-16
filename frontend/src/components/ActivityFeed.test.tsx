@@ -1,7 +1,7 @@
 // Day-separator feature (operator request 2026-07-15): the ACTIVITY feed must
 // clearly separate days — a divider row whenever consecutive items fall on
 // different ET trading days (DAY-03).
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ActivityFeed } from "./ActivityFeed";
@@ -66,5 +66,59 @@ describe("ActivityFeed day separators", () => {
     expect(sep).toHaveClass("feed-day-separator");
     expect(sep.querySelector(".feed-icon")).toBeNull();
     expect(sep.querySelector(".feed-entry")).toBeNull();
+  });
+
+  // UI-31 (v1.73, queue slice 5): the separator must stay visible while the
+  // feed scrolls -- `.feed` is the scrolling ancestor and the separator is
+  // its direct <li> child, so sticky needs no other container fix. Asserted
+  // via the INLINE style (not the styles.css rule) because vitest.config.ts
+  // runs with `css: false` -- an external stylesheet never reaches jsdom.
+  it("positions the day separator sticky within the feed's own scroll container", () => {
+    const activity: ActivityLine[] = [line({ entry: "2026-07-14#1" })];
+    render(<ActivityFeed activity={activity} />);
+    const sep = screen.getByText(/Tuesday 14 July 2026/);
+    expect(sep.style.position).toBe("sticky");
+    expect(sep.style.top).toBe("0px");
+  });
+});
+
+describe("ActivityFeed per-row ET time (UI-31)", () => {
+  it("shows the row's own ET wall-clock time, derived from its `at` instant via instantToZone", () => {
+    // 2026-07-14T15:31:00Z is 11:31 ET (EDT, UTC-4 in July) -- the same
+    // conversion the day-grouping logic already trusts (time.ts).
+    const activity: ActivityLine[] = [
+      line({ label: "Entry filled", entry: "2026-07-14#1", at: "2026-07-14T15:31:00Z" }),
+    ];
+    render(<ActivityFeed activity={activity} />);
+    expect(screen.getByText("11:31")).toHaveClass("feed-time");
+  });
+
+  it("shows nothing when the row has no `at` -- never fabricates a time", () => {
+    const activity: ActivityLine[] = [line({ label: "Day armed", date: "2026-07-13" })];
+    render(<ActivityFeed activity={activity} />);
+    const row = screen.getByText("Day armed").closest("li");
+    expect(row?.querySelector(".feed-time")).toBeNull();
+  });
+});
+
+describe("ActivityFeed hover tooltips explain every event (UI-31, TC-UI-09)", () => {
+  it("a known event type gets a styled, focus- and tap-capable tooltip -- never a native title", async () => {
+    const activity: ActivityLine[] = [
+      line({ label: "Long sold (LEX)", entry: "2026-07-14#1", type: "LongSold" }),
+    ];
+    render(<ActivityFeed activity={activity} />);
+    const row = screen.getByText("Long sold (LEX)").closest("li")!;
+    expect(row.querySelector("[title]")).toBeNull();
+
+    const trigger = within(row).getByRole("button", { name: /explain: long sold \(lex\)/i });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/long exit/i);
+  });
+
+  it("a row with no recognised type renders no tooltip -- never a fabricated explanation", () => {
+    const activity: ActivityLine[] = [line({ label: "Mystery event", entry: "2026-07-14#1" })];
+    render(<ActivityFeed activity={activity} />);
+    const row = screen.getByText("Mystery event").closest("li")!;
+    expect(within(row).queryByRole("button", { name: /explain:/i })).toBeNull();
   });
 });

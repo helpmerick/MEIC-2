@@ -30,6 +30,12 @@ export function App() {
   const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
   const [drill, setDrill] = useState<OutageDrill | null>(null);
   const [drilling, setDrilling] = useState(false);
+  // v1.76: the UC-12 outage-drill button lives inside a collapsed
+  // "Operational tools" disclosure, hidden from a brand-new install by
+  // default -- collapsed is the initial/every-mount state, never persisted,
+  // so a fresh page load always starts closed (DOC-06's first-run sequence
+  // is what sends a new operator here to open it once).
+  const [operationalToolsOpen, setOperationalToolsOpen] = useState(false);
 
   const flash = useCallback((text: string, kind: "ok" | "err") => {
     setToast({ text, kind });
@@ -159,10 +165,35 @@ export function App() {
         <div className="spacer" />
         {onTrading && (
           <>
-            <button className="btn drill-btn" onClick={runOutageDrill} disabled={drilling}
-                    title="UC-12: simulate a bot outage and verify stops stay working">
-              {drilling ? <span className="spin" /> : null}{drilling ? "Drilling…" : "Outage drill"}
-            </button>
+            {/* v1.76 (operator-ruled UI placement): the UC-12 outage-drill
+                button moves into a COLLAPSED "Operational tools" disclosure
+                -- hidden by default, one click to reveal, never removed
+                (DOC-06's first-run sequence sends new operators here to run
+                it once before trusting live; the drill's own typed-DRILL
+                confirmation gate in runOutageDrill above is untouched).
+                Proper disclosure semantics: a real <button> (native Enter/
+                Space keyboard activation) with aria-expanded + aria-controls
+                naming the panel it reveals. Nothing else moves in here --
+                Flatten all stays exactly where it was. */}
+            <div className="operational-tools">
+              <button
+                type="button"
+                className="btn operational-tools-toggle"
+                aria-expanded={operationalToolsOpen}
+                aria-controls="operational-tools-panel"
+                onClick={() => setOperationalToolsOpen((open) => !open)}
+              >
+                Operational tools {operationalToolsOpen ? "▲" : "▼"}
+              </button>
+              {operationalToolsOpen && (
+                <div id="operational-tools-panel" className="operational-tools-panel">
+                  <button className="btn drill-btn" onClick={runOutageDrill} disabled={drilling}
+                          title="UC-12: simulate a bot outage and verify stops stay working">
+                    {drilling ? <span className="spin" /> : null}{drilling ? "Drilling…" : "Outage drill"}
+                  </button>
+                </div>
+              )}
+            </div>
             <button className="btn danger flatten-btn" onClick={flattenAll} title="Close every open entry (typed confirmation)">
               Flatten all
             </button>

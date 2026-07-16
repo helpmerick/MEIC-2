@@ -321,3 +321,29 @@ def test_activity_both_null_when_the_event_has_neither():
     assert line["at"] is None
     assert line["date"] is None
     assert line["entry"] == ""
+
+
+def test_activity_carries_the_event_type_key():
+    """UI-31 (v1.73, queue slice 5): every /activity line carries the additive
+    `type` field = the domain event's CLASS NAME, exactly as it keys the
+    `_describe` table. The frontend's tooltip vocabulary
+    (frontend/src/activityVocabulary.ts) looks explanations up by THIS key --
+    never by the human-readable `label`, which is free to reword. Pinned
+    against the REAL app response (journal real events through create_app,
+    read the real payload) so the frontend-backend contract isn't proven only
+    by regex-over-source and hand-built fixtures."""
+    from meic.domain.events import ShortStopped
+
+    client, _state, events = _client()
+    events.append(DayArmed(date="2026-07-16", entry_count=1))
+    events.append(CondorFilled(entry_id="2026-07-16#1", net_credit=D("4.00"),
+                               at="2026-07-16T14:31:00+00:00"))
+    events.append(ShortStopped(entry_id="2026-07-16#1", side="PUT",
+                               fill=D("3.80"), slippage=D("0.00"),
+                               at="2026-07-16T18:05:00+00:00"))
+    lines = client.get("/activity").json()
+    # newest-first: ShortStopped, CondorFilled, DayArmed
+    assert [line["type"] for line in lines] == ["ShortStopped", "CondorFilled", "DayArmed"]
+    # and the key is present as a real field on every line, alongside the label
+    for line in lines:
+        assert isinstance(line["type"], str) and line["type"]

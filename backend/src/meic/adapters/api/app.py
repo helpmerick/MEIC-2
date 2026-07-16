@@ -215,6 +215,16 @@ def _describe(ev: Any) -> dict[str, str | None] | None:
             bits.append(f"{sym}${v}")
     return {
         "icon": icon, "label": label, "entry": entry, "detail": " · ".join(bits),
+        # UI-31 (v1.73, queue slice 5, additive): the event-type KEY itself,
+        # so the frontend can look up this exact row's plain-English hover
+        # explanation in its own vocabulary map (activityVocabulary.ts) by a
+        # stable identifier -- never by matching the human-readable `label`
+        # text, which is free to reword without breaking the tooltip lookup.
+        # This dict's own `table` above is the completeness test's authority:
+        # frontend/src/activityVocabulary.test.ts reads THIS SOURCE FILE and
+        # fails, naming the event type, the moment one exists here with no
+        # matching vocabulary entry (TC-UI-09 scenario 3).
+        "type": name,
         # UI feature (2026-07-15): additive read-model fields so the frontend
         # ACTIVITY feed can group items by day HONESTLY, without guessing.
         # `at` mirrors the event's own ORD-11 lifecycle instant when the event

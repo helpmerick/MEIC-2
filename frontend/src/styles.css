@@ -336,13 +336,23 @@ body {
 .feed-label { font-weight: 600; }
 .feed-entry { font-size: 11px; font-weight: 700; color: var(--accent); background: rgba(124,156,255,0.12); padding: 1px 7px; border-radius: 5px; }
 .feed-detail { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+/* UI-31 (v1.73, queue slice 5): each row's own ET wall-clock time, HH:MM,
+   sitting right after the icon and before the label. */
+.feed-time { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
 /* Day separator (operator request 2026-07-15): a full-width, non-clickable
    divider row — visually distinct from a .feed-line by STRUCTURE (small-caps
    text row, no icon/entry/detail columns), so UI-26 holds without colour.
    Amber (operator follow-up 2026-07-15, "colour the lines in yellow") is
    ADDITIVE emphasis on top of that structure: the --warn/--warn-dim token
    pair already reads in BOTH themes (#fbbf24 on dark, #b45309 on light —
-   the same pair .pill.warn and .demo-note use). */
+   the same pair .pill.warn and .demo-note use).
+   STICKY (UI-31, v1.73 slice 5): `.feed` is the scrolling ancestor
+   (overflow-y: auto below) and each separator is its DIRECT <li> child, so
+   `position: sticky` here needs no other container fix — it holds at the top
+   of `.feed`'s own scrollbox as newer rows scroll past it. `top`/`z-index`
+   are ALSO set inline in ActivityFeed.tsx (redundant in a real browser,
+   deliberate for jsdom: vitest.config.ts runs with `css: false`, so a test
+   asserting sticky positioning reads the inline style, not this rule). */
 .feed-day-separator {
   padding: 7px 6px 5px;
   font-size: 11px;
@@ -353,6 +363,9 @@ body {
   background: var(--warn-dim);
   border-bottom: 1px solid var(--warn);
   border-radius: 5px 5px 0 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .feed-day-separator:not(:first-child) { margin-top: 8px; }
 .flash-in { animation: flashin 0.6s ease; }
@@ -380,6 +393,16 @@ body {
 .toast.ok { border-color: rgba(52,211,153,0.4); color: var(--good); }
 .toast.err { border-color: rgba(248,113,113,0.45); color: var(--bad); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* --- v1.76 Operational tools disclosure (houses the UC-12 outage drill) -- */
+.operational-tools { position: relative; }
+.operational-tools-toggle { padding: 7px 13px; font-size: 12px; font-weight: 700; }
+.operational-tools-panel {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  background: var(--card-solid); border: 1px solid var(--line-strong);
+  border-radius: 10px; box-shadow: var(--shadow); min-width: 170px;
+}
 
 /* --- UC-12 outage drill -------------------------------------------------- */
 .drill-btn { padding: 7px 13px; font-size: 12px; font-weight: 700; }
