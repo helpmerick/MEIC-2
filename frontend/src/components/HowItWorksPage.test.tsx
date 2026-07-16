@@ -162,6 +162,31 @@ describe("HowItWorksPage — DOC-05 single-source rendering", () => {
     expect(flowchart.closest("pre")).toBeNull();
   });
 
+  it("the master flowchart is clickable to a full-screen pannable zoomable view (DOC-05, v1.77)", async () => {
+    // TC-DOC-01's v1.77 zoom scenario: "the operator literally cannot read
+    // the current rendering; usability defect, not polish". This pins the
+    // shared ZoomableFigure being wired to the flowchart specifically (the
+    // component's own generic pan/zoom behavior is pinned once in
+    // ZoomableFigure.test.tsx, not repeated here).
+    vi.spyOn(api, "getGuide").mockResolvedValue(guideFixture());
+    render(<HowItWorksPage />);
+
+    const flowchart = await screen.findByTestId("guide-flowchart");
+    await waitFor(() =>
+      expect(within(flowchart).queryByTestId("fake-flowchart-svg")).toBeInTheDocument());
+
+    const trigger = screen.getByRole("button", { name: /master flowchart.*click to enlarge, pan and zoom/i });
+    expect(trigger).toBeInTheDocument();
+
+    await userEvent.click(trigger);
+    const overlay = await screen.findByTestId("zoom-overlay");
+    expect(overlay).toHaveAttribute("role", "dialog");
+    expect(overlay).toHaveAttribute("aria-modal", "true");
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("zoom-overlay")).not.toBeInTheDocument();
+  });
+
   it("every DOC-03 chapter present in the fixture appears as its own heading", async () => {
     vi.spyOn(api, "getGuide").mockResolvedValue(guideFixture());
     render(<HowItWorksPage />);

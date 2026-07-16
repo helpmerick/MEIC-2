@@ -392,6 +392,10 @@ export interface TimelineMarker {
   icon: string;
   entry_id: string | null;
   at: string | null;
+  // RPT-12 timeline rebuild (v1.77): additive -- the exact Decimal figure(s)
+  // behind this event, verbatim server-side strings (never reparsed as a
+  // float), rendered on hover. `null`/absent on any pre-rebuild replayed log.
+  detail?: string | null;
 }
 
 export interface StopOutSlippage {

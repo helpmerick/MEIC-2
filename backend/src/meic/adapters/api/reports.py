@@ -2,8 +2,19 @@
 existing read model (`/state`, `/report`, `/entries`), panel security
 unchanged. Every payload is server-computed over the composition's OWN
 event log (never a mock/demo source), carries `mode` and the UI-25 trust
-block, and renders Decimals as strings with ET-native date/timestamp fields
-(the bot's own `date`/`at` values are already ET — see DAY-03).
+block, and renders Decimals as strings.
+
+Timestamp semantics (corrected 2026-07-16, RPT-12 timeline-rebuild review —
+the old wording here claimed `date`/`at` were both "already ET", and
+Timeline.tsx cited that claim as licence to regex the wall-clock straight
+out of the `at` string): the bot's `date` fields ARE ET calendar dates
+(DAY-03), but every journaled `at` is a full ISO-8601 UTC INSTANT —
+SystemClock.now() is datetime.now(timezone.utc), and the writers stamp `at`
+from it via .isoformat() (execute_entry / close_entry / the stop-fill watch /
+watchdog / reconcile, and EntryMarkSample's snapshot `taken_at`). Payloads
+pass those instants through VERBATIM; rendering an ET wall-clock from one is
+the frontend's job, via its shared DST-aware helpers (frontend/src/time.ts,
+DAY-03 identity), never a substring read of the stamp.
 
 This module holds no broker reference for any of the GET endpoints: they only
 READ the events list handed to it at construction (doc 10 Principle 1) and the
@@ -34,7 +45,9 @@ from fastapi import APIRouter, HTTPException, Response
 
 from meic.adapters.api.app import _card_legs, _premium_received
 from meic.domain.events import (
+    CondorFilled,
     CorrectionRecord,
+    EntryClosed,
     EntryMarkSample,
     Event,
     ExternalFillImported,
@@ -80,13 +93,18 @@ from meic.reporting.trust import trust_stamp
 from meic.reporting.waterfall import WaterfallResidualError, build_waterfall
 
 # The event types RPT-12's timeline renders as markers, and their icon
-# (doc 10 RPT-12). Not every one of these carries its own wall-clock `at`
-# field in the current event schema (only CondorFilled/EntryMarkSample do) --
-# a marker whose event has none renders "at": null, a known limitation noted
-# in the slice-2 handoff rather than a fabricated timestamp.
+# (doc 10 RPT-12). CondorFilled/ShortStopped/EntryClosed/WatchdogEscalated all
+# carry their own optional `at` now (ORD-11, v1.67) -- comment corrected
+# 2026-07-16 (RPT-12 timeline rebuild): the older "only CondorFilled/
+# EntryMarkSample do" note predated that addition. A pre-v1.44/v1.67 replayed
+# log entry can still decode `at` as None (the field's honest default), which
+# the frontend (Timeline.tsx) treats as "cannot be placed on the timeline" --
+# never a fabricated position. `SideUnprotected` is the one type with NO `at`
+# field at all in the current event schema; its marker always carries
+# "at": null for that reason, not a bug.
 _MARKER_ICON = {
-    "CondorFilled": "▲",       # entry ▲
-    "ShortStopped": "✖",       # stop ✖
+    "CondorFilled": "▲",       # entry ▲ -- GREEN triangle (RPT-12/UI-26, v1.77 ruling)
+    "ShortStopped": "✖",       # stop-fill ✖ -- RED cross (RPT-12/UI-26, v1.77 ruling)
     "EntryClosed": "●",        # close ●
     "WatchdogEscalated": "⚡",  # watchdog ⚡
     "SideUnprotected": "▓",    # UNPROTECTED shaded
@@ -294,6 +312,27 @@ def _trust_payload(events: list[Event], days: tuple[str, ...]) -> dict[str, Any]
             "total_days": t.total_days, "label": t.label, "imported_days": t.imported_days}
 
 
+def _marker_detail(e: Event) -> str | None:
+    """RPT-12 timeline rebuild (v1.77 reviewer commission, 2026-07-10 drill-
+    down): "event glyphs rendered and hoverable with exact Decimal values".
+    Additive read-model field only -- `TimelineMarker` gains `detail`; every
+    existing field is untouched. Every figure below is read straight off the
+    journaled event's own Decimal field through `_s()` (str(Decimal), never a
+    float re-render), so the frontend can show it verbatim on hover."""
+    if isinstance(e, CondorFilled):
+        return f"net credit {_s(e.net_credit)}"
+    if isinstance(e, ShortStopped):
+        return f"{e.side} fill {_s(e.fill)}, slippage {_s(e.slippage)}"
+    if isinstance(e, EntryClosed):
+        return f"initiator {e.initiator}"
+    if isinstance(e, WatchdogEscalated):
+        return (f"{e.side} mark at breach {_s(e.mark_at_breach)}, "
+                f"elapsed {_s(e.elapsed_seconds)}s, fill {_s(e.fill_price)}")
+    if isinstance(e, SideUnprotected):
+        return f"{e.side} unprotected -- {e.action}"
+    return None
+
+
 def _markers(scoped: list[Event]) -> list[dict[str, Any]]:
     out = []
     for e in scoped:
@@ -301,7 +340,8 @@ def _markers(scoped: list[Event]) -> list[dict[str, Any]]:
         if name not in _MARKER_ICON:
             continue
         out.append({"type": name, "icon": _MARKER_ICON[name],
-                    "entry_id": getattr(e, "entry_id", None), "at": getattr(e, "at", None)})
+                    "entry_id": getattr(e, "entry_id", None), "at": getattr(e, "at", None),
+                    "detail": _marker_detail(e)})
     return out
 
 

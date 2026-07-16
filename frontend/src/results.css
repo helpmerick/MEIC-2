@@ -76,6 +76,26 @@
 .marker-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .marker { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; cursor: default; }
 
+/* RPT-12 timeline rebuild (v1.77): labelled axes, leg mid lines (thin, never
+   filled), and on-chart event glyphs (shape + colour together, UI-26). */
+.chart-axis { stroke: var(--line-strong); stroke-width: 1; }
+.chart-axis-label { fill: var(--muted); font-size: 9px; }
+.chart-leg-line { fill: none; stroke-width: 1; opacity: 0.85; }
+.glyph-entry { fill: var(--good); stroke: var(--good); } /* entry ▲ GREEN, v1.77 */
+.glyph-stop line { stroke: var(--bad); stroke-width: 2; } /* stop-fill ✖ RED, v1.77 */
+.glyph-close { fill: var(--accent-2); }
+.glyph-watchdog { fill: var(--warn); }
+
+/* Multi-entry leg-mid selector (final review 2026-07-16 — see Timeline.tsx's
+   implementation-decision note). */
+.timeline-entry-selector { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.entry-pill {
+  font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); color: var(--muted);
+}
+.entry-pill:hover { border-color: var(--accent); }
+.entry-pill.active { background: var(--card-solid); color: var(--accent); border-color: var(--accent); font-weight: 700; }
+
 /* --- calendar heatmap ---------------------------------------------------------- */
 /* Widened across the page (not hugging the left at a fixed small width);
    months lay out side by side, oldest -> newest, inside their own

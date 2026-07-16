@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { api } from "../api";
 import type { GuideData } from "../types";
+import { ZoomableFigure } from "./ZoomableFigure";
 
 function slugify(text: string): string {
   return text
@@ -148,7 +149,22 @@ const mdComponents: Components = {
   },
   code: ({ className, children }) => {
     if (className === "language-mermaid") {
-      return <MermaidDiagram code={flattenText(children).replace(/\n$/, "")} />;
+      const code = flattenText(children).replace(/\n$/, "");
+      // DOC-05 (v1.77, operator-ruled): "the master flowchart and every
+      // diagram in the guide render CLICKABLE and ZOOMABLE — click expands
+      // to a full-screen view with pan and scroll/pinch zoom, plus explicit
+      // zoom controls". This `code`-block handler runs for EVERY fenced
+      // ```mermaid block the ratified guide contains (currently just the
+      // one master flowchart), so a future second diagram gets the same
+      // zoomable treatment for free, not a special case. The child is
+      // passed as a THUNK (`() => <MermaidDiagram .../>`), not a plain
+      // element, so the inline copy and the overlay copy are independent
+      // MermaidDiagram instances with their own ref (see ZoomableFigure.tsx).
+      return (
+        <ZoomableFigure label="The master flowchart (doc 12)">
+          {() => <MermaidDiagram code={code} />}
+        </ZoomableFigure>
+      );
     }
     return <code className={className}>{children}</code>;
   },

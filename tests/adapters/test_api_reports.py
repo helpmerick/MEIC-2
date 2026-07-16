@@ -258,6 +258,24 @@ def test_close_initiator_marks_appear_on_the_timeline():
     assert "CondorFilled" in types and "EntryClosed" in types
 
 
+def test_rpt12_marker_detail_carries_exact_decimal_strings_never_floats():
+    """RPT-12 timeline rebuild (v1.77 reviewer commission): the hover on an
+    event glyph must show the EXACT Decimal figure behind it -- this pins the
+    additive `detail` field end to end (never a float re-render; `_s()`
+    always returns `str(Decimal)`)."""
+    events = [
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.125")),
+        ShortStopped(entry_id="2026-07-09#1", side="PUT", fill=D("3.905"), slippage=D("0.105")),
+        EntryClosed(entry_id="2026-07-09#1", initiator="take_profit"),
+    ]
+    client, _, _ = _client(events)
+    body = client.get("/reports/day/2026-07-09").json()
+    by_type = {m["type"]: m["detail"] for m in body["timeline"]["markers"]}
+    assert by_type["CondorFilled"] == "net credit 4.125"
+    assert by_type["ShortStopped"] == "PUT fill 3.905, slippage 0.105"
+    assert by_type["EntryClosed"] == "initiator take_profit"
+
+
 def test_csv_export_daily_table():
     events = [DayArmed(date="2026-07-09", entry_count=1),
               CondorFilled(entry_id="2026-07-09#1", net_credit=D("4.00"))]

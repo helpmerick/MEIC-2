@@ -15,6 +15,20 @@ The backend half of DOC-05 -- GET /guide's own version-stamp parsing and
 stamped-vs-running comparison -- is pinned directly (not through this dual-
 half indirection) in tests/adapters/test_api_guide.py, including a fail-
 first proof of the mismatch path via a crafted spec/ tree.
+
+DOC-05 zoom clause (RPT-12/DOC-05 timeline+diagrams rebuild, v1.77, queue
+slice 2+3): the flowchart's click-to-full-screen-pan/zoom behaviour is bound
+below the same way, against HowItWorksPage.test.tsx's own dedicated test
+("the master flowchart is clickable..."). The shared ZoomableFigure
+component's OWN generic pan/zoom mechanics (drag, wheel, pinch, +/-, reset,
+Esc) are pinned once in frontend/src/components/ZoomableFigure.test.tsx, not
+re-verified through this indirection -- this scenario only pins that the
+flowchart is WIRED to it.
+
+The remaining two scenarios in the .feature (five-tab nav w/ "Getting
+started", and DOC-06's no-secret-leak contract) are UNBOUND here -- they are
+DOC-06/UI-32 content (later slice, not this one) and stay red; see the queue
+dispatch's "4 DOC reds remain (later slices)" note.
 """
 from __future__ import annotations
 
@@ -51,6 +65,14 @@ def _(vitest_doc_result):
     assert ("banners an UNPARSEABLE guide stamp as 'cannot verify' — fails toward "
             "showing (DOC-05)" in output)
     assert "banners an unreadable RUNNING spec version as 'cannot verify' too (DOC-05)" in output
+
+
+@then("the master flowchart is clickable to a full-screen pannable zoomable view (v1.77)")
+def _(vitest_doc_result):
+    rc, output = vitest_doc_result
+    assert rc == 0, output
+    assert ("the master flowchart is clickable to a full-screen pannable zoomable view "
+            "(DOC-05, v1.77)" in output)
 
 
 @then("every DOC-03 chapter is present (the completeness contract)")

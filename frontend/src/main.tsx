@@ -5,6 +5,7 @@ import "./styles.css";
 import "./schedule.css";
 import "./results.css";
 import "./calendar.css";
+import "./zoom.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
