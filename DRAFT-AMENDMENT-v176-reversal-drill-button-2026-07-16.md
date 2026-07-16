@@ -62,11 +62,16 @@ banner-covered. Specifically, until ratification:
   entirely. The operator's order constrains only the BUTTON; (b) is a
   bigger ruling (the drill was a mandated proof) and needs its own
   operator decision.
-- **[ADVISER-2]** (Delta 5, option (a) only): the exact one-liner request
-  shape from the build — endpoint and gates are code-verified as supplied
-  with this commission (`POST /drill/outage`, panel-password header,
-  typed-DRILL confirmation), but the precise body/field name for the
-  DRILL confirmation must be read from the build, not guessed.
+- **[VERIFIED — was ADVISER-2, closed 2026-07-16]** (Delta 5, option (a)
+  only): the request shape is now code-verified, coordinator-supplied:
+  endpoint `POST /drill/outage` (app.py:1122); body field `confirmation`,
+  which in LIVE mode must carry the typed word `DRILL` — absent or wrong,
+  the drill is REFUSED with a 400 and never run (the v1.56 typed-DRILL
+  gate, app.py:1127–1129); optional body field `outage_seconds` defaults
+  to the `drill_outage_seconds` dial. Delta 5's option-(a) one-liner uses
+  these real names; the adviser re-verifies against app.py:1122–1133 at
+  ratification rather than re-deriving them. No ruling needed — this
+  marker is closed.
 - **[ADVISER-3]** (Deltas 1 and 4): does the collapsed "Operational tools"
   disclosure itself survive (holding whatever else it contains, now or
   later), or does it go with the button if the drill was its only content?
@@ -80,7 +85,7 @@ banner-covered. Specifically, until ratification:
 | 2 | spec/03-use-cases.md, UC-12 Flow line | "operator presses" → the real invocation (no UI trigger) |
 | 3 | spec/12, DOC-06 rule text (first-run sequence clause) | drill clause re-pointed (option a) or dropped (option b) — [ADVISER-1] |
 | 4 | spec/12, guide Chapter 7, outage-drill paragraph | rewritten to the real remaining invocation path — both options |
-| 5 | spec/12, GETTING STARTED section, step 9 | rewritten to the endpoint command (a) or removed (b) — [ADVISER-1/2] |
+| 5 | spec/12, GETTING STARTED section, step 9 | rewritten to the endpoint command (a, shape code-verified) or removed (b) — [ADVISER-1] |
 | 6 | spec/README changelog | new version entry recording the reversal |
 
 **A version-number note:** deltas below write "v1.80" for the reversal;
@@ -206,7 +211,7 @@ exactly as before. It is worth running after any tastytrade API change.
 
 ---
 
-## Delta 5 — spec/12, GETTING STARTED, step 9 — [ADVISER-1, -2]
+## Delta 5 — spec/12, GETTING STARTED, step 9 — [ADVISER-1]
 
 **Find** (the full step, quoted verbatim from the v1.79 section):
 
@@ -229,16 +234,30 @@ terminal, consistent with the section's handling rule):
    stop orders really do rest at the broker and keep working even if the
    bot itself is disconnected. There is no button for this: it runs by one
    typed command on the trading machine, guarded by your panel password
-   and the typed word DRILL, sent to the bot's own drill endpoint
-   (POST /drill/outage on http://127.0.0.1:8010).
-   [ADVISER-2: paste the exact one-liner from the build here — curl or
-   PowerShell, panel password in the NFR-06a header (typed by the
-   operator, never stored in the command's text in this guide), the DRILL
-   confirmation in whatever field the build actually reads — do not guess
-   the field name.]
+   and the typed word DRILL. In a terminal on the trading machine:
+
+   curl -X POST http://127.0.0.1:8010/drill/outage
+        -H "X-User-Password: <your panel password>"
+        -H "Content-Type: application/json"
+        -d "{\"confirmation\": \"DRILL\"}"
+
+   (One line; type your own panel password where the placeholder is —
+   exactly like the .env rule in Section 2, it is never written into a
+   saved script or pasted anywhere else. Typing the word DRILL in the
+   command is the same deliberate confirmation the old dialog required:
+   in live mode the bot refuses to run the drill without it. You may add
+   "outage_seconds": <10–300> to the body to override the default
+   disconnect length.)
+
    Do this before you ever trust live mode with real money, and again any
    time tastytrade's API changes.
 ```
+
+*(Request shape is code-verified, not guessed: `POST /drill/outage` is
+app.py:1122; the `confirmation` field's typed-DRILL live-mode gate —
+refused with a 400 if absent or wrong, never run — is app.py:1127–1129;
+optional `outage_seconds` defaults to the `drill_outage_seconds` dial.
+Adviser: re-verify against app.py:1122–1133 at ratification.)*
 
 **Option (b) — Replace with:** nothing — delete step 9 (it is the last
 step; no renumbering needed). This is only coherent together with Delta 3
