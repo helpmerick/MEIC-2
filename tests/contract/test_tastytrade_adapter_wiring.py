@@ -96,7 +96,7 @@ async def test_gtc_option_stop_rejected_client_side(adapter, env):
     exp = next(e for e in sorted(chain.expirations, key=lambda e: e.expiration_date)
                if e.expiration_date >= date.today())
     strike = sorted(exp.strikes, key=lambda s: s.strike_price)[0]
-    # The canonical type refuses a GTC option stop at CONSTRUCTION — it can never
+    # The canonical type refuses a GTC option stop at CONSTRUCTION â€” it can never
     # reach the adapter, let alone the broker. (IntentError is a ValueError.)
     with pytest.raises(ValueError):
         OrderIntent(order_type="stop_market", tif="GTC", contracts=1, stop_trigger=D("0.05"),
