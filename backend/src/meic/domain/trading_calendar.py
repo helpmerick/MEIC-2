@@ -32,6 +32,8 @@ from datetime import datetime, timedelta
 
 from .events import (
     CalendarEventsImported,
+    CalendarRefreshRejected,
+    CalendarRefreshSucceeded,
     Event,
     ManualFireBlackoutAcknowledged,
     NoTradeTagRemoved,
@@ -68,6 +70,15 @@ class CategoryImport:
     labels: dict[str, str] = field(default_factory=dict)   # date -> label override, "" excluded
     imported_at: str = ""
     source: str = ""
+    # CAL-09 (v1.77): dates that WERE in a prior successful auto-refresh but
+    # are absent from the MOST RECENT one -- still present in `dates` above
+    # (never dropped) and still tag-effective (rule 2: "its NO-TRADE tag
+    # stands until the operator rules"), just flagged for the UI/alerting.
+    # A manual paste import (CalendarEventsImported) always resets this to
+    # empty -- the operator's own replace is authoritative and clears any
+    # outstanding dispute. Empty for every category an auto-refresh has
+    # never touched.
+    disputed: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -111,6 +122,29 @@ def apply(state: CalendarState, event: Event) -> CalendarState:
             category=event.category, dates=frozenset(event.dates), labels=labels,
             imported_at=event.imported_at, source=event.source)
         return replace(state, imports=imports)
+    if isinstance(event, CalendarRefreshSucceeded):
+        # CAL-09: ADDITIVE merge, never a replace -- `event.dates` is already
+        # the union the application layer (CalendarStore.record_refresh_success)
+        # computed against the state at THAT time; this fold just installs it
+        # verbatim (mirroring how CalendarEventsImported below installs its own
+        # event fields verbatim -- neither event carries fold-time decisions).
+        # `disputed` is fully REPLACED by this event's own set each time (not
+        # unioned across refreshes): a date that reappears in a later fetch is
+        # no longer disputed, and `event.dates`/`event.disputed_dates` were
+        # already computed against the immediately-prior state, so this is the
+        # single current truth, not a running accumulation.
+        imports = dict(state.imports)
+        labels = {d: lbl for d, lbl in zip(event.dates, event.labels) if lbl}
+        imports[event.category] = CategoryImport(
+            category=event.category, dates=frozenset(event.dates), labels=labels,
+            imported_at=event.fetched_at, source=event.source,
+            disputed=frozenset(event.disputed_dates))
+        return replace(state, imports=imports)
+    # CalendarRefreshRejected (CAL-09 rule 1) deliberately has NO case here:
+    # "rejected whole" means existing data is untouched, and the fallthrough
+    # at the bottom of this function already returns `state` unchanged for
+    # any event it does not recognise -- the safest possible implementation
+    # of reject-don't-replace is to not even attempt a transition.
     if isinstance(event, StandingCategoryRuleSet):
         rules = dict(state.standing_rules)
         rules[event.category] = event.label
@@ -246,3 +280,34 @@ def staleness(state: CalendarState, *, now: datetime, stale_after_days: int) -> 
         horizon = max(imp.dates) if imp.dates else None
         out[category] = CategoryStaleness(imported_at=imp.imported_at, horizon=horizon, stale=stale)
     return out
+
+
+def consecutive_refresh_failures(events: list[Event], category: str) -> int:
+    """CAL-09 rule 4: how many consecutive CALENDAR DAYS `category`'s daily
+    auto-refresh has failed, most-recent-first -- the count application/
+    calendar_refresh.py compares against `cal_refresh_fail_alert_days`
+    before raising the persistent alert.
+
+    Buckets `CalendarRefreshSucceeded`/`CalendarRefreshRejected` events for
+    `category` by the calendar-day PREFIX of their own timestamp
+    (`fetched_at`/`checked_at`, both `clock.now().isoformat()` -- same
+    convention `staleness()` above already reads without ET conversion; a
+    day-boundary edge case here is the same, already-accepted, honest
+    simplification, not a new one). A day with a same-day retry keeps only
+    that day's LAST outcome (a later dict write for the same key wins).
+
+    A category with NO refresh events at all returns 0 -- CAL-07's polarity
+    (absence never damns): a category that has simply never run yet (fresh
+    install, or not due today) is not a "failing" one."""
+    by_day: dict[str, bool] = {}
+    for event in events:
+        if isinstance(event, CalendarRefreshSucceeded) and event.category == category:
+            by_day[event.fetched_at[:10]] = True
+        elif isinstance(event, CalendarRefreshRejected) and event.category == category:
+            by_day[event.checked_at[:10]] = False
+    streak = 0
+    for day in sorted(by_day, reverse=True):
+        if by_day[day]:
+            break
+        streak += 1
+    return streak

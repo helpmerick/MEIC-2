@@ -130,6 +130,18 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.StandingCategoryRuleRemoved: ev.StandingCategoryRuleRemoved(category="FOMC"),
         ev.ManualFireBlackoutAcknowledged: ev.ManualFireBlackoutAcknowledged(
             day="2026-07-15", label="FOMC", at="2026-07-15T10:07:00-04:00"),
+        # CAL-09 (v1.77): the daily official-source auto-refresh's own
+        # events -- see domain/trading_calendar.py's fold and
+        # application/calendar_refresh.py's coordinator.
+        ev.CalendarRefreshSucceeded: ev.CalendarRefreshSucceeded(
+            category="FOMC", dates=("2026-09-16", "2026-10-28"), labels=("", "FOMC"),
+            added_dates=("2026-10-28",), disputed_dates=(),
+            source="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+            fetched_at="2026-07-16T09:00:00-04:00"),
+        ev.CalendarRefreshRejected: ev.CalendarRefreshRejected(
+            category="FOMC", reason="implausible_count:40",
+            source="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+            checked_at="2026-07-16T09:00:00-04:00"),
     }
 
 

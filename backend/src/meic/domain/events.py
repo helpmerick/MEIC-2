@@ -818,3 +818,50 @@ class ManualFireBlackoutAcknowledged(Event):
     day: str
     label: str
     at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
+
+
+# --- CAL-09 daily official-source auto-refresh (v1.77) ----------------------
+#
+# A SEPARATE event pair from CalendarEventsImported (the operator's own
+# paste import), because the merge semantics differ: a paste import REPLACES
+# a category's known date set outright (the operator said so); an
+# auto-refresh is ADDITIVE and never destructive (rule 1/2: "reject-don't-
+# replace" and "a previously imported date absent from today's fetch is
+# marked DISPUTED ... never silently dropped"). Reusing one event type for
+# both would force one of the two semantics onto the other.
+
+@dataclass(frozen=True)
+class CalendarRefreshSucceeded(Event):
+    """CAL-09: one successful daily auto-refresh pass for a single TIER-1
+    category, from one of the three named official sources
+    (federalreserve.gov/bls.gov/bea.gov). `dates`/`labels` are the FULL
+    current set for the category AFTER this fetch -- the union of every
+    date this category has ever successfully carried, never a replace:
+    a date the operator's calendar already knew about that is absent from
+    THIS fetch is still present here (named again in `disputed_dates`
+    instead of being dropped). `added_dates` is what is new since the prior
+    successful fetch (rule 3's loud diff). `source` is the exact URL fetched
+    (not just a domain name) so the record is independently auditable."""
+    category: str
+    dates: tuple[str, ...]
+    labels: tuple[str, ...]
+    added_dates: tuple[str, ...]
+    disputed_dates: tuple[str, ...]
+    source: str
+    fetched_at: str
+
+
+@dataclass(frozen=True)
+class CalendarRefreshRejected(Event):
+    """CAL-09 rule 1: parse-strict reject-don't-replace. A fetch that fails
+    outright (network/HTTP error, wrong host), parses to zero events, or
+    fails its per-category plausibility band (e.g. an implausible date or an
+    out-of-band per-year count) is rejected WHOLE. This event records the
+    fact and the reason ONLY -- it never mutates `CalendarState.imports`;
+    existing data survives a bad fetch by construction (no other event type
+    is appended for a rejected category, and the fold's fallthrough leaves
+    state unchanged for any event it does not recognise)."""
+    category: str
+    reason: str
+    source: str
+    checked_at: str

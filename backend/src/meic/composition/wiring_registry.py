@@ -157,13 +157,18 @@ REGISTRY: tuple[WiringEntry, ...] = (
         ticked=_task_check("stop_fill_poll_task"),
     ),
     WiringEntry(
-        rule_ids=("NFR-02", "DAT-02", "RPT-12", "TPF-03", "TPT-04", "EOD-03", "RPT-15"),
+        rule_ids=("NFR-02", "DAT-02", "RPT-12", "TPF-03", "TPT-04", "EOD-03", "RPT-15", "CAL-09"),
         component="Health tick (_probe_once: session probe, DAT-02 snapshot refresh, "
                   "RPT-12 mark sampler, TPF-03/TPT-04 exit monitor, EOD-03 sweep, "
-                  "RPT-15 reconcile)",
-        proof="app.state.exit_monitor / chain_snapshots / report_reconciler are the "
-              "real objects the tick drives; app.state.health_task is alive",
-        constructed=_all_truthy_attrs("exit_monitor", "chain_snapshots", "report_reconciler"),
+                  "RPT-15 reconcile, CAL-09 v1.77 calendar auto-refresh)",
+        proof="app.state.exit_monitor / chain_snapshots / report_reconciler / "
+              "calendar_refresh_coordinator are the real objects the tick drives; "
+              "app.state.health_task is alive. CAL-09 rides this SAME tick (its own "
+              "daily/stale-boot gate is `CalendarRefreshCoordinator.should_run`) rather "
+              "than owning a second supervised task -- 'ticked' here is honestly the "
+              "one loop both duties actually run on, not a separate proof.",
+        constructed=_all_truthy_attrs("exit_monitor", "chain_snapshots", "report_reconciler",
+                                      "calendar_refresh_coordinator"),
         ticked=_task_check("health_task"),
     ),
     WiringEntry(
@@ -528,13 +533,35 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # Procedures/config/data invariants (not a standalone runtime component;
     # the keyword appears in the rule's PROSE, describing something else):
     "CLS-01",       # close PROCEDURE, driven synchronously per CloseEntry.close() call
-    "ORD-01", "ORD-08", "ORD-09", "ORD-11",   # order-shape/journaling rules, not loops
+    "ORD-01", "ORD-08", "ORD-09", "ORD-09a", "ORD-11",   # order-shape/journaling rules, not loops
+    # ORD-09a (v1.74, added 2026-07-16 CAL-09 slice): "every journaled
+    # execution price is the BROKER'S actual fill price, never the order's
+    # limit/rung/intent price" -- a RECORDING rule for the SAME fill-
+    # detection path ORD-09 already covers, not a standalone runtime
+    # component. The heuristic's "loop" hit traces to the README.md v1.74
+    # changelog BULLET summarizing this rule (which happens to mention
+    # "REC-..." continuing past the keyword), not to the rule's own
+    # defining line in 01-strategy-rules.md (quoted above ORD-09a's own
+    # bullet, containing no runtime-component keyword at all) -- same false-
+    # positive class as its sibling ORD-09 immediately above.
     "OWN-02", "OWN-09", "OWN-12",              # ownership classification/journaling rules
     "PNL-01", "PNL-04",                        # fee/reconciliation CALCULATIONS, not loops
     "RSK-01", "RSK-03", "RSK-06",               # toggles/gates/alert-routing, not loops themselves
     "STP-01", "STP-02d",                       # entry-time stop PLACEMENT procedure, not a loop
     "NFR-01",                                  # threading constraint, not itself a component
     "NLE-07", "RPT-08", "SIM-05", "UI-24", "UI-25",  # reporting/UI views, computed on read
+    # UI-31 (v1.73, added 2026-07-16 CAL-09 slice): "activity feed: day
+    # boundaries + plain-English hovers" -- a client-side GROUPING/display
+    # rule over events the feed already reads (DATE HEADERS by ET calendar
+    # day, hover text), computed on render. Same "reporting/UI view,
+    # computed on read" class as UI-24/UI-25 immediately above; the
+    # heuristic's "reconcil" hit traces to prose describing WHAT the day
+    # boundary reconciles visually (grouping existing rows), not a
+    # standalone runtime component. Belongs to its own (not yet built) UI
+    # slice -- this entry only settles the registry accounting so a
+    # genuinely-unrelated slice's work doesn't leave this gate red; it does
+    # NOT claim UI-31 itself is implemented.
+    "UI-31",
     "TPF-08", "TPF-09", "TPT-07",               # persistence/interaction RULES for the exit
                                                  # monitor already registered under TPF-03/TPT-04
     "RPT-15a", "RPT-15b", "RPT-15d",            # scoping/semantics rules for the RPT-15

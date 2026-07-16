@@ -615,7 +615,13 @@ def create_app(
             # just the same dates already in the (pre-existing) import event.
             "staleness": {cat: {"imported_at": s.imported_at, "horizon": s.horizon,
                                 "stale": s.stale, "tier": tier_for_category(cat),
-                                "dates": sorted(imports[cat].dates) if cat in imports else []}
+                                "dates": sorted(imports[cat].dates) if cat in imports else [],
+                                # CAL-09 (v1.77) ADDITIVE field: dates a prior
+                                # auto-refresh carried that the MOST RECENT one
+                                # no longer sees -- still in `dates` above
+                                # (never dropped, rule 2), just flagged so the
+                                # (slice-2) year view can render DISPUTED.
+                                "disputed": sorted(imports[cat].disputed) if cat in imports else []}
                          for cat, s in stale.items()},
             "standing_rules": dict(calendar_store.state().standing_rules),
         }

@@ -213,6 +213,26 @@ def _cal_stale_after_days(env: dict[str, str]) -> int:
     return raw if 7 <= raw <= 365 else 45
 
 
+def _cal_auto_refresh(env: dict[str, str]) -> bool:
+    """CAL-09 v1.77 `cal_auto_refresh` (doc 06: bool, default true) -- the
+    operator's opt-out to manual-paste-only. Only the literal string
+    "false" (case-insensitive) turns it off; anything else (including an
+    unset env var) is the safe default, on."""
+    return env.get("MEIC_CAL_AUTO_REFRESH", "true").lower() != "false"
+
+
+def _cal_refresh_fail_alert_days(env: dict[str, str]) -> int:
+    """CAL-09 v1.77 `cal_refresh_fail_alert_days` (doc 06: range 1-14,
+    default 3) -- consecutive failed refresh days before the persistent
+    alert. Out-of-range falls back to the spec default, the same
+    reject-the-dial convention as `_cal_stale_after_days` above."""
+    try:
+        raw = int(env.get("MEIC_CAL_REFRESH_FAIL_ALERT_DAYS", "3"))
+    except ValueError:
+        return 3
+    return raw if 1 <= raw <= 14 else 3
+
+
 def _drill_outage_seconds(env: dict[str, str]) -> float:
     """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) -- the
     stop-independence drill's default disconnect duration when a request
@@ -2490,6 +2510,25 @@ def live_app():
     # reconcile compare in `_probe_once` below.
     settlement_broker_reads = _BrokerReadFacade(comp.broker)
     settlement_lookback_days = _settlement_lookback_days(env)
+
+    # CAL-09 (v1.77): the daily official-source auto-refresh coordinator.
+    # Constructed UNCONDITIONALLY (mirroring `calendar_store` above) so the
+    # NFR-07 registry can always prove it exists -- `cal_auto_refresh`
+    # (below) gates whether the daily tick actually INVOKES it, never
+    # whether it is built. Read-only, unauthenticated, named-domains-only
+    # fetch adapters (adapters/calendar_sources/*); every outcome journals
+    # through the SAME `calendar_store` CAL-01..08 already shares.
+    from meic.adapters.calendar_sources import BeaSource, BlsSource, FomcSource
+    from meic.application.calendar_refresh import CalendarRefreshCoordinator
+
+    calendar_refresh_coordinator = CalendarRefreshCoordinator(
+        sources=(FomcSource(), BlsSource(), BeaSource()),
+        store=live["calendar_store"], clock=comp.clock, alerts=alerts,
+        fail_alert_days=_cal_refresh_fail_alert_days(env))
+    cal_auto_refresh = _cal_auto_refresh(env)
+    # Exposed like `calendar_store` above so a test/the NFR-07 registry can
+    # reach the real coordinator off app.state.
+    app.state.calendar_refresh_coordinator = calendar_refresh_coordinator
     # EOD-03 (2026-07-11): the sweep's half-day calendar — the SAME algorithmic
     # exchange facts the DAY-01/02 gates use (nyse_holidays), a decade out, so
     # a 13:00 half-day close sweeps at 13:00 (DAY-02), never a hardcoded 16:00.
@@ -2581,6 +2620,24 @@ def live_app():
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
             logger.warning("health tick: EOD reconcile failed: %r", exc)
+        try:
+            # CAL-09 (v1.77): rides the SAME daily-self-init cadence as
+            # EOD-03/RPT-15 above -- `should_run` is once-per-ET-trading-day,
+            # plus a stale-boot catch-up (this tick already runs once at
+            # boot via `_connect`'s explicit `_probe_once()` call, so no
+            # separate boot hook is needed). `cal_auto_refresh=False` is the
+            # operator's opt-out (manual paste import keeps working
+            # regardless); a fetch/parse failure here is ALREADY handled
+            # inside the coordinator (reject-don't-replace, alerted) -- this
+            # try/except only guards the tick loop itself from a coordinator
+            # bug, mirroring every other duty on this tick.
+            if cal_auto_refresh:
+                now = datetime.now(ET)
+                if calendar_refresh_coordinator.should_run(now):
+                    await calendar_refresh_coordinator.run_once(now)
+        except Exception as exc:  # noqa: BLE001
+            app.state.broker_error = repr(exc)
+            logger.warning("health tick: CAL-09 calendar refresh failed: %r", exc)
 
     @app.on_event("startup")
     async def _connect() -> None:

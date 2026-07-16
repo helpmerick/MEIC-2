@@ -15,10 +15,14 @@ lets an empty/unimported/unreadable calendar read as anything but "no tag".
 from __future__ import annotations
 
 import logging
+import re
+from datetime import date as _date
 from typing import Any
 
 from meic.domain.events import (
     CalendarEventsImported,
+    CalendarRefreshRejected,
+    CalendarRefreshSucceeded,
     ManualFireBlackoutAcknowledged,
     NoTradeTagRemoved,
     NoTradeTagSet,
@@ -43,6 +47,52 @@ class UnknownCalendarCategory(ValueError):
     """CAL-01: never silently accept a third, unspecced tier."""
 
 
+class InvalidCalendarRefreshData(ValueError):
+    """CAL-09 (review fix 4, 2026-07-16): a date or label a SOURCE scraped
+    that fails the store's own validation gate -- refused BEFORE anything is
+    appended, so no future source adapter can journal unbounded/malformed
+    scraped text (the same bounds adapters/api/app.py's `_cal_day`/
+    `_cal_label` enforce on operator input, applied here at the store
+    boundary the sources cannot bypass)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+# Same shape rules as adapters/api/app.py's `_cal_day`/`_cal_label`
+# (deliberately DUPLICATED per the review ruling rather than imported: the
+# app-layer versions raise HTTPException, an adapters-layer type this
+# application module must not depend on; the CONSTANTS are the contract --
+# strict ASCII YYYY-MM-DD naming a real date, and a bounded printable
+# single-line label, rejected never truncated).
+_REFRESH_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+_REFRESH_LABEL_MAX = 64
+
+
+def _validate_refresh_day(raw) -> str:
+    # The offending value's repr is BOUNDED (`:.80`) in both messages: this
+    # reason string flows into the journaled CalendarRefreshRejected.reason
+    # via the coordinator's invalid_data path -- an unbounded echo of the
+    # scraped garbage would smuggle in exactly the unbounded text this gate
+    # exists to keep out of the journal.
+    day = raw if isinstance(raw, str) else ""
+    if not _REFRESH_DAY_RE.fullmatch(day):
+        raise InvalidCalendarRefreshData(f"invalid_day:{raw!r:.80}")
+    try:
+        _date.fromisoformat(day)
+    except ValueError:
+        raise InvalidCalendarRefreshData(f"invalid_day:{raw!r:.80}")
+    return day
+
+
+def _validate_refresh_label(raw) -> str:
+    if not isinstance(raw, str) or not raw or len(raw) > _REFRESH_LABEL_MAX \
+            or not raw.isprintable():
+        raise InvalidCalendarRefreshData(f"invalid_label:{raw!r:.80}")
+    return raw
+
+
 class CalendarStore:
     def __init__(self, events: list, clock) -> None:
         self._events = events
@@ -50,6 +100,23 @@ class CalendarStore:
 
     def state(self) -> CalendarState:
         return fold(self._events)
+
+    @property
+    def events(self) -> list:
+        """CAL-09: read access to the SAME journal every mutation above
+        appends to -- lets application/calendar_refresh.py compute the
+        consecutive-failure streak (domain/trading_calendar.py) and the
+        once-per-day gate without a second event list to keep in sync."""
+        return self._events
+
+    @property
+    def clock(self):
+        """CAL-09: the SAME clock every `record_*`/`tag`/`import_events` call
+        already reads internally -- exposed so a caller building a SECOND
+        collaborator against this store's own journal (e.g.
+        `CalendarRefreshCoordinator`) shares one clock instance rather than
+        reaching into a private attribute."""
+        return self._clock
 
     # --- CAL-01 import -----------------------------------------------------
     def import_events(self, *, category: str, dates: list[str],
@@ -67,6 +134,58 @@ class CalendarStore:
             category=category, dates=tuple(unique_dates),
             labels=tuple(labels.get(d, "") for d in unique_dates),
             imported_at=self._clock.now().isoformat(), source=source)
+        self._events.append(ev)
+        return ev
+
+    # --- CAL-09 daily auto-refresh (v1.77) -----------------------------------
+    def record_refresh_success(self, *, category: str, dates: list[str],
+                                labels: dict[str, str] | None = None,
+                                source: str) -> CalendarRefreshSucceeded:
+        """CAL-09 rule 2: ADDITIVE merge -- the union of every date `category`
+        has EVER successfully carried, never a replace. `dates` here is only
+        THIS fetch's own result; the merge against the prior state (and the
+        added/disputed diff rule 3 demands) is computed HERE, once, so both
+        the fold (domain/trading_calendar.py) and every caller see the exact
+        same numbers the event itself carries -- no second computation to
+        drift from this one.
+
+        Review fix 4 (2026-07-16): every date and label is validated HERE,
+        before ANYTHING is appended -- strict YYYY-MM-DD naming a real date,
+        bounded printable single-line labels (the same rules `_cal_day`/
+        `_cal_label` apply to operator input in adapters/api/app.py) -- so
+        no source adapter, present or future, can journal unbounded scraped
+        text. Raises `InvalidCalendarRefreshData` with nothing written:
+        an all-or-nothing gate, the same reject-whole shape as CAL-09's own
+        rule 1."""
+        if category not in KNOWN_CATEGORIES:
+            raise UnknownCalendarCategory(category)
+        dates = [_validate_refresh_day(d) for d in dates]
+        labels = {_validate_refresh_day(k): _validate_refresh_label(v)
+                  for k, v in (labels or {}).items()}
+        prior = self.state().imports.get(category)
+        prior_dates = prior.dates if prior is not None else frozenset()
+        prior_labels = dict(prior.labels) if prior is not None else {}
+        new_dates = frozenset(dates)
+        merged_dates = sorted(prior_dates | new_dates)
+        merged_labels = {**prior_labels, **{d: lbl for d, lbl in (labels or {}).items() if lbl}}
+        ev = CalendarRefreshSucceeded(
+            category=category, dates=tuple(merged_dates),
+            labels=tuple(merged_labels.get(d, "") for d in merged_dates),
+            added_dates=tuple(sorted(new_dates - prior_dates)),
+            disputed_dates=tuple(sorted(prior_dates - new_dates)),
+            source=source, fetched_at=self._clock.now().isoformat())
+        self._events.append(ev)
+        return ev
+
+    def record_refresh_rejected(self, *, category: str, reason: str,
+                                 source: str) -> CalendarRefreshRejected:
+        """CAL-09 rule 1: journals the REJECTION only -- never mutates
+        `imports` (no other event is appended here), so existing data is
+        byte-identical to before this call by construction."""
+        if category not in KNOWN_CATEGORIES:
+            raise UnknownCalendarCategory(category)
+        ev = CalendarRefreshRejected(category=category, reason=reason, source=source,
+                                      checked_at=self._clock.now().isoformat())
         self._events.append(ev)
         return ev
 

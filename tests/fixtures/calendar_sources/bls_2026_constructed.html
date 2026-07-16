@@ -1,0 +1,50 @@
+<!--
+  *** CONSTRUCTED FIXTURE -- NOT a captured live page. LIVE-FORMAT
+  VERIFICATION IS OUTSTANDING. ***
+
+  Unlike fomc_calendars_2026.html / bea_schedule.html (both real, trimmed
+  captures), this file could NOT be captured from the live site: every
+  plain httpx GET against https://www.bls.gov/schedule/news_release/
+  2026_sched.htm during this slice's implementation (2026-07-16, verified
+  against the real site, not assumed) was refused by bls.gov's own edge
+  bot-defense (Akamai) with a hard 403:
+
+      <title>Access Denied</title>
+      <h2>Access Denied</h2>
+      <p>The BLS is committed to providing data promptly and according to
+      established schedules. Automated retrieval programs (commonly called
+      "robots" or "bots") can cause delays and interfere with other
+      customers' timely access to information. Therefore, bot activity
+      that doesn't conform to BLS usage policy is prohibited.</p>
+
+  No header-spoofing or bot-evasion technique was attempted (CAL-09
+  mandates a read-only, unauthenticated, honest fetch -- never an
+  adversarial one) -- see adapters/calendar_sources/bls.py's module
+  docstring for the full account and the operator-facing flag.
+
+  This fixture is a best-effort reconstruction of the publicly documented
+  BLS release-schedule table layout (a plain <table> of release name /
+  date / time / reference-period rows), used only to give BlsSource's
+  parser SOMETHING concrete to be unit-tested against. It is NOT proof the
+  parser matches the real page today.
+-->
+<html>
+<body>
+<table id="release-schedule-table" class="table">
+<thead>
+<tr><th>Release</th><th>Release Date</th><th>Release Time</th><th>Reference Period</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="/news.release/cpi.nr0.htm">Consumer Price Index</a></td><td>1-13-2026</td><td>8:30 AM</td><td>December 2025</td></tr>
+<tr><td><a href="/news.release/ppi.nr0.htm">Producer Price Index</a></td><td>1-14-2026</td><td>8:30 AM</td><td>December 2025</td></tr>
+<tr><td><a href="/news.release/empsit.nr0.htm">Employment Situation</a></td><td>1-9-2026</td><td>8:30 AM</td><td>December 2025</td></tr>
+<tr><td><a href="/news.release/cpi.nr0.htm">Consumer Price Index</a></td><td>2-11-2026</td><td>8:30 AM</td><td>January 2026</td></tr>
+<tr><td><a href="/news.release/ppi.nr0.htm">Producer Price Index</a></td><td>2-18-2026</td><td>8:30 AM</td><td>January 2026</td></tr>
+<tr><td><a href="/news.release/empsit.nr0.htm">Employment Situation</a></td><td>2-6-2026</td><td>8:30 AM</td><td>January 2026</td></tr>
+<tr><td><a href="/news.release/cpi.nr0.htm">Consumer Price Index</a></td><td>3-11-2026</td><td>8:30 AM</td><td>February 2026</td></tr>
+<tr><td><a href="/news.release/ppi.nr0.htm">Producer Price Index</a></td><td>3-18-2026</td><td>8:30 AM</td><td>February 2026</td></tr>
+<tr><td><a href="/news.release/empsit.nr0.htm">Employment Situation</a></td><td>3-6-2026</td><td>8:30 AM</td><td>February 2026</td></tr>
+</tbody>
+</table>
+</body>
+</html>

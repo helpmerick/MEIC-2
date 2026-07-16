@@ -66,6 +66,23 @@ def validate_cal_stale_after_days(days) -> None:
         raise ConfigRejected("cal_stale_after_days", "out_of_range")
 
 
+def validate_cal_refresh_fail_alert_days(days) -> None:
+    """CAL-09 v1.77 (doc 06): 1-14, default 3 -- reject-never-clamp, same
+    convention as `validate_cal_stale_after_days` above. The THRESHOLD only;
+    a broken feed itself never blocks trading (CAL-07)."""
+    if not (1 <= int(days) <= 14):
+        raise ConfigRejected("cal_refresh_fail_alert_days", "out_of_range")
+
+
+def validate_cal_auto_refresh(value) -> None:
+    """CAL-09 v1.77 (doc 06): bool, default true -- the operator's opt-out
+    to manual-paste-only. Anything not a real bool is rejected rather than
+    silently truthy/falsy-coerced (e.g. the string "false" is truthy in
+    Python -- coercing it would silently invert the operator's intent)."""
+    if not isinstance(value, bool):
+        raise ConfigRejected("cal_auto_refresh", "not_a_bool")
+
+
 def validate_bind(bind_host: str, api_token: str | None) -> None:
     """NFR-06: config validation refuses a non-localhost bind unless a token is
     set — the panel cannot be exposed unauthenticated, structurally."""
@@ -93,6 +110,10 @@ def validate_config(cfg: dict) -> None:
         validate_max_effective_stop_pct(cfg["max_effective_stop_pct"])  # STP-02b cage
     if "cal_stale_after_days" in cfg:
         validate_cal_stale_after_days(cfg["cal_stale_after_days"])  # CAL-02
+    if "cal_refresh_fail_alert_days" in cfg:
+        validate_cal_refresh_fail_alert_days(cfg["cal_refresh_fail_alert_days"])  # CAL-09
+    if "cal_auto_refresh" in cfg:
+        validate_cal_auto_refresh(cfg["cal_auto_refresh"])  # CAL-09
     if "bind_host" in cfg:
         validate_bind(str(cfg["bind_host"]), cfg.get("api_token"))
     if "fee_model" in cfg:
