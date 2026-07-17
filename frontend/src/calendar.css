@@ -62,6 +62,11 @@
 .cal-evt-tier1 { color: var(--info); }
 .cal-evt-tier2 { color: var(--accent-2); }
 
+/* CAL-10 computed events: two MORE distinct glyphs (diamond-in-diamond vs
+   star), never sharing a shape with tier-1/tier-2 or each other (UI-26). */
+.cal-evt-opex { color: var(--warn); }
+.cal-evt-quadwitch { color: var(--good); }
+
 /* Manual vs auto tag markers: different glyphs (square vs diamond) too. */
 .cal-tag-mark { display: inline-block; font-weight: 700; }
 .cal-tag-mark.origin-manual { color: var(--bad); }

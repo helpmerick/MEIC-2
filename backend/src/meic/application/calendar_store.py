@@ -19,10 +19,14 @@ import re
 from datetime import date as _date
 from typing import Any
 
+from meic.application.market_calendar import next_trading_day, trading_day
+from meic.application.nyse_holidays import holidays_near
+from meic.application.opex_calendar import opex_dates_by_category
 from meic.domain.events import (
     CalendarEventsImported,
     CalendarRefreshRejected,
     CalendarRefreshSucceeded,
+    EventWarningDismissed,
     ManualFireBlackoutAcknowledged,
     NoTradeTagRemoved,
     NoTradeTagSet,
@@ -30,12 +34,15 @@ from meic.domain.events import (
     StandingCategoryRuleSet,
 )
 from meic.domain.trading_calendar import (
+    COMPUTED_CATEGORIES,
     KNOWN_CATEGORIES,
     CalendarState,
     CategoryStaleness,
+    EventWarning,
     effective_tags,
     fold,
 )
+from meic.domain.trading_calendar import active_warnings as _active_warnings
 from meic.domain.trading_calendar import label_for_day as _label_for_day
 from meic.domain.trading_calendar import staleness as _staleness
 
@@ -202,13 +209,20 @@ class CalendarStore:
 
     # --- CAL-04 standing category rules --------------------------------------
     def set_standing_rule(self, category: str, label: str | None = None) -> StandingCategoryRuleSet:
-        if category not in KNOWN_CATEGORIES:
+        # CAL-10: computed categories (OPEX_MONTHLY/QUAD_WITCH) are
+        # "standing-rule capable exactly like fetched ones" -- widened
+        # alongside KNOWN_CATEGORIES, never in place of it (import_events/
+        # record_refresh_success below stay KNOWN_CATEGORIES-only: computed
+        # categories are never fetched).
+        if category not in KNOWN_CATEGORIES and category not in COMPUTED_CATEGORIES:
             raise UnknownCalendarCategory(category)
         ev = StandingCategoryRuleSet(category=category, label=label)
         self._events.append(ev)
         return ev
 
     def remove_standing_rule(self, category: str) -> StandingCategoryRuleRemoved:
+        if category not in KNOWN_CATEGORIES and category not in COMPUTED_CATEGORIES:
+            raise UnknownCalendarCategory(category)
         ev = StandingCategoryRuleRemoved(category=category)
         self._events.append(ev)
         return ev
@@ -230,7 +244,8 @@ class CalendarStore:
         before the fail-open None -- the operator gets a line in the log,
         the gate still gets its ruled answer."""
         try:
-            return _label_for_day(self.state(), day)
+            computed = opex_dates_by_category([_date.fromisoformat(day).year])
+            return _label_for_day(self.state(), day, computed_dates=computed)
         except Exception:
             logger.exception(
                 "CAL-07 fail-open: calendar store unreadable for %s -- "
@@ -238,8 +253,19 @@ class CalendarStore:
             return None
 
     def tags(self) -> dict[str, Any]:
-        """CAL-08 read model (backend half): every currently-tagged day."""
-        return effective_tags(self.state())
+        """CAL-08 read model (backend half): every currently-tagged day.
+        CAL-10: includes computed-category auto-tags (e.g. "always block
+        QUAD_WITCH") over a generous multi-year window -- generous enough
+        that the CalendarPage's client-side year-nav (which does NOT refetch
+        on year change) still has markers without a new fetch."""
+        year = self._clock.now().year
+        computed = opex_dates_by_category(range(year - 2, year + 6))
+        return effective_tags(self.state(), computed_dates=computed)
+
+    def computed_events(self, year_from: int, year_to: int) -> dict[str, frozenset[str]]:
+        """CAL-10: the API layer's `GET /calendar` marker-rendering source --
+        a thin wrapper over application/opex_calendar.py's own pure math."""
+        return opex_dates_by_category(range(year_from, year_to + 1))
 
     # --- CAL-06 manual-fire acknowledgment -----------------------------------
     def acknowledge_override(self, day: str, label: str) -> ManualFireBlackoutAcknowledged:
@@ -250,3 +276,31 @@ class CalendarStore:
     # --- CAL-02 staleness (display-only, never blocking) ---------------------
     def staleness_report(self, *, stale_after_days: int) -> dict[str, CategoryStaleness]:
         return _staleness(self.state(), now=self._clock.now(), stale_after_days=stale_after_days)
+
+    # --- CAL-11 event proximity warnings (v1.84) ------------------------------
+    def dismiss_warning(self, category: str, event_date: str, tier: int) -> EventWarningDismissed:
+        """CAL-11 rule 2: (category, event_date, tier) is the FULL dismissal
+        key -- dismissing one proximity tier never silences another for the
+        SAME event."""
+        if category not in KNOWN_CATEGORIES and category not in COMPUTED_CATEGORIES:
+            raise UnknownCalendarCategory(category)
+        event_date = _validate_refresh_day(event_date)
+        ev = EventWarningDismissed(category=category, event_date=event_date, tier=int(tier),
+                                    at=self._clock.now().isoformat())
+        self._events.append(ev)
+        return ev
+
+    def active_warnings(self, *, lead_days: int) -> list[EventWarning]:
+        """CAL-11: the currently-showing proximity-warning feed -- display
+        only, NEVER a gate input. `lead_days` bounds how many TRADING days
+        ahead of today (index 0) the path extends (`event_warning_lead_days`,
+        doc 06, 0-5)."""
+        today = trading_day(self._clock.now())
+        holidays = holidays_near(today, years_ahead=1)
+        path = [today.isoformat()]
+        walk = today
+        for _ in range(lead_days):
+            walk = next_trading_day(walk, holidays=holidays)
+            path.append(walk.isoformat())
+        computed = self.computed_events(today.year, today.year + 1)
+        return _active_warnings(self.state(), computed, trading_days_path=path)

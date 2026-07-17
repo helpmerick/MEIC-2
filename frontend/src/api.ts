@@ -3,9 +3,9 @@
 // state and sends commands; the backend validates everything.
 
 import type {
-  ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, DayTable, EntryCard,
-  FirePreview, FireResult, FloorCandidates, GettingStartedData, GuideData, ManualSimulation, PanelState,
-  Preflight, ReportSummary, ScheduleRow, ScheduleView,
+  ActivityLine, CalendarData, CalendarWarnings, DailyRow, DayReport, DayReportDetail, DayStatus, DayTable,
+  EntryCard, FirePreview, FireResult, FloorCandidates, GettingStartedData, GuideData, ManualSimulation,
+  PanelState, Preflight, ReportSummary, ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -230,6 +230,13 @@ export const api = {
     post<{ result: string; category: string }>("/calendar/rule", { category, label }),
   removeCalendarRule: (category: string) =>
     del<{ result: string; category: string }>(`/calendar/rule/${encodeURIComponent(category)}`),
+
+  // --- CAL-10/CAL-11 computed events + event proximity warnings (doc 11, v1.83/v1.84) ---
+  // Read-only like getCalendar; dismissCalendarWarning is the one mutation,
+  // same auth/origin discipline as every other POST here.
+  getCalendarWarnings: () => get<CalendarWarnings>("/calendar/warnings"),
+  dismissCalendarWarning: (category: string, event_date: string, tier: number) =>
+    post<{ result: string }>("/calendar/warnings/dismiss", { category, event_date, tier }),
 
   // --- DOC-01..05 how-it-works guide (doc 12, slice 4) -----------------------
   // Read-only, origin-open like every other read model above -- no trading

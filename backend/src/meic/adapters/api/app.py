@@ -413,6 +413,24 @@ def _cal_label(raw: Any) -> str:
     return raw
 
 
+# CAL-11 (v1.84): friendly display names for computed categories -- backend-
+# authoritative text (UI-03), the frontend renders this verbatim and never
+# re-derives it from the raw category code.
+_COMPUTED_DISPLAY_NAMES = {"OPEX_MONTHLY": "OpEx", "QUAD_WITCH": "Quad-witching"}
+
+
+def _warning_human_label(w: Any) -> str:
+    """CAL-11's own examples verbatim: 'Today is FOMC' / 'FOMC in 2 trading
+    days (Wed)'. Computed categories render a friendly display name instead
+    of the raw category code."""
+    label = _COMPUTED_DISPLAY_NAMES.get(w.category, w.label) if w.computed else w.label
+    if w.proximity_tier == 0:
+        return f"Today is {label}"
+    wd = date.fromisoformat(w.event_date).strftime("%a")
+    plural = "s" if w.proximity_tier != 1 else ""
+    return f"{label} in {w.proximity_tier} trading day{plural} ({wd})"
+
+
 def _adhoc_row(params: dict[str, Any]):
     """ENT-11(4): an ad-hoc row validates through the IDENTICAL per-row rules as
     a schedule row (contracts 1-10, discrete stop set, width steps, per_side
@@ -494,6 +512,7 @@ def create_app(
     # 400 rather than reaching for a store that isn't wired -- every other route is
     # unaffected, same convention as `backfill_broker_reads` above.
     cal_stale_after_days: int = 45,  # CAL-02 (doc 06): staleness banner threshold, display-only
+    event_warning_lead_days: int = 3,  # CAL-11 (doc 06): proximity-warning lookahead, 0-5, display-only
     spec_root: Any = None,  # DOC-05 (doc 12): override for the directory containing spec/ —
     # tests only; every real caller (paper_app/live_app, server.py) leaves this None and
     # gets the real repo root (_REPO_ROOT), i.e. the actual hash-locked spec/ tree.
@@ -834,6 +853,13 @@ def create_app(
         # with no standing rule is never auto-tagged, CAL-04), and CAL-08
         # requires "event markers by category", not just tagged days.
         imports = calendar_store.state().imports
+        # CAL-10 (v1.83) ADDITIVE field: computed OpEx/quad-witch dates over a
+        # generous multi-year window (the CalendarPage's client-side year-nav
+        # does not refetch on year change) -- never fetched, never stale
+        # (CAL-02 banners do not apply), so this rides alongside `staleness`
+        # rather than inside it.
+        current_year = calendar_store.clock.now().year
+        computed = calendar_store.computed_events(current_year - 2, current_year + 5)
         return {
             "available": True,
             "tags": {day: {"label": t.label, "origin": t.origin, "category": t.category}
@@ -855,7 +881,44 @@ def create_app(
                                 "disputed": sorted(imports[cat].disputed) if cat in imports else []}
                          for cat, s in stale.items()},
             "standing_rules": dict(calendar_store.state().standing_rules),
+            "computed_events": {cat: sorted(dates) for cat, dates in computed.items()},
         }
+
+    @app.get("/calendar/warnings")
+    def get_calendar_warnings() -> dict[str, Any]:
+        """CAL-11: the Trading tab's dismissable proximity-warning feed --
+        display-only, NEVER a gate input. `event_warning_lead_days` (doc 06,
+        0-5, default 3) bounds how many trading days ahead a pre-event tier
+        appears; 0 leaves only day-of."""
+        if calendar_store is None:
+            return {"available": False, "warnings": []}
+        warnings = calendar_store.active_warnings(lead_days=event_warning_lead_days)
+        return {"available": True, "warnings": [
+            {"category": w.category, "event_date": w.event_date,
+             "proximity_tier": w.proximity_tier, "label": w.label,
+             "tier": w.tier, "best_effort": w.best_effort, "computed": w.computed,
+             "human_label": _warning_human_label(w)}
+            for w in warnings]}
+
+    @app.post("/calendar/warnings/dismiss")
+    def dismiss_calendar_warning(body: dict[str, Any]) -> dict[str, Any]:
+        """CAL-11 rule 2: dismiss ONE (category, event_date, tier) banner --
+        never touches any other proximity tier for the same event."""
+        if calendar_store is None:
+            raise HTTPException(status_code=400, detail="calendar not wired")
+        from meic.application.calendar_store import UnknownCalendarCategory
+
+        category = str(body.get("category", ""))
+        event_date = _cal_day(body.get("event_date"))
+        try:
+            tier = int(body.get("tier"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail={"reason": "invalid_tier"})
+        try:
+            calendar_store.dismiss_warning(category, event_date, tier)
+        except UnknownCalendarCategory:
+            raise HTTPException(status_code=422, detail={"reason": "unknown_category"})
+        return {"result": "dismissed", "category": category, "event_date": event_date, "tier": tier}
 
     @app.post("/calendar/import")
     def calendar_import(body: dict[str, Any]) -> dict[str, Any]:
@@ -937,9 +1000,9 @@ def create_app(
         would be journal noise, never a meaningful removal."""
         if calendar_store is None:
             raise HTTPException(status_code=400, detail="calendar not wired")
-        from meic.domain.trading_calendar import KNOWN_CATEGORIES
+        from meic.domain.trading_calendar import COMPUTED_CATEGORIES, KNOWN_CATEGORIES
 
-        if category not in KNOWN_CATEGORIES:
+        if category not in KNOWN_CATEGORIES and category not in COMPUTED_CATEGORIES:
             raise HTTPException(status_code=422, detail={"reason": "unknown_category"})
         calendar_store.remove_standing_rule(category)
         return {"result": "rule_removed", "category": category}

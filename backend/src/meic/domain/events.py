@@ -873,3 +873,20 @@ class CalendarRefreshRejected(Event):
     reason: str
     source: str
     checked_at: str
+
+
+# --- CAL-11 event proximity warnings (v1.84) ---------------------------------
+
+@dataclass(frozen=True)
+class EventWarningDismissed(Event):
+    """CAL-11: the operator dismissed ONE proximity-tier banner for ONE
+    calendar event -- (category, event_date, tier) is the FULL dismissal key;
+    dismissing T-3 never touches T-2/T-1/T-0 for the same event (each tier is
+    independent, rule 2). Appended to the SAME shared journal every other
+    CAL-* event uses (REC-07: the journal IS the durable store) -- survives a
+    restart because the fold rebuilds CalendarState.dismissed_warnings from
+    this event alone, and never re-nags a dismissed (event, tier) pair."""
+    category: str
+    event_date: str
+    tier: int
+    at: str | None = None

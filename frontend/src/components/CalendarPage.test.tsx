@@ -114,6 +114,36 @@ describe("tier-2 events are visually distinct — structurally, not by colour al
   });
 });
 
+describe("computed events are visually distinct from each other and from fetched tiers (CAL-10)", () => {
+  it("a computed OPEX_MONTHLY day renders a distinct glyph and class from a QUAD_WITCH day", async () => {
+    vi.spyOn(api, "getCalendar").mockResolvedValue(calendarFixture({
+      computed_events: {
+        OPEX_MONTHLY: ["2026-07-17"],
+        QUAD_WITCH: ["2026-09-18"],
+      },
+    }));
+    render(<CalendarPage />);
+    await screen.findByTestId("calendar-months");
+
+    const opexMark = screen.getByTestId("cal-evt-opex-2026-07-17");
+    const quadMark = screen.getByTestId("cal-evt-quadwitch-2026-09-18");
+    expect(opexMark.className).not.toBe(quadMark.className);
+    // Different glyphs (shape), not merely a different colour on the same glyph.
+    expect(opexMark.textContent).not.toBe(quadMark.textContent);
+  });
+
+  it("a day with no computed event shows no fabricated OpEx/quad-witch marker", async () => {
+    vi.spyOn(api, "getCalendar").mockResolvedValue(calendarFixture({
+      computed_events: { OPEX_MONTHLY: ["2026-07-17"] },
+    }));
+    render(<CalendarPage />);
+    await screen.findByTestId("calendar-months");
+
+    expect(screen.queryByTestId("cal-evt-opex-2026-07-16")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cal-evt-quadwitch-2026-07-17")).not.toBeInTheDocument();
+  });
+});
+
 describe("tagged days are unmistakably marked (CAL-03/CAL-08)", () => {
   it("renders a distinct marker + class for a manually-tagged day", async () => {
     vi.spyOn(api, "getCalendar").mockResolvedValue(calendarFixture({

@@ -61,6 +61,16 @@ def next_trading_day(after: date, *, holidays: frozenset[date] = frozenset()) ->
     return day
 
 
+def prev_trading_day(before: date, *, holidays: frozenset[date] = frozenset()) -> date:
+    """The first trading day strictly BEFORE `before` (DAY-01) -- CAL-10's
+    holiday-shift target: an OpEx date landing on a holiday shifts to the
+    preceding trading day. Mirrors next_trading_day's forward walk."""
+    day = before - timedelta(days=1)
+    while not is_trading_day(day, holidays=holidays):
+        day -= timedelta(days=1)
+    return day
+
+
 def session_close(day: date, *, half_days: frozenset[date] = frozenset()) -> time:
     return HALF_DAY_CLOSE if day in half_days else RTH_CLOSE
 

@@ -235,6 +235,19 @@ def _cal_refresh_fail_alert_days(env: dict[str, str]) -> int:
     return raw if 1 <= raw <= 14 else 3
 
 
+def _event_warning_lead_days(env: dict[str, str]) -> int:
+    """CAL-11 v1.84 `event_warning_lead_days` (doc 06: range 0-5, default 3)
+    -- how many trading days ahead of an event the Trading tab's dismissable
+    proximity warning appears (0 leaves only day-of). Out-of-range falls
+    back to the spec default, the same reject-the-dial convention as
+    `_cal_stale_after_days` above."""
+    try:
+        raw = int(env.get("MEIC_EVENT_WARNING_LEAD_DAYS", "3"))
+    except ValueError:
+        return 3
+    return raw if 0 <= raw <= 5 else 3
+
+
 def _drill_outage_seconds(env: dict[str, str]) -> float:
     """UC-12 `drill_outage_seconds` (doc 06: range 10-300, default 60) -- the
     stop-independence drill's default disconnect duration when a request
@@ -2471,7 +2484,8 @@ def live_app():
                      reporting_config=reporting_config,
                      backfill_broker_reads=_BrokerReadFacade(comp.broker),
                      calendar_store=live["calendar_store"],   # CAL-01..08
-                     cal_stale_after_days=_cal_stale_after_days(env))
+                     cal_stale_after_days=_cal_stale_after_days(env),
+                     event_warning_lead_days=_event_warning_lead_days(env))   # CAL-11
     app.state.composition = comp
     app.state.commands = commands
     # CAL-01..08: exposed like every other live signal above so a test/the

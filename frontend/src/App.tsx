@@ -10,6 +10,7 @@ import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
 import { DayTradesTable } from "./components/DayTradesTable";
 import { EntryCards } from "./components/EntryCards";
+import { EventWarningBanner } from "./components/EventWarningBanner";
 import { ManualTradeCard } from "./components/ManualTradeCard";
 import { NextEntryCountdown } from "./components/NextEntryCountdown";
 import { SchedulePanel } from "./components/SchedulePanel";
@@ -227,6 +228,8 @@ export function App() {
           )}
         </div>
       )}
+
+      {onTrading && <EventWarningBanner />}
 
       {onTrading ? (
         <main className="grid">

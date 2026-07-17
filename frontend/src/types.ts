@@ -617,6 +617,34 @@ export interface CalendarData {
   tags?: Record<string, CalendarTag>;
   staleness?: Record<string, CalendarStaleness>;
   standing_rules?: Record<string, string | null>;
+  // CAL-10 (v1.83, slice-3 additive field): computed OPEX_MONTHLY/QUAD_WITCH
+  // dates for whatever year(s) the backend has evaluated, keyed by category.
+  // Optional/additive exactly like `staleness[cat].dates` above -- a backend
+  // that predates this rule omits the field entirely, and callers must
+  // degrade to "no computed markers" rather than crash.
+  computed_events?: Record<string, string[]>;
+}
+
+// CAL-11/UI-34 (v1.84) -- one upcoming-event proximity warning, from GET
+// /calendar/warnings. `tier` is 1/2 for a fetched category, `null` for a
+// computed one (OPEX_MONTHLY/QUAD_WITCH aren't tier-1/2). `human_label` is
+// FULLY backend-composed, ready-to-render text (UI-03): render it verbatim,
+// never reformat or re-derive it client-side. The backend also sorts the
+// array nearest-first (ascending `proximity_tier`) -- render in given order.
+export interface EventWarning {
+  category: string;
+  event_date: string;
+  proximity_tier: number;
+  label: string;
+  tier: 1 | 2 | null;
+  best_effort: boolean;
+  computed: boolean;
+  human_label: string;
+}
+
+export interface CalendarWarnings {
+  available: boolean;
+  warnings: EventWarning[];
 }
 
 /** DOC-01..05 (doc 12) -- the How-it-works tab's single source (GET /guide).

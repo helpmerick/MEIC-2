@@ -51,7 +51,8 @@ def vitest_cal_result():
     proc = subprocess.run(
         ["npx", "vitest", "run", "src/components/CalendarPage.test.tsx",
          "src/components/ManualTradeCard.test.tsx",
-         "src/components/SchedulePanel.test.tsx", "--reporter=verbose"],
+         "src/components/SchedulePanel.test.tsx",
+         "src/components/EventWarningBanner.test.tsx", "--reporter=verbose"],
         cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
         shell=(sys.platform == "win32"), timeout=180,
     )

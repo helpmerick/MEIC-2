@@ -35,6 +35,7 @@ from .events import (
     CalendarRefreshRejected,
     CalendarRefreshSucceeded,
     Event,
+    EventWarningDismissed,
     ManualFireBlackoutAcknowledged,
     NoTradeTagRemoved,
     NoTradeTagSet,
@@ -48,6 +49,13 @@ from .events import (
 TIER_1: frozenset[str] = frozenset({"FOMC", "CPI", "NFP", "PPI", "PCE", "GDP"})
 TIER_2: frozenset[str] = frozenset({"FED_SPEAKER"})
 KNOWN_CATEGORIES: frozenset[str] = TIER_1 | TIER_2
+
+# CAL-10 (v1.83): a THIRD event class -- computed by deterministic calendar
+# math (application/opex_calendar.py), never fetched/imported. Deliberately
+# NOT part of KNOWN_CATEGORIES: `import_events`/`record_refresh_success`
+# (calendar_store.py) must keep raising UnknownCalendarCategory for these --
+# "no fetch, no source domain" is a structural guarantee, not just prose.
+COMPUTED_CATEGORIES: frozenset[str] = frozenset({"OPEX_MONTHLY", "QUAD_WITCH"})
 
 
 def tier_for_category(category: str) -> int:
@@ -110,6 +118,11 @@ class CalendarState:
     # CAL-06 audit trail: day -> the label acknowledged, most recent wins.
     # Metadata only; report-tagging itself lives on CondorFilled.blackout_overridden.
     acknowledgments: dict[str, str] = field(default_factory=dict)
+    # CAL-11: (category, event_date, proximity_tier) triples the operator has
+    # dismissed -- each tier independent (dismissing T-3 never silences T-2/
+    # T-1/T-0 for the same event). REC-07-durable by construction: the fold
+    # rebuilds this set from `EventWarningDismissed` events alone.
+    dismissed_warnings: frozenset[tuple[str, str, int]] = frozenset()
 
 
 def apply(state: CalendarState, event: Event) -> CalendarState:
@@ -192,6 +205,9 @@ def apply(state: CalendarState, event: Event) -> CalendarState:
         acks = dict(state.acknowledgments)
         acks[event.day] = event.label
         return replace(state, acknowledgments=acks)
+    if isinstance(event, EventWarningDismissed):
+        dismissed = state.dismissed_warnings | {(event.category, event.event_date, event.tier)}
+        return replace(state, dismissed_warnings=dismissed)
     return state
 
 
@@ -200,12 +216,32 @@ def _auto_tag_effective(state: CalendarState, day: str) -> bool:
     standing rule's category has a CURRENT import naming the day, and the day
     is not already individually suppressed. Pure state derivation — `apply`
     uses it so `NoTradeTagRemoved` only ever suppresses an auto-tag that
-    actually exists at that point in the fold (layered removal, finding 1)."""
+    actually exists at that point in the fold (layered removal, finding 1).
+
+    CAL-10 (v1.83): a COMPUTED category (OPEX_MONTHLY/QUAD_WITCH) is NEVER
+    imported, so `state.imports.get(category)` is always None for it -- this
+    function cannot verify `day` is a REAL computed date without importing
+    application/opex_calendar.py, which would violate the domain/application
+    layering boundary (see that module's own docstring: "domain/ must never
+    import application/"). The safe direction, taken here: a removal while
+    ANY computed-category standing rule is live is treated as
+    suppression-worthy regardless of which exact day was clicked.
+    `effective_tags`/`label_for_day` only ever consult `removed_days` as an
+    EXCLUSION FILTER over the caller-supplied real computed dates (see their
+    own `computed_dates` handling below) -- a day that was never actually a
+    computed event stays a harmless, inert entry here, while a day that WAS
+    one (the operator's real "suppress" click) is now correctly and
+    permanently suppressed. Without this, `NoTradeTagRemoved` on a
+    computed-category auto-tag was a silent no-op: the tag kept reappearing
+    on every read (pinned fail-first in
+    tests/domain/test_trading_calendar_cal10_cal11.py)."""
     if day in state.removed_days:
         return False
     for category in state.standing_rules:
         imp = state.imports.get(category)
         if imp is not None and day in imp.dates:
+            return True
+        if category in COMPUTED_CATEGORIES:
             return True
     return False
 
@@ -220,24 +256,42 @@ def fold(events: list[Event]) -> CalendarState:
     return state
 
 
-def effective_tags(state: CalendarState) -> dict[str, TagInfo]:
+def effective_tags(
+    state: CalendarState, computed_dates: dict[str, frozenset[str]] | None = None
+) -> dict[str, TagInfo]:
     """Every ET day currently tagged NO-TRADE, auto-tags first (so a manual
     tag on the same day — the operator's own direct act — always wins the
     label shown). Iteration order over `standing_rules`/`manual_tags` is
     insertion order (plain dicts); the two are not expected to collide in
     practice (CAL doesn't specify cross-category same-day precedence), and
     this module never silently drops either — the LAST write for a given day
-    is what a plain dict naturally keeps, same as the fold above."""
+    is what a plain dict naturally keeps, same as the fold above.
+
+    `computed_dates` (CAL-10, v1.83): the SAME `{category: dates}` shape as
+    `state.imports[category].dates`, but for a COMPUTED category
+    (OPEX_MONTHLY/QUAD_WITCH) supplied by the caller (application/
+    opex_calendar.py's `opex_dates_by_category`) rather than read from
+    `state.imports` (computed categories are never imported, by design — see
+    COMPUTED_CATEGORIES). A live standing rule against a computed category
+    (e.g. "always block QUAD_WITCH") auto-tags exactly like a fetched
+    category's rule does -- same `removed_days` suppression, same
+    label-default-to-category-name logic, `origin="auto"`."""
     tags: dict[str, TagInfo] = {}
     for category, override_label in state.standing_rules.items():
         imp = state.imports.get(category)
-        if imp is None:
-            continue
-        for day in imp.dates:
-            if day in state.removed_days:
-                continue
-            label = override_label or imp.labels.get(day) or category
-            tags[day] = TagInfo(day=day, label=label, origin="auto", category=category)
+        if imp is not None:
+            for day in imp.dates:
+                if day in state.removed_days:
+                    continue
+                label = override_label or imp.labels.get(day) or category
+                tags[day] = TagInfo(day=day, label=label, origin="auto", category=category)
+        computed = (computed_dates or {}).get(category)
+        if computed:
+            for day in computed:
+                if day in state.removed_days:
+                    continue
+                label = override_label or category
+                tags[day] = TagInfo(day=day, label=label, origin="auto", category=category)
     for day, (label, origin) in state.manual_tags.items():
         # `origin` is the journaled event's own field, passed through the fold
         # (finding 5) — always "manual" today: auto-tags are derived above,
@@ -246,13 +300,15 @@ def effective_tags(state: CalendarState) -> dict[str, TagInfo]:
     return tags
 
 
-def label_for_day(state: CalendarState, day: str) -> str | None:
+def label_for_day(
+    state: CalendarState, day: str, computed_dates: dict[str, frozenset[str]] | None = None
+) -> str | None:
     """CAL-05's gate input: the NO-TRADE label in force for `day`, or None if
     untagged. CAL-07's fail-open polarity lives at the CALLER
     (application/calendar_store.py's `label_for_day` wrapper) — this pure
     function has no try/except of its own; a caller that cannot even fold
     the log is the one responsible for reading that as "no tag"."""
-    tag = effective_tags(state).get(day)
+    tag = effective_tags(state, computed_dates).get(day)
     return tag.label if tag is not None else None
 
 
@@ -311,3 +367,64 @@ def consecutive_refresh_failures(events: list[Event], category: str) -> int:
             break
         streak += 1
     return streak
+
+
+# --- CAL-11 event proximity warnings (v1.84) ---------------------------------
+
+@dataclass(frozen=True)
+class EventWarning:
+    category: str
+    event_date: str
+    proximity_tier: int          # 0 = today, 1..N = trading days before
+    label: str
+    tier: int | None             # 1/2 per tier_for_category; None for a computed
+                                  # category (OPEX_MONTHLY/QUAD_WITCH aren't tier-1/2)
+    best_effort: bool             # tier == 2 (CAL-01: Fed speakers, never certain)
+    computed: bool                # category in COMPUTED_CATEGORIES
+
+
+def active_warnings(
+    state: CalendarState,
+    computed_dates: dict[str, frozenset[str]] | None,
+    *,
+    trading_days_path: list[str],
+) -> list[EventWarning]:
+    """CAL-11: trading_days_path[k] is the ET day k TRADING days from today
+    (index 0 = today) -- precomputed by the CALLER via
+    application/market_calendar.py's next_trading_day (this module never
+    reads a clock or walks the exchange calendar itself -- same 'threaded in
+    by the caller' discipline as staleness()'s `now` parameter). Emits one
+    EventWarning per (category, event date) pair -- across EVERY imported
+    tier-1/tier-2 category AND every computed category -- whose date matches
+    an entry in trading_days_path, at that index's proximity tier, MINUS any
+    (category, date, tier) already in state.dismissed_warnings (never
+    re-nagged). Sorted nearest-first (ascending proximity_tier, CAL-11 rule
+    4's stacking order) -- multiple events on the same or different days all
+    appear independently, never fabricated (only emitted for a date the
+    calendar's imports/computed set ACTUALLY carries)."""
+    candidates: list[tuple[str, str, str]] = []   # (category, day, label)
+    for category, imp in state.imports.items():
+        for day in imp.dates:
+            label = imp.labels.get(day) or category
+            candidates.append((category, day, label))
+    for category, dates in (computed_dates or {}).items():
+        for day in dates:
+            candidates.append((category, day, category))
+
+    by_day = {day: k for k, day in enumerate(trading_days_path)}
+
+    warnings: list[EventWarning] = []
+    for category, day, label in candidates:
+        k = by_day.get(day)
+        if k is None:
+            continue
+        if (category, day, k) in state.dismissed_warnings:
+            continue
+        computed = category in COMPUTED_CATEGORIES
+        tier = None if computed else tier_for_category(category)
+        warnings.append(EventWarning(
+            category=category, event_date=day, proximity_tier=k, label=label,
+            tier=tier, best_effort=(tier == 2), computed=computed))
+
+    warnings.sort(key=lambda w: (w.proximity_tier, w.event_date, w.category))
+    return warnings

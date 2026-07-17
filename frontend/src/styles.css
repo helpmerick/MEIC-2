@@ -431,6 +431,25 @@ body {
 }
 .drill-x:hover { color: var(--text); background: var(--surface); }
 
+/* --- CAL-11/UI-34 event proximity warning banner --------------------------- */
+/* Ratified UI-34 constraint: AMBER, never the STP-04/UNPROTECTED critical RED
+   banner colour -- uses --warn/--warn-dim exclusively, never --bad/--bad-dim. */
+.event-warning-banner {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px;
+  padding: 10px 14px; border-radius: 11px;
+  background: var(--warn-dim); border: 1px solid rgba(251,191,36,0.35);
+}
+.event-warning-row {
+  display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--warn); font-weight: 600;
+}
+.event-warning-text { flex: 1; }
+.event-warning-best-effort { font-style: italic; font-weight: 400; color: var(--muted); }
+.event-warning-dismiss {
+  background: transparent; border: none; color: var(--faint); font-size: 15px; cursor: pointer;
+  line-height: 1; padding: 2px 6px; border-radius: 6px;
+}
+.event-warning-dismiss:hover { color: var(--text); background: var(--surface); }
+
 /* --- mode switch (UC-10) — the mode tag doubles as a stage-switch button --- */
 .mode-switch { cursor: pointer; font-family: inherit; transition: filter .15s ease, transform .12s ease; }
 .mode-switch:hover { filter: brightness(1.15); transform: translateY(-1px); }

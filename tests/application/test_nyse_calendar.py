@@ -8,7 +8,7 @@ published facts, so nobody ever maintains a list by hand.
 """
 from datetime import date
 
-from meic.application.market_calendar import is_trading_day, next_trading_day
+from meic.application.market_calendar import is_trading_day, next_trading_day, prev_trading_day
 from meic.application.nyse_holidays import (
     half_days_near,
     holidays_near,
@@ -107,3 +107,46 @@ class TestNextTradingDay:
         assert not is_trading_day(date(2026, 7, 11), holidays=self.HOLIDAYS_2026)
         assert not is_trading_day(date(2026, 7, 3), holidays=self.HOLIDAYS_2026)
         assert is_trading_day(date(2026, 7, 13), holidays=self.HOLIDAYS_2026)
+
+
+class TestPrevTradingDay:
+    """CAL-10's holiday-shift target: an OpEx date landing on a holiday
+    shifts to the PRECEDING trading day -- prev_trading_day mirrors
+    next_trading_day's forward walk, backwards."""
+
+    HOLIDAYS_2026 = nyse_holidays(2026)
+
+    def test_a_monday_rolls_back_over_the_weekend(self):
+        # Monday 2026-07-13's preceding trading day skips the weekend back
+        # to Friday 2026-07-10.
+        assert prev_trading_day(date(2026, 7, 13), holidays=self.HOLIDAYS_2026) \
+            == date(2026, 7, 10)
+
+    def test_an_observed_holiday_extends_the_backward_gap(self):
+        # Monday July 6th 2026: Friday 3rd is the observed July 4th holiday,
+        # then the weekend -> preceding trading day is Thursday July 2nd.
+        assert prev_trading_day(date(2026, 7, 6), holidays=self.HOLIDAYS_2026) \
+            == date(2026, 7, 2)
+
+    def test_good_friday_2000_the_real_cal_10_vector(self):
+        # April 2000: Good Friday and the third Friday both fall on
+        # 2000-04-21 (a holiday) -- the preceding trading day is Thursday
+        # 2000-04-20, itself not a holiday.
+        from meic.application.nyse_holidays import nyse_holidays as _holidays
+        holidays_2000 = _holidays(2000)
+        assert date(2000, 4, 21) in holidays_2000
+        assert prev_trading_day(date(2000, 4, 21), holidays=holidays_2000) == date(2000, 4, 20)
+
+    def test_new_year_walk_backward_needs_the_prior_years_holidays(self):
+        # Monday 2027-01-04: Friday 01-01 is New Year's, then the weekend ->
+        # preceding trading day is Thursday 2026-12-31.
+        assert prev_trading_day(date(2027, 1, 4),
+                                 holidays=holidays_near(date(2026, 12, 28))) \
+            == date(2026, 12, 31)
+
+    def test_is_the_exact_inverse_of_next_trading_day(self):
+        # Walking forward then back from any trading day returns to itself
+        # (both dates stay within 2026, so HOLIDAYS_2026 alone is sufficient).
+        for day in (date(2026, 7, 13), date(2026, 7, 20), date(2026, 12, 23)):
+            forward = next_trading_day(day, holidays=self.HOLIDAYS_2026)
+            assert prev_trading_day(forward, holidays=self.HOLIDAYS_2026) == day

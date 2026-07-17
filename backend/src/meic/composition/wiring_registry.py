@@ -466,6 +466,82 @@ def unexpectedly_not_live(state) -> list[str]:
             if entry.known_gap is None and not result.live]
 
 
+# --- NFR-07 v1.84: UI data-source proofs (CAL-11) ----------------------------
+#
+# SAFETY_GATE_REGISTRY above proves ENT-03 gate INPUTS are live signals.
+# CAL-11's event-proximity-warning feed is NOT a gate input at all -- it is
+# deliberately display-only (CAL-11 rule 1: "changes NO gate, blocks NO
+# entry"), so it does not belong in that registry, and CAL-10's own computed
+# events are a pure function needing no registry entry at all (see
+# KNOWN_FALSE_POSITIVE_RULE_IDS's "CAL-10"/"CAL-11" entries below, which
+# settle the DIFFERENT question of whether the self-policing keyword scan
+# must treat either as a missing RUNTIME COMPONENT -- it must not, neither is
+# a ticked loop). This section answers a THIRD, separate question the
+# operator commissioned specifically for CAL-11: is the Trading tab's warning
+# banner genuinely DERIVED from the live calendar/tag store, or could it be a
+# hardcoded constant dressed up as a feed? Same "constant-signal species"
+# concept as the SAFETY_GATE_REGISTRY section above, applied to a UI READ
+# MODEL instead of a safety gate.
+
+
+@dataclass(frozen=True)
+class UiDataSource:
+    """One UI-facing read model proven bound to real, varying state -- never
+    a constant. `live_check(app.state)` mirrors `SafetyGateInput.live_check`'s
+    shape exactly (returns a `LiveCheckResult`); kept as a separate registry
+    from SAFETY_GATE_REGISTRY because the two answer different questions (does
+    this feed a safety gate? vs. does this feed the UI?), not because the
+    proof mechanics differ."""
+    rule_ids: tuple[str, ...]
+    source: str
+    proof: str
+    live_check: Callable[[object], LiveCheckResult]
+
+
+def _event_warnings_live_check(state) -> LiveCheckResult:
+    """STRUCTURAL/HEURISTIC (see module docstring's proof-strategy split
+    above `_calendar_blackout_live_check`) -- CAL-11 (v1.84). The real
+    provider (`CalendarStore.active_warnings`) is event-sourced/journal-backed
+    exactly like `label_for_day` above: a behavioural flip-and-check would
+    leave a permanent synthetic `EventWarningDismissed`/`CalendarEventsImported`
+    pair sitting in the PRODUCTION journal forever, the same reason
+    `_calendar_blackout_live_check` cannot flip-and-check either. The
+    strongest sound check available without mutating live state: the bound
+    method must be on a REAL `CalendarStore` instance (`__self__` is the
+    store, never None) -- a hardcoded constant list masquerading as this feed
+    would be a bare function/lambda with neither a closure nor a `__self__`,
+    which this heuristic can never be fooled by (the same shape
+    `_session_valid_live_check`/`_buying_power_ok_live_check`/
+    `_calendar_blackout_live_check` all already rely on)."""
+    runtime = getattr(state, "calendar_store", None)
+    provider = getattr(runtime, "active_warnings", None) if runtime is not None else None
+    if provider is None:
+        return LiveCheckResult(False, "app.state.calendar_store.active_warnings not reachable")
+    live = _closes_over_real_state(provider)
+    return LiveCheckResult(live, f"calendar_store.active_warnings closes over real state: {live}")
+
+
+UI_DATA_SOURCE_REGISTRY: tuple[UiDataSource, ...] = (
+    UiDataSource(
+        rule_ids=("CAL-11", "UI-34"),
+        source="event_warnings",
+        proof="app.state.calendar_store.active_warnings is a bound method on the real, "
+              "event-sourced CalendarStore (heuristic -- the store is journal-backed, so a "
+              "behavioural flip-and-check would leave permanent synthetic events in the "
+              "production log; see _event_warnings_live_check's docstring). DISPLAY-ONLY by "
+              "construction (CAL-11 rule 1): this feed is deliberately ABSENT from "
+              "SAFETY_GATE_REGISTRY above -- it must never become an ENT-03 gate input.",
+        live_check=_event_warnings_live_check,
+    ),
+)
+
+
+def check_all_ui_data_sources(state) -> list[tuple[UiDataSource, LiveCheckResult]]:
+    """(entry, result) for every UI_DATA_SOURCE_REGISTRY entry, against the
+    given `app.state`. Mirrors `check_all_safety_gate_inputs` above."""
+    return [(entry, entry.live_check(state)) for entry in UI_DATA_SOURCE_REGISTRY]
+
+
 # --- self-policing: HONEST LIMITATION ---------------------------------------
 #
 # Run raw, `spec_runtime_component_rule_ids()` returns ~40 ids against this
@@ -554,6 +630,15 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
                 # SAME reactive call chain STP-08a's push/poll trigger
     "DAY-01a",  # the COMPUTED calendar the day supervisor (ENT-10/DAY-01)
                 # consults -- a pure calculation, not its own loop
+    # CAL-10 (v1.83): a PURE calendar computation (application/opex_calendar.py),
+    # evaluated at render/day-init, no ticking component -- same class as
+    # DAY-01a immediately above.
+    "CAL-10",
+    # CAL-11 (v1.84): the Trading-tab proximity-warning feed is a REPORTING/UI
+    # VIEW computed fresh on every GET /calendar/warnings
+    # (CalendarStore.active_warnings) -- not a standalone runtime component,
+    # same class as UI-24/UI-25/UI-31/RPT-17 above.
+    "CAL-11",
     "STP-03",   # deliberately an ABSENCE rule (stop_limit tombstone) --
                 # TC-NFR-07 scenario 2 already covers it; the OPPOSITE of
                 # "prove constructed"

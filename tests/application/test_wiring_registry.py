@@ -7,10 +7,12 @@ from meic.composition.wiring_registry import (
     REGISTRY,
     SAFETY_GATE_REGISTRY,
     SPEC_DIR,
+    UI_DATA_SOURCE_REGISTRY,
     _closes_over_real_state,
     all_rule_ids,
     check_all,
     check_all_safety_gate_inputs,
+    check_all_ui_data_sources,
     spec_runtime_component_rule_ids,
     unaccounted_rule_ids,
     unexpectedly_not_live,
@@ -171,6 +173,55 @@ def test_unexpectedly_not_live_flags_every_unproven_input():
     failing = unexpectedly_not_live(state)
     assert "flatten_in_progress" in failing
     assert "halted" not in failing   # not a registry entry -- retired, not merely unproven
+
+
+# --- NFR-07 v1.84: UI_DATA_SOURCE_REGISTRY (CAL-11) --------------------------
+
+def test_ui_data_source_registry_entries_are_well_formed():
+    assert len(UI_DATA_SOURCE_REGISTRY) > 0
+    for entry in UI_DATA_SOURCE_REGISTRY:
+        assert entry.rule_ids, f"{entry.source} declares no rule ids"
+        assert entry.source
+        assert entry.proof
+        assert callable(entry.live_check)
+
+
+def test_event_warnings_is_the_registered_cal11_ui_data_source():
+    entry = next(e for e in UI_DATA_SOURCE_REGISTRY if e.source == "event_warnings")
+    assert "CAL-11" in entry.rule_ids and "UI-34" in entry.rule_ids
+
+
+def test_event_warnings_live_check_fails_when_calendar_store_unreachable():
+    """An empty state (no `calendar_store` attribute at all) must report NOT
+    live -- never a false pass just because the attribute lookup silently
+    defaulted to something truthy."""
+    results = check_all_ui_data_sources(SimpleNamespace())
+    assert len(results) == len(UI_DATA_SOURCE_REGISTRY)
+    assert all(not result.live for _entry, result in results)
+
+
+def test_event_warnings_live_check_fails_for_a_bare_constant_stub():
+    """The exact regression shape this proof exists to catch: a hardcoded
+    constant function standing in for the real, event-sourced provider must
+    be REJECTED, the same as `_closes_over_real_state`'s own pinned case."""
+    state = SimpleNamespace(calendar_store=SimpleNamespace(active_warnings=lambda **_: []))
+    results = check_all_ui_data_sources(state)
+    assert all(not result.live for _entry, result in results)
+
+
+def test_event_warnings_live_check_passes_for_the_real_calendar_store():
+    """The real provider (`CalendarStore.active_warnings`, a bound method on
+    a real instance) must pass -- proving the heuristic doesn't just reject
+    everything."""
+    from datetime import datetime, timezone
+
+    from meic.application.calendar_store import CalendarStore
+    from tests.harness.fake_clock import FastClock
+
+    store = CalendarStore([], FastClock(datetime(2026, 7, 15, 14, 0, tzinfo=timezone.utc)))
+    state = SimpleNamespace(calendar_store=store)
+    results = check_all_ui_data_sources(state)
+    assert all(result.live for _entry, result in results)
 
 
 def test_nfr07_wiring_registry_is_self_policing():

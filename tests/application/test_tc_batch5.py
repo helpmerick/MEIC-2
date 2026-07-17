@@ -8,7 +8,13 @@ from meic.adapters.sim.simulated_broker import SimulatedBroker
 from meic.application.cancel_routing import route_cancel_outcome
 from meic.application.close_entry import VALID_INITIATORS
 from meic.composition.paper import PaperComposition
-from meic.config.validation import TOMBSTONE_KEYS, TOMBSTONE_KEYS_V151, ConfigRejected, validate_config
+from meic.config.validation import (
+    TOMBSTONE_KEYS,
+    TOMBSTONE_KEYS_V151,
+    ConfigRejected,
+    validate_config,
+    validate_event_warning_lead_days,
+)
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
 
@@ -87,6 +93,28 @@ def test_tc_rsk_06_paper_wiring_never_constructs_live_adapter(monkeypatch):
     src = inspect.getsource(paper_mod)
     assert "TastytradeAdapter" not in src
     assert "tastytrade" not in src.lower()
+
+
+# --- CAL-11 v1.84: event_warning_lead_days config validation (0-5, default 3) --
+
+def test_cal_11_event_warning_lead_days_accepts_the_full_valid_range():
+    for days in (0, 1, 2, 3, 4, 5):
+        validate_event_warning_lead_days(days)          # must not raise
+        validate_config({"event_warning_lead_days": days})  # wired into validate_config too
+
+
+def test_cal_11_event_warning_lead_days_rejects_out_of_range_never_clamps():
+    for days in (-1, 6, 100):
+        try:
+            validate_event_warning_lead_days(days)
+            raise AssertionError(f"{days} should be rejected as out_of_range")
+        except ConfigRejected as e:
+            assert e.key == "event_warning_lead_days" and e.reason == "out_of_range"
+        try:
+            validate_config({"event_warning_lead_days": days})
+            raise AssertionError(f"{days} should be rejected via validate_config too")
+        except ConfigRejected as e:
+            assert e.key == "event_warning_lead_days" and e.reason == "out_of_range"
 
 
 # --- TC-API-04: cancel rejected because already filled routes as a fill --------

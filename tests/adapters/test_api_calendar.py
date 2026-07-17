@@ -228,3 +228,127 @@ def test_import_rejects_bad_dates_bad_labels_and_unknown_categories(wired):
                                               "dates": ["2026-09-18"]})
     assert r.status_code == 422 and r.json()["detail"]["reason"] == "unknown_category"
     _assert_nothing_journaled(events)
+
+
+# --- CAL-10 (v1.83): computed OpEx/quad-witch events on GET /calendar -----------
+
+def test_cal10_get_calendar_carries_computed_events(client):
+    body = client.get("/calendar").json()
+    assert "2026-07-17" in body["computed_events"]["OPEX_MONTHLY"]
+    assert "2026-09-18" in body["computed_events"]["QUAD_WITCH"]
+
+
+def test_cal10_rule_endpoint_accepts_a_computed_category(client):
+    """CAL-10: 'standing-rule capable exactly like fetched ones' -- the SAME
+    /calendar/rule endpoint that already handles FOMC etc. must accept
+    OPEX_MONTHLY/QUAD_WITCH too, and the resulting auto-tag shows up in the
+    SAME read model, distinguishable from a fetched-category auto-tag only by
+    its category name."""
+    r = client.post("/calendar/rule", json={"category": "QUAD_WITCH"})
+    assert r.status_code == 200
+    body = client.get("/calendar").json()
+    assert body["tags"]["2026-09-18"] == {"label": "QUAD_WITCH", "origin": "auto", "category": "QUAD_WITCH"}
+    assert "2026-07-17" not in body["tags"]   # monthly OpEx, no rule for it -- CAL-10: never auto-blocked
+
+    assert client.delete("/calendar/rule/QUAD_WITCH").status_code == 200
+    assert "2026-09-18" not in client.get("/calendar").json()["tags"]
+
+
+def test_cal10_import_still_rejects_a_computed_category_never_fetched(client, events=None):
+    r = client.post("/calendar/import", json={"category": "OPEX_MONTHLY", "dates": ["2026-07-17"]})
+    assert r.status_code == 422 and r.json()["detail"]["reason"] == "unknown_category"
+
+
+def test_cal10_computed_categories_never_appear_in_staleness(client):
+    body = client.get("/calendar").json()
+    assert "OPEX_MONTHLY" not in body["staleness"]
+    assert "QUAD_WITCH" not in body["staleness"]
+
+
+# --- CAL-11 (v1.84): event proximity warnings -----------------------------------
+
+def test_cal11_warnings_endpoint_returns_day_of_and_lead_tiers(wired):
+    """`wired`'s create_app call passes no explicit event_warning_lead_days,
+    so it exercises the doc-06 DEFAULT (3) end-to-end."""
+    client, _, _ = wired
+    r = client.post("/calendar/import", json={"category": "FOMC",
+                                              "dates": ["2026-07-15", "2026-07-16",
+                                                        "2026-07-17", "2026-07-20"]})
+    assert r.status_code == 200
+
+    body = client.get("/calendar/warnings").json()
+    assert body["available"] is True
+    fomc = [w for w in body["warnings"] if w["category"] == "FOMC"]
+    tiers = {w["proximity_tier"] for w in fomc}
+    assert tiers == {0, 1, 2, 3}
+    today = next(w for w in fomc if w["proximity_tier"] == 0)
+    assert today["human_label"] == "Today is FOMC"
+    t2 = next(w for w in fomc if w["proximity_tier"] == 2)
+    assert t2["human_label"] == "FOMC in 2 trading days (Fri)"
+    # nearest-first ordering (rule 4)
+    all_tiers = [w["proximity_tier"] for w in body["warnings"]]
+    assert all_tiers == sorted(all_tiers)
+
+
+def test_cal11_warnings_unavailable_without_a_wired_store():
+    state = PersistentState(InMemoryStateStore())
+    client = TestClient(create_app(state, EventLog()))
+    assert client.get("/calendar/warnings").json() == {"available": False, "warnings": []}
+    assert client.post("/calendar/warnings/dismiss",
+                        json={"category": "FOMC", "event_date": "2026-07-15", "tier": 0}
+                        ).status_code == 400
+
+
+def test_cal11_dismiss_removes_only_that_tier_and_survives_a_rebuilt_store(wired):
+    client, events, store = wired
+    client.post("/calendar/import", json={"category": "FOMC",
+                                          "dates": ["2026-07-15", "2026-07-16",
+                                                    "2026-07-17", "2026-07-20"]})
+    r = client.post("/calendar/warnings/dismiss",
+                     json={"category": "FOMC", "event_date": "2026-07-20", "tier": 3})
+    assert r.status_code == 200 and r.json()["result"] == "dismissed"
+
+    body = client.get("/calendar/warnings").json()
+    fomc_tiers = {w["proximity_tier"] for w in body["warnings"] if w["category"] == "FOMC"}
+    assert fomc_tiers == {0, 1, 2}   # T-3 gone, T-2/T-1/T-0 still present
+
+    # REC-07: rebuild a brand-new app/store over the SAME journal ("restart").
+    restarted_store = CalendarStore(list(events), FastClock(NOW))
+    restarted_state = PersistentState(InMemoryStateStore())
+    restarted = TestClient(create_app(restarted_state, list(events), calendar_store=restarted_store))
+    restarted_body = restarted.get("/calendar/warnings").json()
+    restarted_tiers = {w["proximity_tier"] for w in restarted_body["warnings"] if w["category"] == "FOMC"}
+    assert restarted_tiers == {0, 1, 2}   # never re-nags
+
+
+def test_cal11_dismiss_rejects_a_malformed_day_and_an_unknown_category(wired):
+    client, events, _ = wired
+    r = client.post("/calendar/warnings/dismiss",
+                     json={"category": "FOMC", "event_date": "not-a-day", "tier": 0})
+    assert r.status_code == 422 and r.json()["detail"]["reason"] == "invalid_day"
+
+    r = client.post("/calendar/warnings/dismiss",
+                     json={"category": "NOT_REAL", "event_date": "2026-07-15", "tier": 0})
+    assert r.status_code == 422 and r.json()["detail"]["reason"] == "unknown_category"
+    _assert_nothing_journaled(events)
+
+
+def test_cal11_a_tier2_fed_speaker_warning_is_marked_best_effort_over_http(wired):
+    client, _, _ = wired
+    client.post("/calendar/import", json={"category": "FED_SPEAKER", "dates": ["2026-07-16"]})
+    body = client.get("/calendar/warnings").json()
+    speaker = [w for w in body["warnings"] if w["category"] == "FED_SPEAKER"]
+    assert len(speaker) == 1
+    assert speaker[0]["best_effort"] is True and speaker[0]["tier"] == 2
+
+
+def test_cal11_untagged_computed_opex_day_warns_but_never_blocks(wired):
+    """TC-CAL-05 scenario 4 over HTTP: the warning feed surfaces the computed
+    OpEx day (2026-07-17, within default lead_days=3 of NOW=2026-07-15), but
+    with NO standing rule the SAME day reads untagged on the CAL-05 read model."""
+    client, _, store = wired
+    body = client.get("/calendar/warnings").json()
+    opex = [w for w in body["warnings"] if w["category"] == "OPEX_MONTHLY" and w["event_date"] == "2026-07-17"]
+    assert len(opex) == 1 and opex[0]["computed"] is True
+    assert client.get("/calendar").json()["tags"].get("2026-07-17") is None
+    assert store.label_for_day("2026-07-17") is None

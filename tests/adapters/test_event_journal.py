@@ -142,6 +142,11 @@ def _sample_instances() -> dict[type, ev.Event]:
             category="FOMC", reason="implausible_count:40",
             source="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
             checked_at="2026-07-16T09:00:00-04:00"),
+        # CAL-11 (v1.84): the event-proximity-warning dismissal event -- see
+        # domain/trading_calendar.py's fold (dismissed_warnings).
+        ev.EventWarningDismissed: ev.EventWarningDismissed(
+            category="FOMC", event_date="2026-07-15", tier=3,
+            at="2026-07-10T10:07:00-04:00"),
     }
 
 

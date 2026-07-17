@@ -32,6 +32,17 @@ export const CALENDAR_CATEGORIES: { name: string; fallback_tier: 1 | 2 }[] = [
   { name: "FED_SPEAKER", fallback_tier: 2 },
 ];
 
+// CAL-10 (v1.83): the third event class -- computed, no fetch/staleness
+// concept. Hand-mirrored display list ONLY for the RulesPanel's standing-rule
+// toggles (the "always block <category>" mechanism is category-string-generic
+// already, per CAL-04); deliberately NOT added to CALENDAR_CATEGORIES since
+// these carry no staleness/import path (StalenessBanner/ImportDialog stay
+// scoped to the fetched/best-effort categories only).
+export const COMPUTED_CATEGORIES: { name: string; display: string }[] = [
+  { name: "OPEX_MONTHLY", display: "OpEx" },
+  { name: "QUAD_WITCH", display: "Quad-witching" },
+];
+
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
@@ -52,7 +63,9 @@ function pad2(n: number): string {
 
 interface DayEvent {
   category: string;
-  tier: 1 | 2;
+  // CAL-10: "computed" marks an OPEX_MONTHLY/QUAD_WITCH day -- distinct from
+  // the fetched tier-1/tier-2 categories, never stacked with them.
+  tier: 1 | 2 | "computed";
 }
 
 interface DayInfo {
@@ -81,6 +94,17 @@ function buildDayIndex(data: CalendarData | null, year: number): Map<string, Day
       if (!day.startsWith(prefix)) continue;
       const entry = idx.get(day) ?? { date: day, events: [] };
       entry.events.push({ category, tier: s.tier });
+      idx.set(day, entry);
+    }
+  }
+  // CAL-10 (v1.83, additive field): `computed_events` may be ABSENT on a
+  // backend that predates this rule -- degrade to "no computed markers"
+  // rather than crash, same discipline as the `staleness[cat].dates` loop above.
+  for (const [category, dates] of Object.entries(data.computed_events ?? {})) {
+    for (const day of dates) {
+      if (!day.startsWith(prefix)) continue;
+      const entry = idx.get(day) ?? { date: day, events: [] };
+      entry.events.push({ category, tier: "computed" });
       idx.set(day, entry);
     }
   }
@@ -158,6 +182,8 @@ export function CalendarPage() {
               <span className="cal-evt cal-evt-tier2" aria-hidden>▲</span> Tier 2 (best-effort, Fed speaker)
               <span className="cal-tag-mark origin-manual" aria-hidden>■</span> Tagged NO-TRADE (manual)
               <span className="cal-tag-mark origin-auto" aria-hidden>◆</span> Tagged NO-TRADE (auto, standing rule)
+              <span className="cal-evt cal-evt-opex" aria-hidden>◈</span> OpEx (computed, monthly)
+              <span className="cal-evt cal-evt-quadwitch" aria-hidden>★</span> Quad-witching (computed, quarterly)
             </div>
           </section>
 
@@ -210,6 +236,10 @@ function MonthGrid({
           const tag = info?.tag;
           const tier1 = info?.events.some((e) => e.tier === 1) ?? false;
           const tier2 = info?.events.some((e) => e.tier === 2) ?? false;
+          // CAL-10: one computed event per day, never both stacked -- OPEX_MONTHLY
+          // and QUAD_WITCH badged distinct from each other and from tier-1/2.
+          const opexEvt = info?.events.some((e) => e.tier === "computed" && e.category === "OPEX_MONTHLY") ?? false;
+          const quadEvt = info?.events.some((e) => e.tier === "computed" && e.category === "QUAD_WITCH") ?? false;
           const cls = [
             "calendar-day",
             isToday ? "today" : "",
@@ -222,6 +252,8 @@ function MonthGrid({
             tag ? `tagged NO-TRADE: ${tag.label} (${tag.origin})` : "",
             tier1 ? "tier-1 event" : "",
             tier2 ? "tier-2 event (best-effort)" : "",
+            opexEvt ? "OpEx event" : "",
+            quadEvt ? "quad-witching event" : "",
           ].filter(Boolean).join(", ");
           return (
             <button
@@ -242,6 +274,8 @@ function MonthGrid({
                 )}
                 {tier1 && <span className="cal-evt cal-evt-tier1" data-testid={`cal-evt-tier1-${date}`}>●</span>}
                 {tier2 && <span className="cal-evt cal-evt-tier2" data-testid={`cal-evt-tier2-${date}`}>▲</span>}
+                {opexEvt && <span className="cal-evt cal-evt-opex" data-testid={`cal-evt-opex-${date}`}>◈</span>}
+                {quadEvt && <span className="cal-evt cal-evt-quadwitch" data-testid={`cal-evt-quadwitch-${date}`}>★</span>}
               </span>
             </button>
           );
@@ -436,6 +470,29 @@ function RulesPanel({
                   onChange={(e) => void toggle(name, e.target.checked)}
                 />
                 <span>Always block {name}{tierOf(name, fallback_tier) === 2 ? " (tier 2)" : ""}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* CAL-10: computed events are standing-rule capable exactly like
+          fetched ones (CAL-04) -- same generic `toggle`, never a duplicate. */}
+      <h4>Computed events</h4>
+      <ul className="calendar-rules-list">
+        {COMPUTED_CATEGORIES.map(({ name, display }) => {
+          const on = name in rules;
+          return (
+            <li key={name}>
+              <label className="field floor-toggle">
+                <input
+                  type="checkbox"
+                  aria-label={`always block ${name}`}
+                  checked={on}
+                  disabled={busyCategory === name}
+                  onChange={(e) => void toggle(name, e.target.checked)}
+                />
+                <span>Always block {display}</span>
               </label>
             </li>
           );
