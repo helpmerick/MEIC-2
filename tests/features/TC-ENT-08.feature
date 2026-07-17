@@ -5,7 +5,7 @@ Feature: TC-ENT-08
     When the OK-confirmation dialog is acknowledged
     Then exactly one entry attempt runs through the identical pipeline
     And the entry is recorded with initiator "manual_entry"
-    And it counts toward max_entries_per_day
+    And no entry-count cap blocks it (ENT-05 retired v1.81); only RSK-04 and the order cap bound the day
 
   Scenario: No fire without the OK dialog
     Given the operator presses the manual fire button
