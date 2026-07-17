@@ -108,23 +108,49 @@ def test_tc_ent_03_rsk04_sums_per_entry_worst_cases_never_n_times_max():
     assert n_times_max == D("27600") and total != n_times_max
 
 
-# --- ENT-05: the day never exceeds max_entries_per_day FILLS -------------------
+# --- ENT-05 v1.81: the entry-count cap is RETIRED -------------------------------
 
-def test_tc_ent_03_day_never_exceeds_max_entries_per_day_fills():
-    """ENT-05: with 5 scheduled but a cap of 2, only 2 fill; the rest skip
-    `max_entries` and are not retried."""
+def test_tc_ent_03_no_entry_count_cap_all_composed_entries_fill():
+    """ENT-05 RETIRED (v1.81, operator-ruled, user-blocked): there is no
+    entry-count cap anymore. With 5 scheduled entries and every gate passing,
+    all 5 fill -- the day is bounded only by RSK-04 (dollars) and the RSK-08
+    order cap, neither of which is exercised here."""
     broker, events = CaptureBroker(), []
     state = PersistentState(InMemoryStateStore())
     state.entry_schedule = [{"time": "x"}] * 5
     state.armed = True
     state.confirm_live = True
     clock = FakeClock(OPEN)
-    day = RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX),
-                        events, max_entries_per_day=2)
+    day = RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX), events)
     schedule = [ScheduledEntry(OPEN, _condor(i + 1)) for i in range(5)]
 
     filled = asyncio.run(day.run("2026-07-06", schedule))
-    assert filled == 2                                   # never exceeds the cap
-    reasons = {r for _, r in day_report(events).skips}
-    assert "max_entries" in reasons                      # the surplus skipped, not retried
-    assert day_report(events).entries_filled == 2
+    assert filled == 5                                   # no count cap
+    assert day_report(events).skips == ()                # nothing skipped for a count reason
+    assert day_report(events).entries_filled == 5
+
+
+def test_tc_ent_03_run_trading_day_has_no_count_cap_constructor_argument():
+    """RunTradingDay no longer accepts `max_entries_per_day` at all -- pinning
+    the removal structurally, mirroring the `contracts_per_entry` absence-pin
+    above."""
+    broker, events = CaptureBroker(), []
+    state = PersistentState(InMemoryStateStore())
+    state.armed = True
+    state.confirm_live = True
+    clock = FakeClock(OPEN)
+    with pytest.raises(TypeError, match="max_entries_per_day"):
+        RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX),
+                     events, max_entries_per_day=2)
+
+
+def test_tc_ent_03_config_loader_rejects_max_entries_per_day():
+    """ENT-05 v1.81 tombstone: the config loader REJECTS `max_entries_per_day`
+    as an unknown key, absence-tested, mirroring the RSK-02/STK-10/STP-03
+    tombstone convention."""
+    from meic.config.validation import TOMBSTONE_KEYS_V181, ConfigRejected, validate_config
+
+    with pytest.raises(ConfigRejected) as exc:
+        validate_config({"max_entries_per_day": 3})
+    assert exc.value.key == "max_entries_per_day" and exc.value.reason == "removed_v181_ent05"
+    assert TOMBSTONE_KEYS_V181 == frozenset({"max_entries_per_day"})

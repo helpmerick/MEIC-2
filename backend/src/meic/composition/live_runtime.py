@@ -96,7 +96,6 @@ class LiveRuntime:
     selector: Selector                # REQUIRED — no default: cannot trade without it
     market_gates: GatesProvider       # REQUIRED — no optimistic gate defaults
     warmup: Warmup | None = None
-    max_entries_per_day: int | None = None
     warmup_lead_seconds: float = 60.0
     max_clock_drift_ms: float = 250.0
     measure_drift_ms: Callable[[], float] = lambda: 0.0
@@ -134,8 +133,12 @@ class LiveRuntime:
             buying_power=await _maybe_await(self.buying_power),
         )
 
-    def _blocked_reason(self, filled: int, cap: int) -> str | None:
-        """Blocks evaluated before the ENT-03 chain, in precedence order."""
+    def _blocked_reason(self) -> str | None:
+        """Blocks evaluated before the ENT-03 chain, in precedence order.
+
+        ENT-05 v1.81 (RETIRED): there is no entry-count cap here — the day
+        is bounded only by RSK-04 (max_day_risk) and the RSK-08 order cap,
+        both enforced inside `comp.execute.attempt()`'s own gate chain."""
         state = self.comp.state
         if not state.entries_enabled():                       # ENT-01a/01b, RSK-01
             return state.blocking_state() or "disabled"
@@ -144,8 +147,6 @@ class LiveRuntime:
         if clock_drift_blocks_entry(drift_ms=self.measure_drift_ms(),
                                     max_drift_ms=self.max_clock_drift_ms):  # RSK-07
             return "clock_drift"
-        if filled >= cap:                                     # ENT-05
-            return "max_entries"
         return None
 
     async def run_day(self, day: str, schedule: list[ScheduledRow] | list[datetime]) -> int:
@@ -158,7 +159,6 @@ class LiveRuntime:
         rows = [r if isinstance(r, ScheduledRow) else ScheduledRow(r) for r in schedule]
         rows.sort(key=lambda r: r.when)
         comp.events.append(DayArmed(date=day, entry_count=len(rows)))
-        cap = self.max_entries_per_day if self.max_entries_per_day is not None else len(rows)
         filled = 0
 
         # ENT-10(4): a mid-day restart (or a mid-day ARMED edit) passes a FILTERED
@@ -177,7 +177,7 @@ class LiveRuntime:
 
             await comp.clock.wait_until(when)
 
-            reason = self._blocked_reason(filled, cap)
+            reason = self._blocked_reason()
             if reason is not None:
                 self._skip(day, n, reason)
                 continue

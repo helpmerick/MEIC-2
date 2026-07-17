@@ -226,7 +226,9 @@ def day_report(events: list[Event], day: str | None = None) -> DayReport:
     """EOD-05 day report, SCOPED to one trading day (2026-07-13 fix — this used
     to fold the entire log with no day filter at all, so a prior day's entry
     that never reached a terminal state would count toward every later day's
-    totals AND toward ENT-05's max_entries_per_day gate forever).
+    totals forever). ENT-05's max_entries_per_day gate this originally also
+    guarded against is RETIRED (v1.81); the day-scoping fix stands on its own
+    for every other day-scoped total this function computes.
 
     `day` explicit -> scope to that day. `day=None` -> default to the fold's
     own `state.date` (the date the log's most recent `DayArmed` stamped), so a

@@ -135,13 +135,19 @@ def test_clock_drift_blocks_entries():
     assert filled == 0 and _skips(comp.events) == [(1, "clock_drift")]
 
 
-def test_max_entries_per_day_caps_fills():
+def test_no_entry_count_cap_all_composed_entries_fire_ent05_retired():
+    """ENT-05 v1.81 (RETIRED, operator-ruled, user-blocked): no entry-count
+    cap anymore -- all 3 composed entries fire. `LiveRuntime` no longer
+    accepts `max_entries_per_day` at all (structural pin)."""
     broker = FakeBroker(); broker.autofill(IS_CONDOR)
     comp = _Comp(FastClock(OPEN), broker)
-    filled = asyncio.run(_runtime(comp, max_entries_per_day=1).run_day("2026-07-07", _times(3)))
+    filled = asyncio.run(_runtime(comp).run_day("2026-07-07", _times(3)))
 
-    assert filled == 1
-    assert _skips(comp.events) == [(2, "max_entries"), (3, "max_entries")]
+    assert filled == 3
+    assert _skips(comp.events) == []
+
+    with pytest.raises(TypeError, match="max_entries_per_day"):
+        _runtime(comp, max_entries_per_day=1)
 
 
 # --- selection: no condor => no order, with the selector's reason -------------

@@ -67,16 +67,18 @@ def test_run_day_fires_only_enabled_entries():
     assert all(reason == "CONFIRM_LIVE_OFF" for _, reason in rpt.skips)
 
 
-def test_run_day_respects_max_entries():
+def test_run_day_has_no_entry_count_cap_ent05_retired():
+    """ENT-05 v1.81 (RETIRED, operator-ruled, user-blocked): all composed
+    entries fire; there is no entry-count cap anymore. The day is bounded
+    only by RSK-04 (dollars) and the RSK-08 order cap."""
     broker, events = FakeBroker(), []
     broker.autofill(IS_CONDOR)
     state = _armed_state(4)
     clock = FakeClock(OPEN)
-    day = RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX),
-                        events, max_entries_per_day=2)
+    day = RunTradingDay(clock, state, ExecuteEntryAttempt(broker, clock, events, SPX), events)
     filled = asyncio.run(day.run("2026-07-06", _schedule(4, same_time=True)))
-    assert filled == 2
-    assert ("max_entries" in {r for _, r in day_report(events).skips})
+    assert filled == 4
+    assert day_report(events).skips == ()
 
 
 def test_full_scripted_day_capstone():

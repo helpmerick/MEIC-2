@@ -1,12 +1,13 @@
-"""RunTradingDay — the day scheduler (DAY-04, ENT-01/01a/05).
+"""RunTradingDay — the day scheduler (DAY-04, ENT-01/01a).
 
 Drives the standing schedule through the Clock port: at each composed entry
 time it waits (FakeClock-able) and, iff entries are enabled (ARMED ∧ Stop
 Trading OFF ∧ Confirm Live ON — the durable gate), delegates to
 ExecuteEntryAttempt, which runs the full ENT-03 chain. Disabled ⇒ the entry is
-skipped, its blocking state named. At most max_entries_per_day fills (ENT-05);
-skipped entries are not retried (ENT-02). The day emits exactly one
-DayArmed…DayCompleted bracket (DAY-04).
+skipped, its blocking state named. ENT-05 v1.81 (RETIRED): there is no
+entry-count cap — the day is bounded only by RSK-04 (max_day_risk) and the
+RSK-08 order cap; skipped entries are not retried (ENT-02). The day emits
+exactly one DayArmed…DayCompleted bracket (DAY-04).
 
 The reactive management (ProtectPosition on fill, RecoverLong on stop, decay,
 TPF, EOD) is driven by process managers reacting to the same event log — this
@@ -43,7 +44,6 @@ class RunTradingDay:
         events: list,
         *,
         market_gates: GateSnapshot | None = None,
-        max_entries_per_day: int | None = None,
         on_filled=None,
         max_day_risk: Decimal | None = None,
         order_cap: OrderCap | None = None,
@@ -66,7 +66,6 @@ class RunTradingDay:
             armed=True, confirm_live=True, stop_trading=False, flatten_in_progress=False,
             market_open=True, market_halted=False, data_fresh=True, session_valid=True,
             buying_power_ok=True)
-        self._max = max_entries_per_day
         self._max_day_risk = max_day_risk          # RSK-04; mandatory before live (doc 06 §169)
         self._order_cap = order_cap                # RSK-08
         self._buying_power = buying_power          # ENT-03 BP, compared to THIS condor's margin
@@ -115,9 +114,12 @@ class RunTradingDay:
         return FilterSnapshot(date=day, blackout_label=self._calendar_label(day))
 
     async def run(self, day: str, schedule: list[ScheduledEntry]) -> int:
-        """Run one trading day's entry cadence. Returns the fill count."""
+        """Run one trading day's entry cadence. Returns the fill count.
+
+        ENT-05 v1.81 (RETIRED): no entry-count cap — every composed entry is
+        attempted; the day is bounded only by RSK-04/RSK-08 inside `attempt()`.
+        """
         self._events.append(DayArmed(date=day, entry_count=len(schedule)))
-        cap = self._max if self._max is not None else len(schedule)
         filled = 0
         for entry in sorted(schedule, key=lambda e: e.when):
             await self._clock.wait_until(entry.when)
@@ -125,9 +127,6 @@ class RunTradingDay:
             if not self._state.entries_enabled():  # ENT-01a durable gate
                 self._events.append(EntrySkipped(date=day, entry_number=n,
                                                   reason=self._state.blocking_state() or "disabled"))
-                continue
-            if filled >= cap:  # ENT-05
-                self._events.append(EntrySkipped(date=day, entry_number=n, reason="max_entries"))
                 continue
             outcome = await self._execute.attempt(
                 day=day, scheduled=entry.when, condor=entry.condor,

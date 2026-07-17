@@ -134,19 +134,23 @@ def test_flatten_in_progress_is_the_named_pinned_regression_in_the_registry():
 
 
 def test_no_known_gaps_remain_dat_04a_closes_the_ninth_finding():
-    """DAT-04a (v1.69): `halted` was the ONE documented known_gap (the ninth
-    finding) -- now fixed (a real TradingStatusStore provider, fail-closed
-    polarity), so the known_gap list must be EMPTY. The ninth finding's
-    history stays on the record in `_halted_live_check`'s own docstring
-    (wiring_registry.py) rather than being silently dropped here."""
+    """DAT-04a (v1.69) closed the ninth finding (`halted` was the ONE
+    documented known_gap) with a real TradingStatusStore provider. DAT-04a
+    v1.80 (market-taught) went further and RETIRED the input outright, so
+    there is no `halted` entry left to carry a known_gap at all. The known_gap
+    list must still be EMPTY for every remaining entry -- this test's name
+    predates the v1.80 retirement but the assertion (no known gaps) stays
+    exactly as strict."""
     gaps = {e.gate_input for e in SAFETY_GATE_REGISTRY if e.known_gap}
     assert gaps == set()
 
 
-def test_halted_is_now_a_bound_live_input_not_a_known_gap():
-    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "halted")
-    assert entry.known_gap is None, "DAT-04a: the ninth finding is fixed -- no longer excused"
-    assert "DAT-04a" in entry.rule_ids
+def test_halted_is_retired_no_registry_entry_at_all():
+    """DAT-04a v1.80 (operator-ruled, market-taught, contingency executed):
+    `halted` is not merely a fixed known_gap anymore -- it has NO
+    SAFETY_GATE_REGISTRY entry at all. The module that fed it
+    (`meic.adapters.dxlink.trading_status`) is deleted."""
+    assert not any(e.gate_input == "halted" for e in SAFETY_GATE_REGISTRY)
 
 
 def test_check_all_safety_gate_inputs_returns_one_result_per_entry_and_fails_closed():
@@ -158,15 +162,15 @@ def test_check_all_safety_gate_inputs_returns_one_result_per_entry_and_fails_clo
     assert all(not result.live for _entry, result in results)
 
 
-def test_unexpectedly_not_live_flags_every_unproven_input_including_halted():
-    """Against an empty state every entry fails its live_check. DAT-04a
-    (v1.69) closed the ninth finding: `halted` is no longer an excused
-    known_gap, so an empty state (no runtime, no trading_status_store) must
-    now flag it exactly like every other genuinely unproven input."""
+def test_unexpectedly_not_live_flags_every_unproven_input():
+    """Against an empty state every entry fails its live_check -- including
+    `flatten_in_progress` (unreachable off an empty state, correctly
+    flagged). `halted` is no longer a registry entry at all (v1.80), so it
+    cannot appear here in either direction."""
     state = SimpleNamespace()
     failing = unexpectedly_not_live(state)
-    assert "halted" in failing
-    assert "flatten_in_progress" in failing   # unreachable off an empty state -> correctly flagged
+    assert "flatten_in_progress" in failing
+    assert "halted" not in failing   # not a registry entry -- retired, not merely unproven
 
 
 def test_nfr07_wiring_registry_is_self_policing():

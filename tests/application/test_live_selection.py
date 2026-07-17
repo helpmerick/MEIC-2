@@ -178,12 +178,8 @@ class _Clock:
 
 
 def _gates(now, **kw):
-    # DAT-04a (v1.69): `halted` now defaults an unmeasured reading to BLOCKED
-    # (fail-closed, uniform with the three siblings below) -- so a test that
-    # wants the "all healthy, nothing blocks" case must supply an explicit
-    # not-halted provider too, exactly like it already does for the other three.
     defaults = dict(data_fresh=lambda: _async(True), session_valid=lambda: _async(True),
-                    buying_power_ok=lambda: _async(True), halted=lambda: _async(False))
+                    buying_power_ok=lambda: _async(True))
     defaults.update(kw)
     return asyncio.run(LiveMarketGates(clock=_Clock(now), **defaults)())
 
@@ -197,12 +193,20 @@ def test_gates_pass_during_rth_with_healthy_providers():
     assert g.session_valid and g.buying_power_ok
 
 
-def test_gates_block_on_halted_even_with_every_other_provider_healthy():
-    # DAT-04a: an unmeasured (absent) halted provider blocks -- this is the
-    # ninth finding's fix, pinned at this same "gates provider" level.
-    g = _gates(OPEN_NOW, halted=None)
-    assert g.market_open is True
-    assert g.market_halted is True
+def test_market_halted_is_always_false_v180_retirement():
+    """DAT-04a v1.80: the dedicated halt input is RETIRED -- `LiveMarketGates`
+    no longer accepts a `halted=` kwarg at all (constructing with one is a
+    TypeError), and `market_halted` on the returned snapshot is always False,
+    regardless of market hours or any other provider's health. Halt
+    protection now lives entirely in the freshness gates (see
+    test_stale_data_blocks below)."""
+    g = _gates(OPEN_NOW)
+    assert g.market_halted is False
+
+    with pytest.raises(TypeError):
+        LiveMarketGates(clock=_Clock(OPEN_NOW), data_fresh=lambda: _async(True),
+                        session_valid=lambda: _async(True), buying_power_ok=lambda: _async(True),
+                        halted=lambda: _async(True))
 
 
 def test_gates_block_outside_market_hours():
