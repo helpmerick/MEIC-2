@@ -523,18 +523,19 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # genuinely-unrelated slice's work doesn't leave this gate red; it does
     # NOT claim UI-31 itself is implemented.
     "UI-31",
-    # RPT-17 (v1.82, item 3 — a separate, not-yet-built branch/slice): "Day-
-    # trades table & the Unmanaged counterfactual" -- a reporting/UI view
-    # (RPT-09a's ONE aggregation path, rendered read-only) plus the D8b
+    # RPT-17 (v1.82, item 3 -- built on the RPT-17/UI-33 day-trades-table
+    # branch, operator-commissioned, pulled through the freeze by explicit
+    # fiat): "Day-trades table & the Unmanaged counterfactual" -- a
+    # reporting/UI view (RPT-09a's ONE aggregation path, rendered read-only
+    # via GET /reports/day-table, reporting/day_table.py) plus the D8b
     # sampler EXTENSION, which rides the ALREADY-registered RPT-12 mark
     # sampler under the health-tick entry above (NFR-02/DAT-02/RPT-12/...) --
     # not a new standalone runtime component. Same "reporting/UI view,
     # computed on read" class as UI-24/UI-25/UI-31; the heuristic's "sampl"
     # hit traces to the D8b prose describing an extension of an
-    # already-registered sampler, not a new one. This entry only settles the
-    # registry accounting so item 3's separate branch doesn't leave this gate
-    # red on branches (like this one) that merely have the v1.82 spec text
-    # merged; it does NOT claim RPT-17/UI-33 is built.
+    # already-registered sampler, not a new one -- so this entry stays even
+    # now that RPT-17/UI-33 is built, exactly as UI-24/UI-25 stay for their
+    # own already-built views.
     "RPT-17",
     "TPF-08", "TPF-09", "TPT-07",               # persistence/interaction RULES for the exit
                                                  # monitor already registered under TPF-03/TPT-04

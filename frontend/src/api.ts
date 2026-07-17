@@ -3,9 +3,9 @@
 // state and sends commands; the backend validates everything.
 
 import type {
-  ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, EntryCard, FirePreview,
-  FireResult, FloorCandidates, GettingStartedData, GuideData, ManualSimulation, PanelState, Preflight,
-  ReportSummary, ScheduleRow, ScheduleView,
+  ActivityLine, CalendarData, DailyRow, DayReport, DayReportDetail, DayStatus, DayTable, EntryCard,
+  FirePreview, FireResult, FloorCandidates, GettingStartedData, GuideData, ManualSimulation, PanelState,
+  Preflight, ReportSummary, ScheduleRow, ScheduleView,
 } from "./types";
 
 // NFR-06: when the operator has set an api_token, mutating requests must carry
@@ -241,6 +241,11 @@ export const api = {
   // own "# GETTING STARTED" section text (names and guidance only, never a
   // live env value or secret -- DOC-06).
   getGettingStarted: () => get<GettingStartedData>("/getting-started"),
+
+  // --- RPT-17/UI-33 (v1.82) day-trades table + Timing & Unmanaged report ----
+  // Read-only, origin-open like /entries (RPT-10 precedent); scoped to TODAY
+  // server-side, no query params.
+  getDayTable: () => get<DayTable>("/reports/day-table"),
 };
 
 // UC-12 stop-independence drill evidence (mirrors application/drills.py).

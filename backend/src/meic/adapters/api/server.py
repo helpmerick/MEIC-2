@@ -27,6 +27,8 @@ from meic.adapters.api.app import _strike_from_symbol
 from meic.adapters.logging_setup import configure_logging
 from meic.application.clocks import MutableClock
 from meic.application.market_calendar import (
+    ET,
+    RTH_CLOSE,
     is_trading_day,
     next_trading_day,
     trading_day,
@@ -1454,18 +1456,45 @@ def _sample_marks_once(comp, snapshot) -> None:
     AND spot come back absent appends nothing either (no all-None sample);
     otherwise one EntryMarkSample is appended per open entry, with each mark
     field independently None where its leg's strike has no quote.
+
+    D8b (v1.82, RPT-17's counterfactual): a CLOSED entry keeps receiving the
+    SAME per-tick sample too, as long as it (1) closed TODAY -- entry_day(...)
+    must match the ET trading day this tick's own snapshot instant falls on,
+    never a prior day -- and (2) this tick is still at or before the 16:00
+    ET close (inclusive: see `past_close`'s own comment below for why the
+    boundary tick itself must still count). Both conditions read off
+    `snapshot.taken_at` alone, so this is bounded, day-scoped, and
+    replay-safe, and it fetches nothing new: every mark below still comes
+    from the identical live snapshot the open-entry path already reads.
+    `today_str`/`past_close` are None/False (never True) when `at` itself is
+    unavailable, so the extension simply does not apply that tick -- the
+    pre-existing open-entry sampling is unaffected.
     """
     from meic.domain.events import EntryMarkSample
     from meic.domain.projection import fold
+    from meic.reporting.folds import entry_day
 
     if snapshot is None or snapshot.stale:
         return
     at = getattr(snapshot, "taken_at", None)
     at_iso = at.isoformat() if at is not None else None
+    today_str = trading_day(at).isoformat() if at is not None else None
+    # Strictly GREATER than the close (never >=): a tick landing AT 16:00:00
+    # ET is the last one D8b must still capture -- RPT-17's Unmanaged
+    # counterfactual specifically wants "the recorded 16:00 spread value",
+    # and the health-tick cadence is not guaranteed to land on any OTHER
+    # exact second, so excluding the boundary tick itself could leave the
+    # counterfactual with no usable sample at all on an otherwise-normal day.
+    past_close = at is not None and at.astimezone(ET).time() > RTH_CLOSE
     day = fold(comp.events)
     for e in day.entries.values():
-        if e.status in _TERMINAL_STATUSES or not e.legs:
+        if not e.legs:
             continue
+        if e.status in _TERMINAL_STATUSES:
+            # D8b: sample a closed entry only if it closed TODAY and the
+            # 16:00 ET close hasn't passed yet -- see the docstring above.
+            if today_str is None or entry_day(e.entry_id) != today_str or past_close:
+                continue
         by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
         for leg in e.legs:
             by_side.setdefault(leg.side, {})[leg.role] = leg

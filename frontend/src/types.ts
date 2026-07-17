@@ -515,6 +515,71 @@ export interface DailyRow {
 }
 
 // =============================================================================
+// RPT-17/UI-33 (v1.82) — the Trading tab's day-trades table + the Timing &
+// Unmanaged report (GET /reports/day-table). RPT-09a: every money figure is
+// read straight off the ONE canonical aggregation path server-side; this
+// view recomputes nothing (types mirror backend/src/meic/adapters/api/app.py
+// get_day_table exactly).
+// =============================================================================
+
+/** Per-side status badge (RPT-17): shape+colour together (UI-26), never
+ * colour alone — DayTradesTable.tsx pairs each with its own icon+class,
+ * mirroring EntryCards.tsx's STATUS_META convention. */
+export type SideBadge = "open" | "protected" | "stopped" | "decay" | "closed" | "expired";
+
+export interface DayTableRow {
+  entry_id: string;
+  status: EntryStatus;
+  entry_time: string | null;   // ORD-11 open ET instant, ISO, verbatim
+  closed_at: string | null;    // ORD-11 latest closing-event instant, or null while open
+  initiator: string | null;    // "schedule" | "manual_entry", null for a pre-v1.44 replayed fill
+  target_premium: string | null;  // the row's CONFIGURED target premium (audit-only), or null
+  net_credit: string;          // real dollars (RPT-09a canonical)
+  wing_width: { PUT: string | null; CALL: string | null };
+  strikes: {
+    PUT: { short: string | null; long: string | null };
+    CALL: { short: string | null; long: string | null };
+  };
+  spx_reference: { value: string | null; label: "close" | "latest" | null };
+  side_badges: { PUT: SideBadge; CALL: SideBadge };
+  stop_fill_count: number;
+  pnl: string | null;          // realized (closed) or live (open) -- see pnl_unrealized
+  pnl_unrealized: boolean;     // UI-13: true for a still-open row
+  provisional: boolean;        // EOD-01: settlement not yet captured/reconciled
+}
+
+export interface DayTableTotal {
+  net_pnl: string;
+  fees: string;
+  total_credit: string;
+  filled: number;
+  stop_fill_count: number;
+}
+
+/** The Timing & Unmanaged report (RPT-17 item 2): Unmanaged P&L = premium
+ * received minus the entry's spread value at the 16:00 ET close, computed
+ * from RECORDED EntryMarkSamples only (D8b) — display/analytics only, never
+ * a trading input. `unmanaged_status` is "no_data" (D10: never interpolated)
+ * when no close-time sample exists, or one of its four leg mids is absent. */
+export interface TimingUnmanagedRow {
+  entry_id: string;
+  opened_at: string | null;
+  closed_at: string | null;
+  premium: string;
+  realized_pnl: string | null;   // null while still open (no realized figure yet)
+  unmanaged_pnl: string | null;
+  unmanaged_status: "ok" | "no_data";
+}
+
+export interface DayTable {
+  date: string | null;
+  mode: "paper" | "live";
+  rows: DayTableRow[];
+  day_total: DayTableTotal | null;
+  timing_unmanaged: TimingUnmanagedRow[];
+}
+
+// =============================================================================
 // Slice 2 — Trading calendar (doc 11 CAL-*, UI-30). Types mirror the GET
 // /calendar read model exactly (backend/src/meic/adapters/api/app.py
 // get_calendar); every day/date key is an ET calendar date string ("YYYY-MM-DD",

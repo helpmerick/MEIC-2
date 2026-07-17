@@ -223,6 +223,14 @@ class CondorFilled(Event):
     # (domain/projection.py), never a second flag to drift. False for every
     # scheduled fill and every pre-v1.71 recorded event.
     blackout_overridden: bool = False
+    # RPT-17 (v1.82, audit-only passthrough -- same convention as put_floor/
+    # call_floor above): the row's CONFIGURED target premium in force at
+    # selection time (`SelectionConfig.target_premium`, composition/
+    # live_selection.py), carried through so the day-trades table can show
+    # "target premium" beside the ACTUAL net fill credit (`net_credit` above)
+    # without inventing a second, drifting source. Never used to re-derive
+    # selection or any P&L -- display only. None for every pre-v1.82 fill.
+    target_premium: Decimal | None = None
 
 
 @dataclass(frozen=True)

@@ -81,6 +81,13 @@ class Condor:
     call_long: Decimal | None = None  # defaults to call_short + 50
     expiration: date | None = None    # 0DTE; the ACL resolves legs to OCC symbols
     contracts: int = 1                # ENT-04: this row's own size (v1.44)
+    # RPT-17 (v1.82): the row's CONFIGURED target premium
+    # (`SelectionConfig.target_premium`, composition/live_selection.py) --
+    # audit-only, carried straight through to `CondorFilled` (see
+    # `_record_fill`) so the day-trades table can show it beside the ACTUAL
+    # fill credit. None for the paper-demo runtime's synthetic Condor
+    # (composition/runtime.py), which sets no selection config at all.
+    target_premium: Decimal | None = None
 
     @property
     def put_wing(self) -> Decimal:
@@ -512,7 +519,8 @@ class ExecuteEntryAttempt:
             at=self._clock.now().isoformat(),  # UI card: fill time
             put_floor=put_floor, call_floor=call_floor,  # ENT-09b v1.57 audit
             broker_order_id=str(working_id),  # OWN-01/OWN-03: the entry's own order id
-            blackout_overridden=blackout_overridden))  # CAL-06 (v1.71) audit
+            blackout_overridden=blackout_overridden,  # CAL-06 (v1.71) audit
+            target_premium=condor.target_premium))  # RPT-17 (v1.82) audit
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:

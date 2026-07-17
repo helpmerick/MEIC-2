@@ -8,6 +8,7 @@ import { GettingStartedPage } from "./components/GettingStartedPage";
 import { HowItWorksPage } from "./components/HowItWorksPage";
 import { ResultsPage } from "./components/results/ResultsPage";
 import { DayReportView } from "./components/DayReportView";
+import { DayTradesTable } from "./components/DayTradesTable";
 import { EntryCards } from "./components/EntryCards";
 import { ManualTradeCard } from "./components/ManualTradeCard";
 import { NextEntryCountdown } from "./components/NextEntryCountdown";
@@ -248,6 +249,10 @@ export function App() {
                         onSetTarget={setTarget} onClearTarget={clearTarget} />
           </div>
           <div className="feed-col"><ActivityFeed activity={activity} /></div>
+          {/* RPT-17/UI-33 (v1.82): the day-trades table + Timing & Unmanaged
+              report sit at the BOTTOM of the Trading tab (operator
+              commission, pulled through the freeze by explicit fiat). */}
+          <div className="day-table-col"><DayTradesTable /></div>
         </main>
       ) : route.page === "results-day" ? (
         <DayDrilldown date={route.date} />

@@ -130,6 +130,9 @@ body {
 .grid > .report            { grid-area: report; }
 .grid > .entries-col       { grid-area: entries; }
 .grid > .feed-col          { grid-area: feed; }
+/* RPT-17/UI-33 (v1.82): the day-trades table + Timing & Unmanaged report sit
+   at the BOTTOM of the Trading tab, full width at every breakpoint. */
+.grid > .day-table-col     { grid-area: daytable; }
 
 /* 2-column tablet layout */
 @media (min-width: 900px) {
@@ -141,7 +144,8 @@ body {
       "next    next"
       "sched   sched"
       "report  entries"
-      "feed    feed";
+      "feed    feed"
+      "daytable daytable";
   }
 }
 
@@ -156,7 +160,8 @@ body {
       "control control control control control control manual manual manual manual manual manual"
       "next   next   next   next   next   next   next   next   next   next   next   next"
       "sched  sched  sched  sched  sched  sched  sched  sched  sched  sched  sched  sched"
-      "report report report report entries entries entries entries feed   feed   feed   feed";
+      "report report report report entries entries entries entries feed   feed   feed   feed"
+      "daytable daytable daytable daytable daytable daytable daytable daytable daytable daytable daytable daytable";
   }
 }
 
@@ -272,6 +277,17 @@ body {
 .skips { margin-top: 16px; }
 .skips h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
 .skips code { background: var(--line); padding: 2px 7px; border-radius: 5px; color: var(--warn); }
+
+/* --- RPT-17/UI-33 day-trades table + Timing & Unmanaged report ----------- */
+/* Wide content scrolls inside its OWN container (never the page) -- the
+   table has 11 columns and must not force horizontal scroll on the app body. */
+.dt-scroll { overflow-x: auto; }
+.dt-side-cell { white-space: nowrap; }
+.dt-strikes { font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.dt-pnl { white-space: nowrap; }
+.dt-pnl .tag { margin-left: 6px; }
+.dt-total-row td { border-top: 2px solid var(--line-strong); border-bottom: none; font-weight: 700; }
+.dt-total-row { background: var(--surface-2); }
 
 .banner-error { background: var(--bad-dim); color: var(--bad); border: 1px solid rgba(248,113,113,0.3); padding: 12px 16px; border-radius: 11px; margin-bottom: 18px; font-weight: 600; }
 .demo-note { background: var(--warn-dim); color: var(--warn); border: 1px solid rgba(251,191,36,0.22); padding: 9px 14px; border-radius: 10px; font-size: 12px; margin-bottom: 18px; }
