@@ -36,6 +36,15 @@ TOMBSTONE_KEYS_V167 = frozenset({"stop_order_type", "stop_limit_escalation_secon
 # agent-caught). Same "reject, never silently ignore" pattern as above.
 TOMBSTONE_KEYS_V168 = frozenset({"stop_limit_offset_ticks"})
 
+# ENT-05 v1.81 tombstone (operator-ruled, user-blocked): the per-day
+# entry-COUNT cap is RETIRED -- a real user was blocked firing a legitimate
+# manual entry because the cap defaulted to the scheduled-row count and
+# manual fires counted against it. A count limit is not a meaningful risk
+# control; the day is bounded by RSK-04 (max_day_risk, mandatory before live)
+# and the Cboe daily order cap (RSK-08, 380/day, exits never blocked). Same
+# "reject, never silently ignore" pattern as RSK-02/STK-10/STP-03 above.
+TOMBSTONE_KEYS_V181 = frozenset({"max_entries_per_day"})
+
 
 class ConfigRejected(ValueError):
     def __init__(self, key: str, reason: str) -> None:
@@ -102,6 +111,8 @@ def validate_config(cfg: dict) -> None:
             raise ConfigRejected(key, "removed_v167_stp03")  # STP-03 v1.67 tombstone
         if key in TOMBSTONE_KEYS_V168:
             raise ConfigRejected(key, "removed_v168_stp03_sweep")  # STP-03 v1.68 sweep completion
+        if key in TOMBSTONE_KEYS_V181:
+            raise ConfigRejected(key, "removed_v181_ent05")    # ENT-05 v1.81 tombstone
     if "stop_loss_pct" in cfg:
         validate_stop_loss_pct(int(cfg["stop_loss_pct"]))
     if "stop_basis" in cfg:

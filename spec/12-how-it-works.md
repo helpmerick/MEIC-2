@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.79 (operator-commissioned 2026-07-15; current through spec v1.79).** A complete, non-technical
+**v1.84 (operator-commissioned 2026-07-15; current through spec v1.84).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,15 +67,16 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.79 — describes spec v1.79; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.84 — describes spec v1.84; DOC-05 stamp)
 
 ## The master flowchart
 
 The full trading day, from boot through the next day self-starting. Every
 node uses plain-English chapter vocabulary, not rule IDs, per DOC-04; the
-gates that matter most for correctness — the market-halt check and the
-calendar blackout check — are called out explicitly, including that they
-lean in *opposite* directions on purpose (see Chapters 4 and 10 for why).
+gates that matter most for correctness — the freshness checks that carry
+halt protection, and the calendar blackout check — are called out
+explicitly, including that they lean in *opposite* directions on purpose
+(see Chapters 4 and 10 for why).
 This diagram, and every other diagram in this guide, can be clicked to open
 a full-screen view with pan and zoom (scroll or pinch), with explicit zoom
 controls, for anyone who finds the default size too small to read
@@ -104,7 +105,7 @@ flowchart TD
 
     Fire --> GateSwitch{"Armed, Confirm Live on,\nStop Trading off, no Flatten\nrunning, still within the timing window?"}
     GateSwitch -->|no| Skip["Entry SKIPPED\nplain-language reason shown"]
-    GateSwitch -->|yes| GateMarket{"Market open and CONFIRMED not halted\n(silence here means BLOCKED)?\nAND today not tagged no-trade\n(silence here means TRADE — a tag\nneeds an acknowledged override to fire manually)?"}
+    GateSwitch -->|yes| GateMarket{"Market open by calendar and clock?\n(halts show up as frozen quotes —\nblocked by the freshness checks)\nAND today not tagged no-trade\n(silence here means TRADE — a tag\nneeds an acknowledged override to fire manually)?"}
     GateMarket -->|no| Skip
     GateMarket -->|yes| GateAccount{"Price data fresh, broker session good,\nenough buying power, under the daily\norder-count cap, under the day's risk ceiling?"}
     GateAccount -->|no| Skip
@@ -326,11 +327,13 @@ instant anything fails (ENT-03):
   if the bot was down or busy past that, the entry is skipped for good; it is
   never fired late, however good the reason (ENT-02). A missed entry isn't
   owed to the schedule later — it's simply gone.
-- The market must be open, **confirmed** not halted, and today must not carry
-  a no-trade tag. These two checks deliberately lean in opposite directions:
-  the halt check **fails closed** — if the bot cannot positively confirm the
-  market is open and trading normally, that counts as blocked, exactly like a
-  real halt (DAT-04a). The calendar blackout check **fails open** — an empty
+- The market must be open by the calendar and the clock, and today must not
+  carry a no-trade tag. Halt protection works through the price data itself
+  rather than a status flag: a genuinely halted market freezes its quotes,
+  and frozen or stale quotes block entries on their own (the broker's
+  "halted/undefined" status field proved unreliable in live use and was
+  retired rather than guessed at — DAT-04a v1.80). The calendar blackout
+  check **fails open** — an empty
   or never-imported calendar blocks nothing, because the calendar is an
   operator-added convenience layered on top of a bot that traded correctly
   before it existed (CAL-05, CAL-07). If today is tagged no-trade (say, an
@@ -714,6 +717,14 @@ event recording both the old and new value, plus an alert, so a disagreement
 is always something the operator can go inspect, never something that simply
 changes behind their back (RPT-15).
 
+**The day's trades, at a glance.** The bottom of the Trading tab keeps a
+running table of today's entries — live and closed — with each side's
+strikes and status, what each trade actually made or lost after fees, and a
+day total; closed trades also show what they *would* have made had the bot
+done nothing and simply held to the close (computed from the bot's own
+recorded minute-by-minute prices, labeled honestly when data is missing —
+it's an after-the-fact comparison, never something that steers a trade).
+
 **The activity feed** — the running list of everything the bot has done —
 groups its entries under a date heading for each day, so two different
 trading days are never visually mistaken for one continuous stream; each row
@@ -732,7 +743,12 @@ The calendar is a year-view list of scheduled market-moving events — the
 Fed's rate decisions, and the government's inflation, jobs, and growth
 releases, kept up to date automatically; Fed-speaker appearances are shown
 too, but honestly labeled as a best-effort layer, since no reliable official
-machine feed exists for them (CAL-01). The calendar never invents events for
+machine feed exists for them (CAL-01). The calendar also marks **options-expiration days** on its own — the monthly
+third-Friday expiration and the four bigger quarterly "quad-witching" dates —
+computed from pure calendar arithmetic (shifted earlier when the third Friday
+is a market holiday), so they're always shown for any year with nothing to
+fetch and nothing to go stale. They're taggable like any other event, but
+never blocked automatically. The calendar never invents events for
 a day it has no data for — it shows "no data imported" instead of a blank
 that could be mistaken for "nothing happening" (CAL-02).
 
@@ -764,6 +780,15 @@ without the operator having to remember to do it by hand each time
 (CAL-03, CAL-04). Every tag and every standing rule survives every restart,
 exactly as set (CAL-03, CAL-04, REC-07).
 
+**Heads-up warnings.** Whether or not a day is tagged no-trade, the Trading
+tab shows a dismissable notice when a calendar event is near — on the day
+itself and up to three trading days before ("FOMC in 2 trading days") — so a
+big event never sneaks up on you. It is purely a heads-up: it never blocks a
+trade or changes anything the bot does; dismiss it and it stays gone for that
+event, though the closer, more important reminders still appear as the day
+approaches. A Fed-speaker heads-up is labeled best-effort, since those aren't
+on a reliable official schedule.
+
 **How a no-trade day behaves:** it blocks that day's **scheduled** entries
 only — a tagged day skips each scheduled entry with a plain reason
 ("blackout: FOMC") shown on the card and in the day's report. It touches
@@ -781,14 +806,15 @@ lean in opposite directions: an empty or never-updated market-events
 calendar blocks nothing — the bot traded correctly before this feature
 existed, and the calendar is an operator-added convenience layered on top, so
 silence from it means "trade normally." That is the deliberate opposite of
-the halt check in Chapter 4, where silence or missing data means "assume the
+the freshness checks in Chapter 4 that carry halt protection, where silence
+or missing data means "assume the
 worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
 ---
 
-# GETTING STARTED (ratified content, v1.79 — describes spec v1.79 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.84 — describes spec v1.84 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 

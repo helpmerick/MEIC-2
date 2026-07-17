@@ -79,6 +79,47 @@ def assert_production_token(refresh_token: str) -> None:
 _OPTION_STOP_ALLOWED_TIF = {"Day"}
 
 
+# ORD-04/EC-API-03 (2026-07-17 review finding F1): the TERMINAL-DEAD order
+# statuses -- an order in one of these is finished and gone, and must NEVER be
+# adopted as a live position (a stale same-external-id order from a prior
+# unfilled_at_floor entry, an operator/broker cancel, a rejection). Every OTHER
+# status is adoptable (see `_is_adoptable_status`). Values are the installed
+# SDK's `OrderStatus` members, normalized (lower, de-namespaced,
+# spaces/underscores unified) so both the enum form
+# ("OrderStatus.PARTIALLY_REMOVED") and the wire/value form ("Partially
+# Removed") map here.
+_TERMINAL_DEAD_STATUSES = frozenset({
+    "cancelled", "rejected", "expired", "removed", "partially removed",
+})
+
+
+def _is_adoptable_status(status: str) -> bool:
+    """ORD-04/EC-API-03 (2026-07-17 review finding F1 — INVERTED filter): may a
+    `get_live_orders()` row carrying OUR external identifier be adopted as the
+    order our lost-ack submit placed?
+
+    The asymmetry that governs the direction (final-review finding): adopting a
+    still-transient order that later dies is SAFE -- the ladder's
+    `_await_fill`/floor-cancel simply records `unfilled_at_floor`, no position
+    is taken; whereas FAILING to adopt one that goes live is CATASTROPHIC -- it
+    is exactly the naked, stopless, unrecorded condor this whole fix exists to
+    close. A just-placed 0DTE condor transits Routed -> In Flight -> Live (and
+    may sit in Contingent), PROVEN by the real placed-order fixture -- so a
+    narrow "live/received/filled only" filter would miss our own order
+    mid-transit and re-raise into the false "no position taken" skip.
+
+    Therefore: adopt ANY status that is not TERMINAL-DEAD. Only
+    {Cancelled, Rejected, Expired, Removed, Partially Removed} are refused
+    (that direction was verified correct: a stale terminal same-id order must
+    never be adopted). Everything else -- Received, Live, Filled, Routed,
+    In Flight, Contingent, Cancel Requested, Replace Requested, a partial fill
+    -- is adoptable. An unreadable/empty status also adopts, by the same
+    asymmetry (better to protect a maybe-live position than skip a real one).
+    """
+    s = status.lower().split(".")[-1].strip().replace("_", " ")
+    return s not in _TERMINAL_DEAD_STATUSES
+
+
 class TastytradeAdapter:
     """Implements the BrokerGateway port. Construction is I/O-free; connect()
     establishes the SDK session (cert unless explicitly live-wired)."""
@@ -161,6 +202,21 @@ class TastytradeAdapter:
             kwargs["stop_trigger"] = D(str(intent.stop_trigger))
         if intent.price is not None:
             kwargs["price"] = D(str(intent.price))
+        # ORD-04 / EC-API-03 (2026-07-17 security review finding A, ROOT FIX):
+        # stamp the intent's client-generated idempotency key onto the order's
+        # server-side `external_identifier`. The installed SDK's `NewOrder`
+        # accepts it and `PlacedOrder` returns it verbatim (verified against the
+        # installed SDK's models), so a lost-response-after-commit submit can
+        # be resolved by asking the broker for OUR OWN stamped id -- never a
+        # leg-shape guess that could not tell the bot's order from the
+        # operator's on a shared account (OWN-01/OWN-03). ORD-04 keys are
+        # deterministic and unique per logical order (`entry:{entry_id}`,
+        # `stop:{entry_id}:{side}`, ...), which is exactly the identity
+        # `find_matching_order` matches on. Only stamped when the intent carries
+        # a key (every production intent does); a keyless hand-built intent is
+        # left unstamped rather than sent an empty identifier.
+        if intent.idempotency_key:
+            kwargs["external_identifier"] = intent.idempotency_key
         return NewOrder(**kwargs)
 
     @staticmethod
@@ -191,6 +247,52 @@ class TastytradeAdapter:
         new = await self._build_order(order)
         resp = await self._account.place_order(self._session, new, dry_run=False)
         return str(resp.order.id) if resp.order else ""
+
+    async def find_matching_order(self, order: OrderIntent) -> str | None:
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A, ROOT FIX):
+        after a submit() exception on the entry ladder's first rung -- the
+        classic lost-response-after-commit failure where the broker accepted
+        the order but the client never saw the ack -- determine whether
+        `order` in fact landed, by asking the broker for OUR OWN stamped
+        `external_identifier` (== `order.idempotency_key`, stamped in
+        `_build_order`; the installed SDK's `PlacedOrder` returns it verbatim).
+
+        Why the stamped id and not a leg-shape match: on a shared account the
+        operator can hold a structurally identical order (same strikes, same
+        expiry), so a leg-shape guess could adopt the OPERATOR'S order as the
+        bot's -- reopening the exact OWN-01/OWN-03 ownership hole the ledger
+        exists to close, and it could also false-positive-adopt a stale
+        same-strike order from earlier in the day. Matching our own unique
+        client id closes both at the root.
+
+        Two guards beyond the id match:
+          * a keyless intent can claim nothing (returns None) -- ownership is
+            asserted only by a key we generated;
+          * a TERMINAL-DEAD order carrying the same external id (a prior
+            unfilled_at_floor entry reusing `entry:{entry_id}`, an operator
+            cancel, a rejection) is NEVER adopted (`_is_adoptable_status`) --
+            but every non-terminal status, INCLUDING the transient
+            Routed/In Flight/Contingent a just-placed order passes through, IS
+            adopted (finding F1: missing an order mid-transit would re-raise
+            into the false "no position taken" skip this fix exists to close).
+
+        Returns the matching order's id, or None when no adoptable order carries
+        our id (the submit genuinely never landed -- the caller's existing
+        clean-skip path is correct for that case).
+        """
+        key = order.idempotency_key
+        if not key:
+            return None  # no client id => no ownership claim => cannot adopt
+
+        live = await self._account.get_live_orders(self._session)
+        for o in live:
+            ext = getattr(o, "external_identifier", None)
+            if ext is None or str(ext) != key:
+                continue
+            if not _is_adoptable_status(str(getattr(o, "status", ""))):
+                continue  # F1: refuse ONLY terminal-dead; adopt everything else
+            return str(getattr(o, "id", "")) or None
+        return None
 
     async def dry_run(self, order: OrderIntent):
         """Assumption 1/2/7: validate an order against cert without placing it."""

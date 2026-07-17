@@ -34,7 +34,6 @@ import asyncio
 import importlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -341,54 +340,23 @@ def _buying_power_ok_live_check(state) -> LiveCheckResult:
     return LiveCheckResult(live, f"buying_power_ok provider closes over real state: {live}")
 
 
-def _halted_live_check(state) -> LiveCheckResult:
-    """BEHAVIORAL, sound (DAT-04a, v1.69 — the NINTH finding CLOSED).
-
-    HISTORY, preserved (this WAS `_halted_known_gap_check`, a deliberate,
-    documented FAIL): DAT-04 ("market open and not halted") had NO live
-    signal source anywhere in this codebase as of the 2026-07-14 review --
-    `_wire_live_day` (server.py) never passed a `halted=` provider to
-    `LiveMarketGates.for_live()`, so `self.halted` stayed the dataclass
-    default `None`, and `LiveMarketGates.__call__` read
-    `market_halted=await self._safe(self.halted, default=False) if open_now
-    else True` -- UNCONDITIONALLY False (not halted) whenever the market was
-    open per the calendar. Worse, `default=False` was itself the PERMISSIVE
-    answer for this field (`evaluate_gates` blocks when `market_halted` is
-    TRUE), inverted from every other `_safe(...)` call in that file.
-
-    FIXED (DAT-04a, this module's own SAFETY_GATE_REGISTRY entry now carries
-    `known_gap=None`): `composition.live_gates` defaults `halted` to `True`
-    (fail-closed, uniform with its three siblings), and
-    `meic.adapters.dxlink.trading_status.TradingStatusStore` is the real,
-    live provider -- fed by a dxfeed Profile subscription piggybacked onto
-    the SAME DXLink connection `chain_snapshot.snapshot_chain` already opens
-    (no new connection, no new dependency). This check flips the REAL store
-    `app.state.trading_status_store` owns and asserts the bound `halted`
-    gate input's OUTPUT tracks it -- exactly the shape
-    `_data_fresh_live_check` above uses, and exactly what would have caught
-    the ninth finding had it existed then. A constant/dead-default provider
-    (the historical shape) cannot pass this."""
-    runtime = getattr(state, "runtime", None)
-    gates = getattr(runtime, "market_gates", None)
-    store = getattr(state, "trading_status_store", None)
-    provider = getattr(gates, "halted", None)
-    if provider is None or store is None:
-        return LiveCheckResult(False, "runtime.market_gates.halted or "
-                                       "state.trading_status_store not reachable off app.state")
-    # The real provider reads `comp.clock.now()` (SystemClock, real wall
-    # time) — so the flip must stamp with real, near-"now" instants too,
-    # never a fixed fake instant that would read as arbitrarily stale.
-    prior = store.last
-    try:
-        store.record("HALTED", datetime.now(timezone.utc))
-        halted_reads_true = asyncio.run(provider())     # halted() should be True when status != ACTIVE
-        store.record("ACTIVE", datetime.now(timezone.utc))
-        halted_reads_false = asyncio.run(provider())     # and False when ACTIVE + fresh
-    finally:
-        store._reading = prior
-    live = (halted_reads_true is True) and (halted_reads_false is False)
-    return LiveCheckResult(live, f"flipping trading_status_store: HALTED->{halted_reads_true}, "
-                                  f"ACTIVE->{halted_reads_false}")
+# --- DAT-04a v1.80: the `halted` safety-gate input is RETIRED ---------------
+#
+# HISTORY (this module used to carry `_halted_live_check` here): DAT-04a
+# (v1.69) closed NFR-07's ninth finding by giving `halted` a real provider
+# (`meic.adapters.dxlink.trading_status.TradingStatusStore`, fed by a
+# piggybacked dxfeed Profile subscription) and a behavioural live-check that
+# flipped the real store and asserted the gate tracked it. Live use (v1.80,
+# operator-ruled, market-taught) proved the underlying's Profile
+# `trading_status` reads UNDEFINED in real trading windows -- the field was
+# unusable, and the pre-ruled contingency (retire, don't patch around it) was
+# executed: the module is deleted, `LiveMarketGates` no longer has a `halted`
+# field at all, and there is nothing left here to register or check. Halt
+# protection is now carried entirely by the freshness gates
+# (DAT-02/STK-04/STK-10); see `composition/live_gates.py`'s module docstring
+# for the full ruling. This entry is intentionally NOT replaced by a stub --
+# an absent registry entry, not a constant-returning one, is the honest shape
+# of "this input no longer exists".
 
 
 def _calendar_blackout_live_check(state) -> LiveCheckResult:
@@ -466,15 +434,8 @@ SAFETY_GATE_REGISTRY: tuple[SafetyGateInput, ...] = (
               "state (heuristic -- a real authenticated call cannot be placed offline).",
         live_check=_buying_power_ok_live_check,
     ),
-    SafetyGateInput(
-        rule_ids=("DAT-04", "DAT-04a", "ENT-03"),
-        gate_input="halted",
-        proof="app.state.runtime.market_gates.halted, flipped against the real "
-              "app.state.trading_status_store -- the ninth finding (2026-07-14 "
-              "review), CLOSED by DAT-04a (v1.69). See _halted_live_check's "
-              "docstring for the fixed regression's full history.",
-        live_check=_halted_live_check,
-    ),
+    # DAT-04a v1.80: the `halted` input RETIRED -- no registry entry (see the
+    # module comment above `_calendar_blackout_live_check` for the history).
     SafetyGateInput(
         rule_ids=("CAL-05", "CAL-07"),
         gate_input="blackout_label",
@@ -562,6 +523,20 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # genuinely-unrelated slice's work doesn't leave this gate red; it does
     # NOT claim UI-31 itself is implemented.
     "UI-31",
+    # RPT-17 (v1.82, item 3 -- built on the RPT-17/UI-33 day-trades-table
+    # branch, operator-commissioned, pulled through the freeze by explicit
+    # fiat): "Day-trades table & the Unmanaged counterfactual" -- a
+    # reporting/UI view (RPT-09a's ONE aggregation path, rendered read-only
+    # via GET /reports/day-table, reporting/day_table.py) plus the D8b
+    # sampler EXTENSION, which rides the ALREADY-registered RPT-12 mark
+    # sampler under the health-tick entry above (NFR-02/DAT-02/RPT-12/...) --
+    # not a new standalone runtime component. Same "reporting/UI view,
+    # computed on read" class as UI-24/UI-25/UI-31; the heuristic's "sampl"
+    # hit traces to the D8b prose describing an extension of an
+    # already-registered sampler, not a new one -- so this entry stays even
+    # now that RPT-17/UI-33 is built, exactly as UI-24/UI-25 stay for their
+    # own already-built views.
+    "RPT-17",
     "TPF-08", "TPF-09", "TPT-07",               # persistence/interaction RULES for the exit
                                                  # monitor already registered under TPF-03/TPT-04
     "RPT-15a", "RPT-15b", "RPT-15d",            # scoping/semantics rules for the RPT-15

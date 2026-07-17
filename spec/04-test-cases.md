@@ -54,7 +54,7 @@ Scenario Outline: Pre-entry gate blocks entry
     | insufficient buying power | insufficient_bp     |
 ```
 
-**TC-ENT-03** — ENT-04/ENT-05: each fill's quantity equals its OWN row's `contracts` (v1.44: schedule rows 2 and 1 ⇒ fills of 2 and 1); values outside 1–10 rejected; RSK-04 evaluates Σ(per-entry worst case) — 2 × wc₁ + 1 × wc₂, never 3 × max(wc); a day never exceeds max_entries_per_day fills.
+**TC-ENT-03** — ENT-04: each fill's quantity equals its OWN row's `contracts` (v1.44: schedule rows 2 and 1 ⇒ fills of 2 and 1); values outside 1–10 rejected; RSK-04 evaluates Σ(per-entry worst case) — 2 × wc₁ + 1 × wc₂, never 3 × max(wc). (v1.81: no entry-count cap — `max_entries_per_day` retired; the day is bounded by RSK-04 dollars + the Cboe order cap, and the config loader rejects the retired key.)
 
 **TC-ENT-08** — ENT-09/UI-22 manual entry
 ```gherkin
@@ -64,7 +64,7 @@ Scenario: Manual fire passes every gate except the window
   When the OK-confirmation dialog is acknowledged
   Then exactly one entry attempt runs through the identical pipeline
   And the entry is recorded with initiator "manual_entry"
-  And it counts toward max_entries_per_day
+  And no entry-count cap blocks it (ENT-05 retired v1.81); only RSK-04 and the order cap bound the day
 
 Scenario: No fire without the OK dialog
   Given the operator presses the manual fire button
@@ -1554,11 +1554,11 @@ Scenario: Safety-gate inputs are live signals, never constants (v1.68 — the ei
   And RSK-01a's flatten_in_progress wired to lambda False is the pinned regression
   And DAT-04's halt input (no provider, inverted polarity) is the ninth-finding pinned regression
 
-Scenario: The halt gate blocks when unmeasured (DAT-04a)
-  Given no trading-status reading, or one stale beyond 300 seconds
-  Then entries are blocked with reason "market_halted"
-  And a status of not-active blocks identically
-  And all four gate inputs share False-means-block polarity
+Scenario: The halt input is retired, never stubbed (DAT-04a v1.80 contingency executed)
+  Given the retired trading-status input
+  Then no halt module, gate input, or market_halted skip reason exists in the build
+  And no gate input was replaced by a constant (the wiring audit still fails constants)
+  And a frozen-quote scenario still blocks entries via the freshness gates with their own reasons
 
 Scenario: stop_limit has no construction path (STP-03 tombstone)
   Then no code constructs a stop_limit order and the config loader rejects stop_order_type
@@ -1636,6 +1636,46 @@ Scenario: Feed failure is loud but never blocks trading
   Then a persistent alert raises and entries remain ungated by the calendar's absence
 ```
 
+**TC-CAL-05** — CAL-11/UI-34 event proximity warnings (v1.84)
+```gherkin
+Scenario: Warnings appear day-of and T-1/2/3 trading days before, never blocking
+  Given an FOMC event and event_warning_lead_days = 3
+  Then a dismissable banner shows on the day and 1, 2, and 3 trading days before
+  And no entry is ever blocked or gated by the warning
+  And the countdown is measured in trading days so a weekend is skipped
+
+Scenario: Dismissal is per-event-per-tier and never pre-silences the nearest warning
+  Given the operator dismisses the T-3 FOMC banner
+  Then the T-2, T-1, and day-of FOMC banners still appear as the event approaches
+  And re-dismissing a given tier never re-nags, across restarts (REC-07)
+
+Scenario: Warnings are honest and never fabricated
+  Given a tier-2 Fed-speaker event
+  Then its banner is labeled best-effort, never stated as certain
+  And no banner ever appears for an event not on the calendar
+
+Scenario: A warning is not a tag
+  Given an untagged OpEx day with its warning showing
+  Then entries still fire normally (the warning informs, CAL-05 enforces only on tags)
+```
+
+**TC-CAL-04** — CAL-10 computed OpEx events (v1.83)
+```gherkin
+Scenario: Monthly and quarterly OpEx compute correctly
+  Then 2026-07-17 is an OPEX_MONTHLY event (third Friday of July 2026)
+  And 2026-09-18 is a QUAD_WITCH event, badged distinctly from monthly OpEx
+  And no weekly or daily expiration ever renders as a calendar event
+
+Scenario: A holiday third Friday shifts to the preceding trading day
+  Given a month whose third Friday is an exchange holiday per the DAY-01a calendar (real vector: April 2000, Good Friday the 21st)
+  Then the OpEx event lands on the preceding trading day, never on the holiday
+
+Scenario: Computed events are taggable but never auto-blocked and never stale
+  Given a standing rule "always block QUAD_WITCH"
+  Then quad-witch days auto-tag while monthly OpEx days stay untagged and tradeable
+  And computed events carry no staleness banner and trigger no fetch
+```
+
 **TC-CAL-02** — CAL-06 manual override (v1.71)
 ```gherkin
 Scenario: A manual fire on a tagged day warns and requires acknowledgment
@@ -1682,6 +1722,29 @@ Scenario: An unexplained event type is a test failure
   Then the suite fails naming the event type
 ```
 
+**TC-RPT-23** — RPT-17/UI-33 day-trades table + unmanaged counterfactual (v1.82)
+```gherkin
+Scenario: The table shows today's entries from the one aggregation path
+  Given two closed entries and one open entry today
+  Then the Trading tab's table shows all three with per-side badges, credits, and realized P&L net of fees
+  And the open row shows live P&L badged unrealized and updates in place
+  And every figure matches the canonical aggregation byte-for-byte (no view-local recompute)
+
+Scenario: Unmanaged P&L is computed from recorded samples only
+  Given an entry closed at 10:00 whose legs were sampled through 16:00
+  Then its Unmanaged P&L = premium received minus the recorded 16:00 spread value
+  And an entry with missing close-time samples renders "no data (not sampled)", never an interpolation
+
+Scenario: Sampling continues after close, day-scoped (D8b)
+  Given an entry that closes mid-morning
+  Then its legs keep receiving 1-minute samples until 16:00 and none after
+  And the counterfactual never triggers any fetch of historical quotes
+
+Scenario: Provisional stays provisional
+  Given a row held to expiry whose broker settlement has not landed
+  Then its realized P&L renders the EOD-01 PROVISIONAL label, never fake finality
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1716,8 +1779,8 @@ Scenario: An unexplained event type is a test failure
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
 | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
-| CAL-01→09 / UI-30 | TC-CAL-01→03 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
-| UI-31 | TC-UI-09 | | | |
+| CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
+| UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |

@@ -114,9 +114,32 @@ class LiveShapedBroker:
         `.order_id`-vs-`.id` shape mismatch that once made a live stop's own
         confirmation miss it (2026-07-09). A caller that blindly resubmits on
         a missed confirmation, rather than re-checking for an already-resting
-        order first, rests a genuine duplicate — tastytrade enforces no
-        server-side idempotency key."""
+        order first, rests a genuine duplicate — the stop path (protect_position)
+        still guards this with a symbol scan rather than the `external_identifier`
+        match the entry path now uses (2026-07-17 finding A, deferred follow-up)."""
         self._orders[str(order_id)]["hide_count"] = times
+
+    def lose_ack_on_submit(self, times: int = 1) -> None:
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A): arm the
+        NEXT `times` submit() calls so the order is created exactly as
+        normal -- it lands at the broker, fully queryable via
+        find_matching_order()/working_orders()/fills_since() -- but the
+        RESPONSE is lost: submit() raises instead of returning the id. This
+        is the ordinary home-network failure the fix must survive (contrast
+        `fail_submit`, where the order never reaches the broker at all)."""
+        self._lost_ack = times
+
+    def fail_submit(self, times: int = 1) -> None:
+        """The genuine-failure contrast case: the order never reaches the
+        broker (no record created at all) -- the clean-skip path the fix
+        must not regress."""
+        self._fail_submit = times
+
+    def fail_query(self, times: int = 1) -> None:
+        """Simulates the RECOVERY QUERY itself failing/being unreachable --
+        the INDETERMINATE case where neither adopting nor a clean skip is
+        safe."""
+        self._fail_query = times
 
     def set_positions(self, positions: list[tuple[str, int, str]]) -> None:
         """Install broker-truth positions as SDK-shaped objects (attributes
@@ -127,12 +150,38 @@ class LiveShapedBroker:
         self._positions = [_Position(s, q, d) for s, q, d in positions]
 
     async def submit(self, intent) -> str:
+        if getattr(self, "_fail_submit", 0) > 0:
+            self._fail_submit -= 1
+            raise ConnectionError("scripted submit failure: the order never reached the broker")
         oid = str(self._n)
         self._n += 1
         self._orders[oid] = {"intent": intent, "t": self._clock.now(),
                              "kind": intent.order_type, "cancelled": False}
         self.submits.append((oid, intent.order_type))
+        if getattr(self, "_lost_ack", 0) > 0:
+            self._lost_ack -= 1
+            raise TimeoutError("scripted lost-ack: the broker accepted the order but "
+                               "the client never saw the response")
         return oid
+
+    async def find_matching_order(self, intent) -> str | None:
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A): match on the
+        intent's `idempotency_key`, the harness analog of the live
+        TastytradeAdapter's `external_identifier` query (this fake stores the
+        whole intent, so its key IS the stamped id). A keyless intent claims
+        nothing; a cancelled order is never adopted (finding 2/3)."""
+        if getattr(self, "_fail_query", 0) > 0:
+            self._fail_query -= 1
+            raise ConnectionError("scripted query failure: broker unreachable to confirm")
+        key = getattr(intent, "idempotency_key", "")
+        if not key:
+            return None
+        for oid, r in self._orders.items():
+            if r["cancelled"]:
+                continue
+            if getattr(r["intent"], "idempotency_key", "") == key:
+                return oid
+        return None
 
     async def replace(self, oid, intent) -> str:
         rec = self._orders.get(str(oid))

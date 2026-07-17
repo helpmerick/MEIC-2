@@ -179,7 +179,6 @@ def build_live_runtime(
     market_gates,
     warmup=None,
     warmup_lead_seconds: float = 60.0,   # ENT-08 doc 06 session_warmup_lead_seconds default
-    max_entries_per_day: int | None = None,
     daily_order_cap: int = DEFAULT_DAILY_ORDER_CAP,
     order_cap_buffer: int = DEFAULT_ORDER_CAP_BUFFER,
     drift: BrokerClockProbe | None = None,
@@ -207,7 +206,6 @@ def build_live_runtime(
         market_gates=market_gates,
         warmup=warmup,
         warmup_lead_seconds=warmup_lead_seconds,
-        max_entries_per_day=max_entries_per_day,
         max_day_risk=max_day_risk_of(comp.state),   # RSK-04
         order_cap=cap,                              # RSK-08
         buying_power=buying_power,                  # ENT-03
@@ -221,7 +219,7 @@ def build_live_runtime(
     return runtime
 
 
-def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None,
+def build_manual_entry(comp, *, selector, market_gates,
                        day: Callable[[], str] | None = None,
                        drift: BrokerClockProbe | None = None,
                        max_clock_drift_ms: float = 2000.0,
@@ -259,7 +257,7 @@ def build_manual_entry(comp, *, selector, market_gates, max_entries_per_day=None
         )
 
     return ManualEntry(comp, selector, market_gates,
-                       max_entries_per_day=max_entries_per_day, risk=risk, day=day,
+                       risk=risk, day=day,
                        blocks=blocks, spot_provider=spot_provider,
                        calendar_label=calendar_label)
 

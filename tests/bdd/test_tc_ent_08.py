@@ -79,11 +79,11 @@ async def _gates():
                         data_fresh=True, session_valid=True, buying_power_ok=True)
 
 
-def _manual(comp, *, risk=None, max_entries=None):
+def _manual(comp, *, risk=None):
     async def selector(when, n, config=None, put_floor=None, call_floor=None):
         return _condor(n, config.contracts if config else 1), None
 
-    return ManualEntry(comp, selector, _gates, max_entries_per_day=max_entries,
+    return ManualEntry(comp, selector, _gates,
                        risk=(lambda: risk) if risk else None, day=lambda: "2026-07-06")
 
 
@@ -150,15 +150,25 @@ def _(world):
     assert world["result"]["initiator"] == MANUAL
 
 
-@then('it counts toward max_entries_per_day')
+@then("no entry-count cap blocks it (ENT-05 retired v1.81); only RSK-04 and the order cap bound the day")
 def _(world):
-    """With the cap already reached by this fill, the next manual fire is skipped."""
+    """ENT-05 is RETIRED (v1.81): `ManualEntry` no longer accepts any
+    count-cap parameter at all -- constructing one with the old kwarg is a
+    structural TypeError -- and firing well past the old default cap (which
+    used to be exactly the scheduled-row count, here 1) still fills every
+    time, bounded only by RSK-04/the order cap, never a count."""
     comp = world["comp"]
-    capped = _manual(comp, max_entries=1)
-    out = asyncio.run(capped.fire(press_id="press-2", entry_number=2,
-                                  row=_row(), confirmed=True))
-    assert out == {"result": "skipped", "reason": "max_entries"}
-    assert len(_submitted(comp)) == 1              # no second order
+
+    with pytest.raises(TypeError, match="max_entries_per_day"):
+        ManualEntry(comp, world["manual"]._selector, _gates, max_entries_per_day=1)
+
+    manual = world["manual"]
+    for i in range(2, 5):
+        out = asyncio.run(manual.fire(press_id=f"press-{i}", entry_number=i,
+                                      row=_row(), confirmed=True))
+        assert out["result"] == "filled", out
+
+    assert len(_submitted(comp)) == 4              # the original fill + 3 more, no count cap
 
 
 # --- Scenario 2: no fire without the OK dialog ------------------------------------

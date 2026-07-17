@@ -207,6 +207,26 @@ class SimulatedBroker:
                     self.ledger.hold_margin(margin_req)  # consumed until the entry closes
         return oid
 
+    async def find_matching_order(self, order: OrderIntent) -> str | None:
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A): the paper
+        analog of the live adapter's `external_identifier` match. `SimOrder`
+        stores the frozen `OrderIntent` verbatim, so the intent's own
+        `idempotency_key` IS the stamped id -- match on it directly (no leg
+        shape, so two same-day entries with identical strikes but different
+        entry_id, hence different `entry:{entry_id}` keys, can never
+        cross-adopt: finding 4). A keyless intent claims nothing. Only a
+        WORKING/FILLED order is adoptable -- a CANCELLED/REJECTED order that
+        reused the same key is never adopted as live (finding 2/3)."""
+        key = order.idempotency_key
+        if not key:
+            return None
+        for oid, o in self._orders.items():
+            if o.status not in ("WORKING", "FILLED"):
+                continue
+            if o.intent.idempotency_key == key:
+                return oid
+        return None
+
     def tick_marks(self, marks: dict[str, Decimal], *, entry_id: str | None = None) -> list[tuple[str, Decimal]]:
         """Feed current short marks; fill any resting stop whose trigger is hit
         (SIM-03). Scope to one entry_id when only one side should move. Returns

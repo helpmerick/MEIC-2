@@ -673,6 +673,91 @@ def create_app(
         feed = [f for f in feed if f is not None]
         return list(reversed(feed))[:25]
 
+    # RPT-17/UI-33 (v1.82): the Trading tab's day-trades table -- TODAY's
+    # entries, live + closed, one row each -- plus the Timing & Unmanaged
+    # report (D8b's counterfactual). Lives here (not reports.py) because an
+    # OPEN row's live P&L needs the SAME `entries_enricher` hook `/entries`
+    # already uses (server.py's `_live_pnl_enricher`/QuoteHub-backed live
+    # marks); reports.py deliberately holds no such live-snapshot reference
+    # (module docstring, Principle 1). RPT-09a: every money figure below is
+    # read straight off the ONE canonical aggregation path
+    # (reporting/folds.py's entry_dollars/entry_credit_dollars +
+    # reporting/day_table.py's helpers built on them) -- this route
+    # assembles and labels, recomputing nothing.
+    _DAY_TABLE_TERMINAL = {"CLOSED", "EXPIRED", "DECAY_CLOSED"}  # mirrors
+    # server.py's `_TERMINAL_STATUSES` (kept as a local literal here so
+    # app.py never imports server.py -- the reverse dependency already runs
+    # the other way, server.py imports `_strike_from_symbol` from this file).
+
+    @app.get("/reports/day-table")
+    def get_day_table() -> dict[str, Any]:
+        from meic.reporting import day_table as dt
+        from meic.reporting.folds import core_results, entry_credit_dollars, entry_dollars
+        from meic.reporting.periods import scope_events
+
+        day = fold(events)
+        today = commands.day() if commands is not None else day.date
+        if today is None:
+            return {"date": None, "mode": state.trading_mode, "rows": [],
+                    "day_total": None, "timing_unmanaged": []}
+
+        filled_by_id = dt.condor_filled_by_id(events)
+        rows: list[dict[str, Any]] = []
+        timing: list[dict[str, Any]] = []
+        for entry_id, e in sorted(day.entries.items()):
+            if entry_day(entry_id) != today:
+                continue
+            cf = filled_by_id.get(entry_id)
+            is_open = e.status not in _DAY_TABLE_TERMINAL
+            closed_at = dt.entry_close_at(entry_id, events)
+            spx = dt.recorded_spx(entry_id, events)
+            if is_open:
+                card = {"entry_id": entry_id, "status": e.status}
+                if entries_enricher is not None:
+                    card = entries_enricher([card])[0]
+                pnl = card.get("live_pnl")
+            else:
+                pnl = str(entry_dollars(e))
+            rows.append({
+                "entry_id": entry_id,
+                "status": e.status,
+                "entry_time": e.placed_at,      # ORD-11 open ET instant
+                "closed_at": closed_at,         # ORD-11 close ET instant
+                "initiator": cf.initiator if cf is not None else None,
+                "target_premium": (None if cf is None or cf.target_premium is None
+                                   else str(cf.target_premium)),
+                "net_credit": str(entry_credit_dollars(e)),
+                "wing_width": dt.wing_widths(e),
+                "strikes": dt.side_strikes(e),
+                "spx_reference": {"value": spx.value, "label": spx.label},
+                "side_badges": {side: dt.side_badge(e, side) for side in ("PUT", "CALL")},
+                "stop_fill_count": dt.stop_fill_count(e),
+                "pnl": pnl,
+                "pnl_unrealized": is_open,           # UI-13: still-open rows are unrealized
+                "provisional": dt.is_provisional(e, events),  # EOD-01
+            })
+            unm = dt.unmanaged_pnl(e, events)
+            timing.append({
+                "entry_id": entry_id,
+                "opened_at": e.placed_at,
+                "closed_at": closed_at,
+                "premium": str(entry_credit_dollars(e)),
+                "realized_pnl": None if is_open else str(entry_dollars(e)),
+                "unmanaged_pnl": unm.value,
+                "unmanaged_status": unm.status,
+            })
+
+        scoped = scope_events(events, (today,))
+        totals = core_results(scoped)
+        day_total = {
+            "net_pnl": str(totals.net_pnl), "fees": str(totals.fees),
+            "total_credit": str(totals.total_credit), "filled": totals.filled,
+            "stop_fill_count": sum(dt.stop_fill_count(e) for entry_id, e in day.entries.items()
+                                   if entry_day(entry_id) == today),
+        }
+        return {"date": today, "mode": state.trading_mode, "rows": rows,
+                "day_total": day_total, "timing_unmanaged": timing}
+
     # --- DOC-01..05 how-it-works guide (doc 12) ---------------------------------
     # Read-only GET, origin-open like every other read model above (RPT-10
     # precedent) -- no trading capability, no state mutation, spec/ is only

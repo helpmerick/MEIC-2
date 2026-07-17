@@ -27,6 +27,8 @@ from meic.adapters.api.app import _strike_from_symbol
 from meic.adapters.logging_setup import configure_logging
 from meic.application.clocks import MutableClock
 from meic.application.market_calendar import (
+    ET,
+    RTH_CLOSE,
     is_trading_day,
     next_trading_day,
     trading_day,
@@ -165,7 +167,7 @@ def paper_app():
             open_worst_cases=tuple(wc for eid, wc in comp.worst_case.items() if eid in open_ids),
             max_day_risk=None if ceiling in (None, "") else Decimal(str(ceiling)),
             buying_power=comp.broker.ledger.buying_power)   # SIM-04
-    manual = ManualEntry(comp, selector, gates, max_entries_per_day=6,
+    manual = ManualEntry(comp, selector, gates,
                          risk=risk, day=lambda: "2026-07-07")
 
     # no api_token on the localhost demo bind; Close/Flatten act on the live book
@@ -1454,18 +1456,45 @@ def _sample_marks_once(comp, snapshot) -> None:
     AND spot come back absent appends nothing either (no all-None sample);
     otherwise one EntryMarkSample is appended per open entry, with each mark
     field independently None where its leg's strike has no quote.
+
+    D8b (v1.82, RPT-17's counterfactual): a CLOSED entry keeps receiving the
+    SAME per-tick sample too, as long as it (1) closed TODAY -- entry_day(...)
+    must match the ET trading day this tick's own snapshot instant falls on,
+    never a prior day -- and (2) this tick is still at or before the 16:00
+    ET close (inclusive: see `past_close`'s own comment below for why the
+    boundary tick itself must still count). Both conditions read off
+    `snapshot.taken_at` alone, so this is bounded, day-scoped, and
+    replay-safe, and it fetches nothing new: every mark below still comes
+    from the identical live snapshot the open-entry path already reads.
+    `today_str`/`past_close` are None/False (never True) when `at` itself is
+    unavailable, so the extension simply does not apply that tick -- the
+    pre-existing open-entry sampling is unaffected.
     """
     from meic.domain.events import EntryMarkSample
     from meic.domain.projection import fold
+    from meic.reporting.folds import entry_day
 
     if snapshot is None or snapshot.stale:
         return
     at = getattr(snapshot, "taken_at", None)
     at_iso = at.isoformat() if at is not None else None
+    today_str = trading_day(at).isoformat() if at is not None else None
+    # Strictly GREATER than the close (never >=): a tick landing AT 16:00:00
+    # ET is the last one D8b must still capture -- RPT-17's Unmanaged
+    # counterfactual specifically wants "the recorded 16:00 spread value",
+    # and the health-tick cadence is not guaranteed to land on any OTHER
+    # exact second, so excluding the boundary tick itself could leave the
+    # counterfactual with no usable sample at all on an otherwise-normal day.
+    past_close = at is not None and at.astimezone(ET).time() > RTH_CLOSE
     day = fold(comp.events)
     for e in day.entries.values():
-        if e.status in _TERMINAL_STATUSES or not e.legs:
+        if not e.legs:
             continue
+        if e.status in _TERMINAL_STATUSES:
+            # D8b: sample a closed entry only if it closed TODAY and the
+            # 16:00 ET close hasn't passed yet -- see the docstring above.
+            if today_str is None or entry_day(e.entry_id) != today_str or past_close:
+                continue
         by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
         for leg in e.legs:
             by_side.setdefault(leg.side, {})[leg.role] = leg
@@ -1927,7 +1956,6 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     dataclass default) is what makes forgetting to pass it a loud call-site
     error instead of a silent green gate.
     """
-    from meic.adapters.dxlink.trading_status import TradingStatusStore
     from meic.application.calendar_store import CalendarStore
     from meic.application.timeouts import run_warmup
     from meic.application.warmup import ALERT_AT_SECONDS
@@ -1960,12 +1988,11 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     # is treated as unverified too. The session probe below feeds it.
     drift = BrokerClockProbe()
 
-    # DAT-04a (v1.69): the halt-signal provider seam — one store, fed by the
-    # Profile subscription `snapshot_chain` piggybacks onto the SAME DXLink
-    # connection it already opens for quotes below (no new connection, no
-    # new dependency). See trading_status.py's module docstring for the full
-    # ruling and the pre-ruled retirement contingency.
-    trading_status_store = TradingStatusStore()
+    # DAT-04a v1.80: the halt-signal provider seam (TradingStatusStore, fed by
+    # a piggybacked Profile subscription) is RETIRED — module deleted, gate
+    # input removed from LiveMarketGates, never stubbed. Halt protection is
+    # now carried entirely by the freshness gates (DAT-02/STK-04/STK-10). See
+    # composition/live_gates.py's module docstring for the full ruling.
 
     # CAL-01..08 (doc 11, v1.71): the tag/rule store is a pure fold over the
     # SAME shared event log everything else journals to -- REC-07's own
@@ -1987,11 +2014,10 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
             # v1.51: no band_points — the subscription span is an internal
             # constant (SUBSCRIBE_SPAN_PTS); the STK-10 gate is trade-relative.
-            # DAT-04a: piggyback the trading-status Profile subscription onto
-            # THIS same call/connection; `now` stamps the reading off the
-            # injected clock, never datetime.now() (DAY-03).
-            snap = await snapshot_chain(comp.broker._session, now=comp.clock.now,
-                                        on_trading_status=trading_status_store.record)
+            # `now` stamps the reading off the injected clock, never
+            # datetime.now() (DAY-03). DAT-04a v1.80: no more piggybacked
+            # trading-status Profile subscription here — the input is retired.
+            snap = await snapshot_chain(comp.broker._session, now=comp.clock.now)
             self.stale = snap.stale
             self.last = snap
             return snap
@@ -2000,13 +2026,6 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
 
     async def _data_fresh() -> bool:
         return not snaps.stale
-
-    async def _halted() -> bool:
-        # DAT-04a: no reading, a non-ACTIVE status, or one stale beyond
-        # trading_status.HALT_READING_STALE_AFTER_SECONDS => halted. The
-        # freshness gates (DAT-02/STK-04/STK-10) are an independent second
-        # layer, untouched by this input.
-        return trading_status_store.halted(comp.clock.now())
 
     async def _session_valid() -> bool:
         # The ~60 s session probe (NFR-02) doubles as the DAY-03 clock reading:
@@ -2053,12 +2072,11 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     # present, called, green forever, never actually reading whether a
     # Flatten All is executing. `flatten_in_progress` is now the REQUIRED
     # caller-supplied live signal (see this function's docstring).
+    # DAT-04a v1.80: no more `halted=` kwarg — the input is retired, never
+    # stubbed (see composition/live_gates.py's module docstring).
     gates = LiveMarketGates.for_live(clock=comp.clock, data_fresh=_data_fresh,
                                      session_valid=_session_valid, buying_power_ok=_buying_power_ok,
                                      flatten_in_progress=flatten_in_progress,
-                                     # DAT-04a (v1.69, the ninth finding CLOSED): the live
-                                     # halt-signal provider — see trading_status_store above.
-                                     halted=_halted,
                                      holidays=holidays_near(_cal_anchor, years_ahead=10),
                                      half_days=half_days_near(_cal_anchor, years_ahead=10))
 
@@ -2117,17 +2135,17 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
                 f"#{entry_number} at {when.isoformat()} -- firing on schedule regardless")
 
     # RSK-04 + RSK-08 + ENT-03 BP, all armed. Also wraps comp.broker so the order
-    # cap counts every order any service submits.
+    # cap counts every order any service submits. ENT-05 v1.81 (RETIRED): no
+    # entry-count cap is threaded through here anymore.
     runtime = build_live_runtime(comp, selector=selector, market_gates=gates,
                                  warmup=_entry_warmup, warmup_lead_seconds=lead_seconds,
-                                 max_entries_per_day=_max_entries(comp),
                                  drift=drift, max_clock_drift_ms=max_drift_ms,
                                  calendar_label=calendar_store.label_for_day)  # CAL-05
 
     # ENT-09: the panel's ▶ crosses the identical rails (same ceiling, same book).
     manual = build_manual_entry(
         comp, selector=selector, market_gates=gates,
-        max_entries_per_day=_max_entries(comp), drift=drift, max_clock_drift_ms=max_drift_ms,
+        drift=drift, max_clock_drift_ms=max_drift_ms,
         calendar_label=calendar_store.label_for_day,  # CAL-06
         # DAY-03 (THE confirmed live bug, 2026-07-13): this used to be
         # `datetime.now(timezone.utc).astimezone().date().isoformat()`, which
@@ -2276,10 +2294,8 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         # NFR-04 (2026-07-13): the QuoteHub the live quote-stream loop writes
         # and the enrichers/evaluator read live-first, snapshot-fallback.
         "quote_hub": quote_hub,
-        # DAT-04a (v1.69): the halt-signal store, exposed like quote_hub/
-        # chain_snapshots above so a test/operator/the NFR-07 constant-signal
-        # audit can flip it directly against the real live composition.
-        "trading_status_store": trading_status_store,
+        # DAT-04a v1.80: the halt-signal store is RETIRED — no longer exposed
+        # here (see composition/live_gates.py's module docstring).
         "max_quote_age_ms": max_quote_age_ms,
         # EC-STP-06 (2026-07-14): exposed for the wiring capstone, mirroring
         # `stop_fill_poll_interval_s` -- proves the cutoff actually comes
@@ -2287,15 +2303,9 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         "stop_fill_catchup_max_age_days": stop_fill_catchup_max_age_days,
         # CAL-01..08: exposed so live_app can wire /calendar/* (create_app)
         # and so the NFR-07 registry's behavioural live-check can flip the
-        # real store off app.state, mirroring quote_hub/trading_status_store.
+        # real store off app.state, mirroring quote_hub.
         "calendar_store": calendar_store,
     }
-
-
-def _max_entries(comp) -> int | None:
-    """ENT-05. `None` means 'as many as are composed' (doc 06 default)."""
-    schedule = comp.state.entry_schedule or []
-    return len(schedule) or None
 
 
 def live_app():
@@ -2487,9 +2497,7 @@ def live_app():
     # NFR-04 (2026-07-13): the QuoteHub itself, exposed like `chain_snapshots`
     # above so a test/operator can inspect `.healthy`/`.mark(symbol)` directly.
     app.state.quote_hub = hub
-    # DAT-04a (v1.69): the halt-signal store, exposed like quote_hub above --
-    # the NFR-07 constant-signal audit flips it directly (see wiring_registry.py).
-    app.state.trading_status_store = live["trading_status_store"]
+    # DAT-04a v1.80: the halt-signal store is RETIRED — no longer exposed here.
     app.state.broker_connected = False
     app.state.broker_error = None
     app.state.reconcile = None

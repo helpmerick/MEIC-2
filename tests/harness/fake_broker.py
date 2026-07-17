@@ -109,6 +109,19 @@ class FakeBroker:
             self._record_fill(rec, reaction.payload, partial=False)
         elif reaction.action == "partial":
             self._record_fill(rec, reaction.payload, partial=True)
+        elif reaction.action == "lost_ack":
+            # ORD-04/EC-API-03 (2026-07-17 security review finding A): the
+            # order LANDS exactly as normal (queryable via
+            # find_matching_order()/working_orders()/fills_since()) but the
+            # RESPONSE is lost -- submit() raises instead of returning the
+            # id. `payload` may carry a `net_credit` to fill it immediately
+            # (simulating a fill that happened before the ack was lost).
+            if "net_credit" in reaction.payload or reaction.payload.get("fill"):
+                fill_payload = {k: v for k, v in reaction.payload.items() if k != "fill"}
+                self._record_fill(rec, fill_payload, partial=False)
+            raise TimeoutError(
+                "scripted lost-ack: the broker accepted the order but the "
+                "client never saw the response")
         return order_id
 
     async def cancel(self, id: str) -> dict[str, Any]:
@@ -145,6 +158,22 @@ class FakeBroker:
 
     async def working_orders(self) -> list[FakeOrder]:
         return [o for o in self._orders.values() if o.status in ("WORKING", "PARTIAL")]
+
+    async def find_matching_order(self, order: OrderIntent) -> str | None:
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A): match on the
+        frozen intent's `idempotency_key` -- the paper/harness analog of the
+        live adapter's `external_identifier` (see SimulatedBroker's version for
+        the rationale: own-id ownership, no cross-adopt of a different entry_id,
+        and terminal orders excluded)."""
+        key = order.idempotency_key
+        if not key:
+            return None
+        for oid, rec in self._orders.items():
+            if rec.status not in ("WORKING", "PARTIAL", "FILLED"):
+                continue
+            if rec.intent.idempotency_key == key:
+                return oid
+        return None
 
     async def positions(self) -> list[Any]:
         return list(self._positions)

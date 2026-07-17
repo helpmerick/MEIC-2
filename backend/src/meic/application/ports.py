@@ -38,6 +38,15 @@ class BrokerGateway(Protocol):  # implemented by TastytradeAdapter, FakeBroker
     async def positions(self) -> list[BrokerPosition]: ...
     async def fills_since(self, cursor) -> list[Fill]: ...
     def order_events(self) -> AsyncIterator[OrderEvent]: ...  # account stream
+    # ORD-04/EC-API-03 (2026-07-17 security review finding A): after a submit()
+    # exception, is `order` already resting/filled at the broker? The order's
+    # `idempotency_key` is stamped onto the broker's server-side
+    # `external_identifier` (TastytradeAdapter._build_order), so the match is
+    # on OUR OWN unique client id -- never a leg-shape guess that
+    # could adopt the operator's structurally-identical order on a shared
+    # account (OWN-01/OWN-03). Returns the matching LIVE/filled order's id, or
+    # None if no such order exists (the submit genuinely never landed).
+    async def find_matching_order(self, order: OrderIntent) -> BrokerOrderId | None: ...
 
 
 class MarketDataFeed(Protocol):  # DXLinkAdapter, FakeMarketData

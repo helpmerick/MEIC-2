@@ -119,7 +119,7 @@ def test_no_safety_rail_is_none_in_the_real_live_wiring():
 def test_every_liveruntime_rail_is_accounted_for():
     """A tripwire. Add a rail to LiveRuntime and this test fails until you either
     wire it in build_live_runtime or state, here, that it is not a rail."""
-    NOT_RAILS = {"comp", "selector", "market_gates", "warmup", "max_entries_per_day",
+    NOT_RAILS = {"comp", "selector", "market_gates", "warmup",
                  "warmup_lead_seconds", "max_clock_drift_ms", "measure_drift_ms",
                  # CAL-05/CAL-07 (v1.71): deliberately NOT a safety rail like
                  # max_day_risk/order_cap/buying_power -- those three silently

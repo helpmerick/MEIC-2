@@ -7,7 +7,13 @@ by definition. Everything else applies unreduced, because the fire goes through
 the identical `ExecuteEntryAttempt.attempt()` as a scheduled entry:
 
     full ENT-03 gate chain, reconcile-block, clock drift, ENT-07 sequencing,
-    RSK-08 order cap, RSK-04 max exposure, and ENT-05 max_entries_per_day.
+    RSK-08 order cap, and RSK-04 max exposure.
+
+ENT-05 v1.81 (operator-ruled, user-blocked, RETIRED): there is no entry-COUNT
+cap here or anywhere else — a real user was blocked firing a legitimate
+manual entry because the old cap defaulted to the scheduled-row count and
+manual fires counted against it. The day's entry volume is bounded only by
+RSK-04 (dollars) and the Cboe order cap (RSK-08) above.
 
 Three things are ManualEntry's own:
 
@@ -33,7 +39,6 @@ from typing import Any
 from meic.application.attempt_crash import alert_and_journal_crashed_attempt
 from meic.application.market_calendar import trading_day_str
 from meic.domain.events import EntrySkipped, ManualFireBlackoutAcknowledged
-from meic.domain.projection import day_report
 from meic.domain.walk import floor_inside_spot
 
 from .schedule_service import effective_stop_pct_estimate, worst_case_estimate
@@ -90,13 +95,12 @@ class FirePreview:
 
 
 class ManualEntry:
-    def __init__(self, comp, selector, market_gates, *, max_entries_per_day=None,
+    def __init__(self, comp, selector, market_gates, *,
                  risk=None, day=None, blocks=None, spot_provider=None,
                  calendar_label=None) -> None:
         self._comp = comp
         self._selector = selector          # async (when, n, config) -> (Condor|None, skip|None)
         self._gates = market_gates         # async () -> GateSnapshot
-        self._max_entries = max_entries_per_day
         self._risk = risk                  # () -> RiskSnapshot | None (sync or async)
         self._day = day                    # () -> "YYYY-MM-DD"
         # ENT-09: "reconcile-block and clock-drift checks" apply to a manual fire.
@@ -143,8 +147,8 @@ class ManualEntry:
         against the row's OWN parameters, entry_number 0 (a probe number — it is
         never persisted anywhere, so it can never collide with a real entry).
 
-        This appends NO event, places NO order, and consumes nothing (ENT-05 is
-        untouched) — it must call ONLY the selector, never `execute.attempt`.
+        This appends NO event, places NO order, and consumes nothing — it
+        must call ONLY the selector, never `execute.attempt`.
         On success it shows the strikes/mids/credit/worst-case the row would get
         IF fired now; the real fire re-selects from fresh data and may differ
         (v1.46 estimate-honesty precedent) — hence `estimate_note` below.
@@ -247,12 +251,9 @@ class ManualEntry:
                              put_floor=put_floor, call_floor=call_floor))
             return {"result": "skipped", "reason": blocked}
 
-        # 5. ENT-05: a manual entry COUNTS toward max_entries_per_day.
-        if self._max_entries is not None and self._filled_today() >= self._max_entries:
-            self._comp.events.append(
-                EntrySkipped(date=day, entry_number=entry_number, reason="max_entries",
-                             put_floor=put_floor, call_floor=call_floor))
-            return {"result": "skipped", "reason": "max_entries"}
+        # ENT-05 v1.81: RETIRED -- no entry-count cap check here. The day is
+        # bounded only by RSK-04 (below, inside attempt()) and the RSK-08
+        # order cap.
 
         # 5b. ENT-09b v1.57 refuse-and-re-pick: if spot has crossed a selected
         # floor since the dialog opened, the fire is REFUSED outright — never
@@ -317,16 +318,6 @@ class ManualEntry:
             alert_and_journal_crashed_attempt(self._comp, day, condor.entry_number,
                                               put_floor=put_floor, call_floor=call_floor))
         return await asyncio.shield(attempt_task)
-
-    def _filled_today(self) -> int:
-        """ENT-05 counts FILLS, not attempts — the same rule day_report uses.
-        Explicit `self.today()` (2026-07-13 fix): a manual gate must count
-        TODAY's fills only — never every fill ANY entry has ever logged. A
-        prior day's entry that never reached a terminal state (its settlement
-        never captured) lingers in the fold forever; without this day scope it
-        would count toward every future day's cap too, and once the cap is
-        reached once it would block manual fires permanently."""
-        return day_report(self._comp.events, self.today()).entries_filled
 
 
 def _selection(row):

@@ -102,9 +102,8 @@ def _registry_given():
 def test_every_non_gap_safety_gate_input_is_live(booted_app):
     """Every entry WITHOUT a documented `known_gap` must resolve to a real,
     varying signal in the ACTUAL live composition -- not merely "some
-    callable exists". DAT-04a (v1.69) closed the ninth finding (`halted` used
-    to be the ONE documented gap): the known_gap set must now be EMPTY, so a
-    new, silent gap can never slip in unreported."""
+    callable exists". DAT-04a v1.80: `halted` is no longer a registry entry
+    at all (RETIRED, not a gap) -- see the "ninth-finding" step below."""
     app, _client = booted_app
     results = check_all_safety_gate_inputs(app.state)
 
@@ -115,13 +114,8 @@ def test_every_non_gap_safety_gate_input_is_live(booted_app):
 
     gap_inputs = {entry.gate_input for entry in SAFETY_GATE_REGISTRY if entry.known_gap}
     assert gap_inputs == set(), (
-        "DAT-04a (v1.69): the ninth finding (halted) is fixed -- no known_gap "
-        "should remain documented; a new gap here needs the same loud "
-        "documentation, not silent inclusion")
-    # halted itself (formerly the gap) must now positively resolve live too.
-    halted_result = next(result for entry, result in results if entry.gate_input == "halted")
-    assert halted_result.live is True, (
-        f"DAT-04a's halted provider must be live against the real wiring: {halted_result.detail}")
+        "no known_gap should remain documented; a new gap here needs the "
+        "same loud documentation, not silent inclusion")
 
 
 @then("a gate input bound to a constant or dead default fails the audit")
@@ -167,32 +161,27 @@ def test_flatten_in_progress_is_provably_live_against_the_real_wiring(booted_app
 
 @then("DAT-04's halt input (no provider, inverted polarity) is the ninth-finding pinned regression")
 def test_halted_ninth_finding_closed_and_still_pinned(booted_app):
-    """DAT-04a (v1.69) CLOSES the ninth finding: `halted` is now a bound,
-    live SAFETY_GATE_REGISTRY entry (`known_gap is None`), and its live_check
-    passes against the REAL wiring -- no monkeypatching. The regression stays
-    pinned exactly like `flatten_in_progress`'s own step above: reverting to
-    the historically broken shape (no provider bound at all) must fail the
-    audit."""
+    """HISTORY: DAT-04a (v1.69) closed the ninth finding by giving `halted` a
+    real, live SAFETY_GATE_REGISTRY entry. DAT-04a v1.80 (market-taught,
+    operator-ruled) went further: live use proved the underlying provider
+    (dxfeed Profile `trading_status`) unusable, and the pre-ruled contingency
+    RETIRED the input outright rather than patching around it. The pinned
+    regression is now the RETIREMENT itself: `halted` must be completely
+    absent -- no registry entry, no `LiveMarketGates` field, no
+    `trading_status_store` on `app.state` -- never a stub, never a constant
+    standing in for the deleted signal."""
     app, _client = booted_app
-    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "halted")
-    assert {"DAT-04", "DAT-04a"} <= set(entry.rule_ids)
-    assert entry.known_gap is None, "DAT-04a: the ninth finding is fixed -- no longer an excused gap"
 
-    result = entry.live_check(app.state)
-    assert result.live is True, (
-        f"DAT-04a's halted must resolve to a live signal against the real "
-        f"live_app() wiring: {result.detail}")
+    assert not any(e.gate_input == "halted" for e in SAFETY_GATE_REGISTRY), (
+        "DAT-04a v1.80: `halted` must have NO registry entry at all -- retired, not live")
     assert "halted" not in unexpectedly_not_live(app.state)
 
-    # THE historically broken shape, reintroduced: no provider bound at all
-    # (the dataclass default `None`, exactly as `_wire_live_day` left it
-    # before DAT-04a) must fail the audit, never silently pass.
     gates = app.state.runtime.market_gates
-    real_provider = gates.halted
-    try:
-        gates.halted = None
-        failing = unexpectedly_not_live(app.state)
-        assert "halted" in failing, (
-            "no halted provider bound must fail the audit -- the ninth finding, reintroduced")
-    finally:
-        gates.halted = real_provider
+    assert not hasattr(gates, "halted"), (
+        "LiveMarketGates must not carry a `halted` field/attribute post-retirement")
+    assert getattr(app.state, "trading_status_store", None) is None, (
+        "app.state must not expose a trading_status_store -- the module is deleted"
+    )
+    import importlib.util
+    assert importlib.util.find_spec("meic.adapters.dxlink.trading_status") is None, (
+        "meic.adapters.dxlink.trading_status must be DELETED, not merely unwired")

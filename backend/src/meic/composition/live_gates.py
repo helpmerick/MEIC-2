@@ -3,23 +3,30 @@
 RunTradingDay/LiveRuntime take the durable states (ARMED / Stop Trading /
 Confirm Live) from PersistentState; everything else must be SOURCED, live:
 
-  market_open / market_halted  <- exchange calendar (DAY-01/02) + halt flag
-  data_fresh                   <- the chain snapshot's staleness (DAT-02)
-  session_valid                <- broker session probe (REC-06)
-  buying_power_ok              <- broker BP vs the worst-case margin (ENT-03/RSK-04)
+  market_open   <- exchange calendar (DAY-01/02)
+  data_fresh    <- the chain snapshot's staleness (DAT-02)
+  session_valid <- broker session probe (REC-06)
+  buying_power_ok <- broker BP vs the worst-case margin (ENT-03/RSK-04)
 
-Every provider defaults to the SAFE answer (closed / stale / invalid / no BP /
-halted), so a provider that is missing or throwing blocks the entry rather
-than waving it through. There is no optimistic default anywhere in this file.
+Every provider defaults to the SAFE answer (closed / stale / invalid / no BP),
+so a provider that is missing or throwing blocks the entry rather than waving
+it through. There is no optimistic default anywhere in this file.
 
-DAT-04a (v1.69, operator-ratified — NFR-07's ninth finding, CLOSED): `halted`
-used to default an unmeasured reading to `False` ("not halted") — the ONE
-optimistic default in this file, inverted from its three siblings above. It
-now defaults to `True` ("halted"), uniform with the rest: an absent or
-throwing `halted` provider blocks entries (`market_halted=True`, reason
-`market_halted`), never waves them through. The live provider is
-`meic.adapters.dxlink.trading_status.TradingStatusStore` (DAT-04a's
-Profile-subscription seam), wired at `server.py`'s `_wire_live_day`.
+DAT-04a v1.80 (operator-ratified, market-taught — RETIRED, contingency
+executed): this dataclass used to also carry a `halted` input (added v1.69 to
+close NFR-07's ninth finding, fed by `meic.adapters.dxlink.trading_status.
+TradingStatusStore`'s piggybacked dxfeed Profile subscription). Live use
+proved the field unusable: the underlying's Profile `trading_status` reads
+UNDEFINED in real trading windows, and a submitted patch that treated
+UNDEFINED as tradeable was REJECTED (fail-open on a broker-unverifiable state;
+a permanently-UNDEFINED field is itself the NFR-07 can-never-say-no
+constant-signal defect). Per the pre-ruled contingency, the input is RETIRED
+outright — module deleted, field removed here, never stubbed to a constant
+(`market_halted` below is a fixed `False`, but it is no longer read from
+anywhere, audited by nothing, and asserted by no rule; it exists only because
+`GateSnapshot` is a shared pure type other callers still populate directly).
+Halt protection is now carried entirely by the freshness gates
+(DAT-02/STK-04/STK-10); DAY-01/DAY-06 continue to gate market hours.
 """
 from __future__ import annotations
 
@@ -41,7 +48,6 @@ class LiveMarketGates:
     data_fresh: Callable[[], Awaitable[bool]]            # snapshot staleness (DAT-02)
     session_valid: Callable[[], Awaitable[bool]]         # broker session probe
     buying_power_ok: Callable[[], Awaitable[bool]]       # BP vs worst-case margin
-    halted: Callable[[], Awaitable[bool]] = None         # exchange halt flag
     flatten_in_progress: Callable[[], bool] = lambda: False
     holidays: frozenset[date] = field(default_factory=frozenset)
     half_days: frozenset[date] = field(default_factory=frozenset)
@@ -93,12 +99,12 @@ class LiveMarketGates:
             armed=True, confirm_live=True, stop_trading=False,
             flatten_in_progress=bool(self.flatten_in_progress()),
             market_open=open_now,
-            # DAT-04a (v1.69): fail-CLOSED — an unreadable/missing halted
-            # provider means BLOCKED, uniform with the three siblings below
-            # (unmeasured = unverified = blocked, RSK-07). This was the
-            # ninth finding: `default=False` here used to be the ONE
-            # permissive default in this function.
-            market_halted=await self._safe(self.halted, default=True) if open_now else True,
+            # DAT-04a v1.80: the dedicated halt input is RETIRED (see module
+            # docstring) -- never computed, never checked. `GateSnapshot` is
+            # a shared pure type other callers still populate directly, so
+            # the field stays, fixed False; halt protection lives entirely
+            # in the freshness gates now (DAT-02/STK-04/STK-10).
+            market_halted=False,
             data_fresh=await self._safe(self.data_fresh, default=False),      # stale => block
             session_valid=await self._safe(self.session_valid, default=False),  # invalid => block
             buying_power_ok=await self._safe(self.buying_power_ok, default=False),  # unknown => block

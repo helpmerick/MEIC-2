@@ -97,6 +97,23 @@ def vitest_ui09_result():
 
 
 @pytest.fixture(scope="session")
+def vitest_rpt23_result():
+    """TC-RPT-23's frontend half (RPT-17/UI-33, v1.82): the day-trades table's
+    per-side badges/credits/realized-P&L rendering, the open row's live P&L
+    badged "unrealized" updating in place on the next poll, and the Timing &
+    Unmanaged report's honest "no data (not sampled)" state -- same real-
+    vitest binding strategy as `vitest_result` above. Session-scoped for the
+    same startup-cost reason."""
+    proc = subprocess.run(
+        ["npx", "vitest", "run", "src/components/DayTradesTable.test.tsx", "--reporter=verbose"],
+        cwd=str(FRONTEND_DIR), capture_output=True, encoding="utf-8",
+        shell=(sys.platform == "win32"), timeout=180,
+    )
+    output = _ANSI.sub("", proc.stdout + proc.stderr)
+    return proc.returncode, output
+
+
+@pytest.fixture(scope="session")
 def vitest_doc_result():
     """TC-DOC-01's frontend halves (doc 12, slices 4 and 6): the how-it-works
     tab's DOC-05 single-source rendering (version stamp, mismatch banner,

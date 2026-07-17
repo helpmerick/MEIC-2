@@ -350,4 +350,5 @@ class LiveCondorSelector:
             # UTC-aware clock reading (manual ENT-09 fire), and only ever agreeing
             # with the ET date by luck of always firing inside market hours).
             contracts=c.contracts,   # ENT-04 (v1.44): the ROW's size, not a global knob
+            target_premium=c.target_premium,  # RPT-17 (v1.82): audit-only passthrough
         ), None

@@ -14,7 +14,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `session_warmup_lead_seconds` | 10–300 | 60 | next-entry | ENT-08 |
 | `session_token_expiry_buffer_seconds` | 60–1800 | 300 | immediate | ENT-08, REC-06 |
 | `contracts_per_entry` | 1–10 | 1 | next-entry | ENT-04 — per-entry since v1.44: each schedule row carries its own `contracts` (1–10); this parameter is only the pre-fill for new rows |
-| `max_entries_per_day` | 1–20 | len(entry_times) | next-entry | ENT-05 |
+| ~~`max_entries_per_day`~~ | — | — | — | RETIRED v1.81 (ENT-05 tombstoned — count cap removed; day bounded by RSK-04 dollar ceiling + Cboe order cap); config loader rejects the key |
 | `strike_method` | premium \| delta | premium | next-entry | STK-02 |
 | `target_premium` | $0.50–$20.00 | $3.00 | next-entry | STK-02/02a — short-leg mid target; selection ceiling = target + tolerance, never exceeded; NOT net spread credit; net = short − long fluctuates with wing cost |
 | `probe_up_max` | 0–5 | 3 | next-entry | STK-02 probe walk (v1.39) — max probes above target (cap = T + 0.05×n) |
@@ -33,6 +33,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `cal_stale_after_days` | 7–365 | 45 | immediate | CAL-02 (doc 11) — calendar import staleness banner threshold; staleness never blocks (CAL-07) |
 | `cal_auto_refresh` | bool | true | immediate | CAL-09 v1.77 — daily official-source auto-populate; off = manual paste only |
 | `cal_refresh_fail_alert_days` | 1–14 | 3 | immediate | CAL-09 — consecutive fetch failures before a persistent alert |
+| `event_warning_lead_days` | 0–5 | 3 | immediate | CAL-11 v1.84 — how many TRADING days before a calendar event the dismissable warning banner appears (0 = day-of only); display-only, never blocks |
 | ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |

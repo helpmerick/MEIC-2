@@ -89,16 +89,93 @@ def test_no_open_entries_appends_nothing():
     assert comp.events == []
 
 
-def test_closed_entry_is_not_sampled():
+def test_closed_entry_that_closed_today_before_close_is_still_sampled_d8b():
+    """D8b (v1.82): TAKEN_AT is 2026-07-09 14:35 UTC == 10:35 ET, well before
+    the 16:00 ET close, and the entry closed that SAME day -- so the
+    extension keeps sampling it (this reuses the identical live snapshot the
+    still-open path already reads -- no new fetch)."""
     comp = _Comp([
         CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), legs=FULL_LEGS),
-        EntryClosed(entry_id="2026-07-09#1", initiator="manual"),
+        EntryClosed(entry_id="2026-07-09#1", initiator="manual",
+                    at="2026-07-09T14:00:00+00:00"),
     ])
     snap = _snapshot(FULL_PUT_MARKS, FULL_CALL_MARKS)
 
     _sample_marks_once(comp, snap)
 
+    samples = [e for e in comp.events if isinstance(e, EntryMarkSample)]
+    assert len(samples) == 1
+    assert samples[0].entry_id == "2026-07-09#1"
+
+
+def test_closed_entry_from_a_prior_day_is_never_sampled_d8b():
+    """D8b is day-scoped: an entry that closed YESTERDAY must never resume
+    sampling just because the health tick is still running today."""
+    comp = _Comp([
+        CondorFilled(entry_id="2026-07-08#1", net_credit=D("3.60"), legs=FULL_LEGS),
+        EntryClosed(entry_id="2026-07-08#1", initiator="manual",
+                    at="2026-07-08T14:00:00+00:00"),
+    ])
+    snap = _snapshot(FULL_PUT_MARKS, FULL_CALL_MARKS)  # TAKEN_AT is 2026-07-09
+
+    _sample_marks_once(comp, snap)
+
     assert [e for e in comp.events if isinstance(e, EntryMarkSample)] == []
+
+
+def test_closed_entry_at_exactly_16_00_et_is_still_sampled_d8b():
+    """The close boundary is INCLUSIVE: a tick landing AT 16:00:00 ET is the
+    LAST one D8b must still capture -- RPT-17's Unmanaged counterfactual
+    wants "the recorded 16:00 spread value", and the health-tick cadence is
+    not guaranteed to land on any other exact second."""
+    comp = _Comp([
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), legs=FULL_LEGS),
+        EntryClosed(entry_id="2026-07-09#1", initiator="manual",
+                    at="2026-07-09T14:00:00+00:00"),
+    ])
+    # 2026-07-09 20:00 UTC == 16:00 ET exactly.
+    at_close = _snapshot(FULL_PUT_MARKS, FULL_CALL_MARKS)
+    at_close = ChainSnapshot(spot=at_close.spot, expiration=at_close.expiration,
+                             put_side=at_close.put_side, call_side=at_close.call_side,
+                             put_band=(), call_band=(), symbols={},
+                             taken_at=datetime(2026, 7, 9, 20, 0, tzinfo=timezone.utc), stale=False)
+
+    _sample_marks_once(comp, at_close)
+
+    samples = [e for e in comp.events if isinstance(e, EntryMarkSample)]
+    assert len(samples) == 1
+
+
+def test_closed_entry_past_the_16_00_et_close_is_never_sampled_d8b():
+    """D8b is bounded to the 16:00 ET close -- once the tick's own instant
+    has passed it, a same-day closed entry stops receiving samples too."""
+    comp = _Comp([
+        CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), legs=FULL_LEGS),
+        EntryClosed(entry_id="2026-07-09#1", initiator="manual",
+                    at="2026-07-09T14:00:00+00:00"),
+    ])
+    # 2026-07-09 20:05 UTC == 16:05 ET -- five minutes past the close.
+    late = _snapshot(FULL_PUT_MARKS, FULL_CALL_MARKS)
+    late = ChainSnapshot(spot=late.spot, expiration=late.expiration, put_side=late.put_side,
+                         call_side=late.call_side, put_band=(), call_band=(), symbols={},
+                         taken_at=datetime(2026, 7, 9, 20, 5, tzinfo=timezone.utc), stale=False)
+
+    _sample_marks_once(comp, late)
+
+    assert [e for e in comp.events if isinstance(e, EntryMarkSample)] == []
+
+
+def test_open_entry_is_unaffected_by_the_d8b_day_scope_check():
+    """The pre-existing open-entry path must stay byte-identical: D8b only
+    ADDS a case for closed-but-still-today entries, it never removes/gates
+    the already-open one."""
+    comp = _Comp([CondorFilled(entry_id="2026-07-09#1", net_credit=D("3.60"), legs=FULL_LEGS)])
+    snap = _snapshot(FULL_PUT_MARKS, FULL_CALL_MARKS)
+
+    _sample_marks_once(comp, snap)
+
+    samples = [e for e in comp.events if isinstance(e, EntryMarkSample)]
+    assert len(samples) == 1 and samples[0].entry_id == "2026-07-09#1"
 
 
 def test_stale_snapshot_samples_nothing():
