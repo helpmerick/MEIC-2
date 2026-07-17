@@ -54,7 +54,7 @@ Scenario Outline: Pre-entry gate blocks entry
     | insufficient buying power | insufficient_bp     |
 ```
 
-**TC-ENT-03** — ENT-04/ENT-05: each fill's quantity equals its OWN row's `contracts` (v1.44: schedule rows 2 and 1 ⇒ fills of 2 and 1); values outside 1–10 rejected; RSK-04 evaluates Σ(per-entry worst case) — 2 × wc₁ + 1 × wc₂, never 3 × max(wc); a day never exceeds max_entries_per_day fills.
+**TC-ENT-03** — ENT-04: each fill's quantity equals its OWN row's `contracts` (v1.44: schedule rows 2 and 1 ⇒ fills of 2 and 1); values outside 1–10 rejected; RSK-04 evaluates Σ(per-entry worst case) — 2 × wc₁ + 1 × wc₂, never 3 × max(wc). (v1.81: no entry-count cap — `max_entries_per_day` retired; the day is bounded by RSK-04 dollars + the Cboe order cap, and the config loader rejects the retired key.)
 
 **TC-ENT-08** — ENT-09/UI-22 manual entry
 ```gherkin
@@ -64,7 +64,7 @@ Scenario: Manual fire passes every gate except the window
   When the OK-confirmation dialog is acknowledged
   Then exactly one entry attempt runs through the identical pipeline
   And the entry is recorded with initiator "manual_entry"
-  And it counts toward max_entries_per_day
+  And no entry-count cap blocks it (ENT-05 retired v1.81); only RSK-04 and the order cap bound the day
 
 Scenario: No fire without the OK dialog
   Given the operator presses the manual fire button
@@ -1554,11 +1554,11 @@ Scenario: Safety-gate inputs are live signals, never constants (v1.68 — the ei
   And RSK-01a's flatten_in_progress wired to lambda False is the pinned regression
   And DAT-04's halt input (no provider, inverted polarity) is the ninth-finding pinned regression
 
-Scenario: The halt gate blocks when unmeasured (DAT-04a)
-  Given no trading-status reading, or one stale beyond 300 seconds
-  Then entries are blocked with reason "market_halted"
-  And a status of not-active blocks identically
-  And all four gate inputs share False-means-block polarity
+Scenario: The halt input is retired, never stubbed (DAT-04a v1.80 contingency executed)
+  Given the retired trading-status input
+  Then no halt module, gate input, or market_halted skip reason exists in the build
+  And no gate input was replaced by a constant (the wiring audit still fails constants)
+  And a frozen-quote scenario still blocks entries via the freshness gates with their own reasons
 
 Scenario: stop_limit has no construction path (STP-03 tombstone)
   Then no code constructs a stop_limit order and the config loader rejects stop_order_type
@@ -1682,6 +1682,29 @@ Scenario: An unexplained event type is a test failure
   Then the suite fails naming the event type
 ```
 
+**TC-RPT-23** — RPT-17/UI-33 day-trades table + unmanaged counterfactual (v1.82)
+```gherkin
+Scenario: The table shows today's entries from the one aggregation path
+  Given two closed entries and one open entry today
+  Then the Trading tab's table shows all three with per-side badges, credits, and realized P&L net of fees
+  And the open row shows live P&L badged unrealized and updates in place
+  And every figure matches the canonical aggregation byte-for-byte (no view-local recompute)
+
+Scenario: Unmanaged P&L is computed from recorded samples only
+  Given an entry closed at 10:00 whose legs were sampled through 16:00
+  Then its Unmanaged P&L = premium received minus the recorded 16:00 spread value
+  And an entry with missing close-time samples renders "no data (not sampled)", never an interpolation
+
+Scenario: Sampling continues after close, day-scoped (D8b)
+  Given an entry that closes mid-morning
+  Then its legs keep receiving 1-minute samples until 16:00 and none after
+  And the counterfactual never triggers any fetch of historical quotes
+
+Scenario: Provisional stays provisional
+  Given a row held to expiry whose broker settlement has not landed
+  Then its realized P&L renders the EOD-01 PROVISIONAL label, never fake finality
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1717,7 +1740,7 @@ Scenario: An unexplained event type is a test failure
 | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→09 / UI-30 | TC-CAL-01→03 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
-| UI-31 | TC-UI-09 | | | |
+| UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |

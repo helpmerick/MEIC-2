@@ -14,7 +14,7 @@ Single source of truth for every configurable parameter. The backend config sche
 | `session_warmup_lead_seconds` | 10–300 | 60 | next-entry | ENT-08 |
 | `session_token_expiry_buffer_seconds` | 60–1800 | 300 | immediate | ENT-08, REC-06 |
 | `contracts_per_entry` | 1–10 | 1 | next-entry | ENT-04 — per-entry since v1.44: each schedule row carries its own `contracts` (1–10); this parameter is only the pre-fill for new rows |
-| `max_entries_per_day` | 1–20 | len(entry_times) | next-entry | ENT-05 |
+| ~~`max_entries_per_day`~~ | — | — | — | RETIRED v1.81 (ENT-05 tombstoned — count cap removed; day bounded by RSK-04 dollar ceiling + Cboe order cap); config loader rejects the key |
 | `strike_method` | premium \| delta | premium | next-entry | STK-02 |
 | `target_premium` | $0.50–$20.00 | $3.00 | next-entry | STK-02/02a — short-leg mid target; selection ceiling = target + tolerance, never exceeded; NOT net spread credit; net = short − long fluctuates with wing cost |
 | `probe_up_max` | 0–5 | 3 | next-entry | STK-02 probe walk (v1.39) — max probes above target (cap = T + 0.05×n) |
