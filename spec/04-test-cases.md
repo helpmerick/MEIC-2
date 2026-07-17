@@ -1636,6 +1636,46 @@ Scenario: Feed failure is loud but never blocks trading
   Then a persistent alert raises and entries remain ungated by the calendar's absence
 ```
 
+**TC-CAL-05** — CAL-11/UI-34 event proximity warnings (v1.84)
+```gherkin
+Scenario: Warnings appear day-of and T-1/2/3 trading days before, never blocking
+  Given an FOMC event and event_warning_lead_days = 3
+  Then a dismissable banner shows on the day and 1, 2, and 3 trading days before
+  And no entry is ever blocked or gated by the warning
+  And the countdown is measured in trading days so a weekend is skipped
+
+Scenario: Dismissal is per-event-per-tier and never pre-silences the nearest warning
+  Given the operator dismisses the T-3 FOMC banner
+  Then the T-2, T-1, and day-of FOMC banners still appear as the event approaches
+  And re-dismissing a given tier never re-nags, across restarts (REC-07)
+
+Scenario: Warnings are honest and never fabricated
+  Given a tier-2 Fed-speaker event
+  Then its banner is labeled best-effort, never stated as certain
+  And no banner ever appears for an event not on the calendar
+
+Scenario: A warning is not a tag
+  Given an untagged OpEx day with its warning showing
+  Then entries still fire normally (the warning informs, CAL-05 enforces only on tags)
+```
+
+**TC-CAL-04** — CAL-10 computed OpEx events (v1.83)
+```gherkin
+Scenario: Monthly and quarterly OpEx compute correctly
+  Then 2026-07-17 is an OPEX_MONTHLY event (third Friday of July 2026)
+  And 2026-09-18 is a QUAD_WITCH event, badged distinctly from monthly OpEx
+  And no weekly or daily expiration ever renders as a calendar event
+
+Scenario: A holiday third Friday shifts to the preceding trading day
+  Given a month whose third Friday is an exchange holiday per the DAY-01a calendar (real vector: April 2000, Good Friday the 21st)
+  Then the OpEx event lands on the preceding trading day, never on the holiday
+
+Scenario: Computed events are taggable but never auto-blocked and never stale
+  Given a standing rule "always block QUAD_WITCH"
+  Then quad-witch days auto-tag while monthly OpEx days stay untagged and tradeable
+  And computed events carry no staleness banner and trigger no fetch
+```
+
 **TC-CAL-02** — CAL-06 manual override (v1.71)
 ```gherkin
 Scenario: A manual fire on a tagged day warns and requires acknowledgment
@@ -1739,7 +1779,7 @@ Scenario: Provisional stays provisional
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
 | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
-| CAL-01→09 / UI-30 | TC-CAL-01→03 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
+| CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |

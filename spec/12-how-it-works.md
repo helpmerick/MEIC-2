@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.82 (operator-commissioned 2026-07-15; current through spec v1.82).** A complete, non-technical
+**v1.84 (operator-commissioned 2026-07-15; current through spec v1.84).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.82 — describes spec v1.82; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.84 — describes spec v1.84; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -743,7 +743,12 @@ The calendar is a year-view list of scheduled market-moving events — the
 Fed's rate decisions, and the government's inflation, jobs, and growth
 releases, kept up to date automatically; Fed-speaker appearances are shown
 too, but honestly labeled as a best-effort layer, since no reliable official
-machine feed exists for them (CAL-01). The calendar never invents events for
+machine feed exists for them (CAL-01). The calendar also marks **options-expiration days** on its own — the monthly
+third-Friday expiration and the four bigger quarterly "quad-witching" dates —
+computed from pure calendar arithmetic (shifted earlier when the third Friday
+is a market holiday), so they're always shown for any year with nothing to
+fetch and nothing to go stale. They're taggable like any other event, but
+never blocked automatically. The calendar never invents events for
 a day it has no data for — it shows "no data imported" instead of a blank
 that could be mistaken for "nothing happening" (CAL-02).
 
@@ -775,6 +780,15 @@ without the operator having to remember to do it by hand each time
 (CAL-03, CAL-04). Every tag and every standing rule survives every restart,
 exactly as set (CAL-03, CAL-04, REC-07).
 
+**Heads-up warnings.** Whether or not a day is tagged no-trade, the Trading
+tab shows a dismissable notice when a calendar event is near — on the day
+itself and up to three trading days before ("FOMC in 2 trading days") — so a
+big event never sneaks up on you. It is purely a heads-up: it never blocks a
+trade or changes anything the bot does; dismiss it and it stays gone for that
+event, though the closer, more important reminders still appear as the day
+approaches. A Fed-speaker heads-up is labeled best-effort, since those aren't
+on a reliable official schedule.
+
 **How a no-trade day behaves:** it blocks that day's **scheduled** entries
 only — a tagged day skips each scheduled entry with a plain reason
 ("blackout: FOMC") shown on the card and in the day's report. It touches
@@ -800,7 +814,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.82 — describes spec v1.82 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.84 — describes spec v1.84 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 
