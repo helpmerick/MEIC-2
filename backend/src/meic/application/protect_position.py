@@ -166,13 +166,19 @@ class ProtectPosition:
         REPRICE-RACE SWEEP (2026-07-11): a submit can succeed at the broker even
         though ITS OWN confirmation read (the `working_orders()` scan below)
         fails or misses it — a slow/eventually-consistent read, or the historical
-        `.order_id`-vs-`.id` shape mismatch (2026-07-09). tastytrade enforces no
-        server-side idempotency key (`OrderIntent.idempotency_key` is never read
-        by `TastytradeAdapter.submit()`), so blindly resubmitting on the next
-        attempt would rest a SECOND buy-to-close beside the first — a real,
-        live-reachable duplicate stop. Before any retry's submit, scan for an
-        order already resting on this leg's symbol (reusing stop_fill_watch's own
-        buy-to-close matcher) and ADOPT it instead of resubmitting.
+        `.order_id`-vs-`.id` shape mismatch (2026-07-09). Blindly resubmitting on
+        the next attempt would rest a SECOND buy-to-close beside the first — a
+        real, live-reachable duplicate stop. Before any retry's submit, scan for
+        an order already resting on this leg's symbol (reusing stop_fill_watch's
+        own buy-to-close matcher) and ADOPT it instead of resubmitting.
+
+        NOTE (2026-07-17 security review finding A): the entry ladder's
+        first-submit recovery now matches the broker's `external_identifier`
+        (the ORD-04 key stamped by `TastytradeAdapter._build_order`).
+        This stop path still uses the symbol scan above — deliberately deferred,
+        not overlooked: it is a follow-up to move stops onto the same
+        stamped-id match once the entry path is proven live. The symbol scan
+        remains correct for the single-leg stop case it covers.
         """
         symbol = intent.legs[0].symbol
         for attempt in range(self._retry_attempts):

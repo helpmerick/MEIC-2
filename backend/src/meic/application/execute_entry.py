@@ -50,8 +50,14 @@ def _fill_matches(fill, order_id) -> bool:
 from .entry_gates import (
     FilterSnapshot, GateSnapshot, RiskSnapshot, evaluate_filters, evaluate_gates, evaluate_risk,
 )
+from .idempotency import resolve_submit_after_timeout
 from .leg_book import crosscheck_leg_symbols
 from .order_intent import OrderIntent, condor_legs
+
+# ORD-04/EC-API-03 (2026-07-17 security review finding A): sentinel returned
+# by `_recover_first_submit` when the broker query ITSELF could not answer
+# (never confuse this with "confirmed not landed" -- see that method).
+_SUBMIT_QUERY_FAILED = object()
 
 
 @dataclass(frozen=True)
@@ -357,7 +363,21 @@ class ExecuteEntryAttempt:
                     contracts=condor.contracts),
             )
             if working_id is None:
-                working_id = await self._broker.submit(intent)
+                try:
+                    working_id = await self._broker.submit(intent)
+                except Exception as submit_exc:
+                    recovered = await self._recover_first_submit(entry_id, intent, submit_exc)
+                    if recovered is _SUBMIT_QUERY_FAILED:
+                        # Indeterminate (2026-07-17 review finding A): NEVER a
+                        # silent "no position taken" skip -- the critical
+                        # alert already fired inside the helper.
+                        return self._skip(day, n, "submit_indeterminate")
+                    if recovered is None:
+                        # Confirmed NOT landed -- today's exact clean-skip
+                        # path (the caller's attempt-crash machinery), no
+                        # regression, no phantom adoption.
+                        raise
+                    working_id = recovered  # ADOPTED: the order already exists
                 self._register(entry_id, working_id)   # CLS-03: publish the id
             else:
                 # ORD-02 reprice — but NEVER reprice an order that has already
@@ -516,6 +536,57 @@ class ExecuteEntryAttempt:
             self._alerts.alert("critical", "ORD-09 leg symbol mismatch (using the broker's)",
                                entry_id=f"{order_id}", detail="; ".join(problems))
         return legs
+
+    async def _recover_first_submit(self, entry_id, intent, submit_exc):
+        """ORD-04/EC-API-03 (2026-07-17 security review finding A): a
+        client-side exception on the FIRST submit of the entry ladder must
+        never be treated as "no order exists" without asking the broker
+        first. tastytrade's own lost-response-after-commit failure (an
+        ordinary home-network timeout where the order was in fact accepted)
+        would otherwise leave a live, STOPLESS 4-leg condor resting while
+        the bot's journal says nothing happened -- invisible to every
+        intraday monitor until the next reboot (attempt_crash.py's callback
+        finds no CondorFilled and alerts "no position was taken").
+
+        Three outcomes:
+          * the broker CONFIRMS the order landed -> ADOPT it: return its id
+            so the ladder/fill/STP-01 hand-off continues exactly as if
+            submit() had returned this id -- the condor still gets its stop.
+          * the broker CONFIRMS it did NOT land -> return None; the caller
+            re-raises `submit_exc` UNCHANGED, so today's existing clean-skip
+            path runs (no regression, no phantom adoption).
+          * the query ITSELF is inconclusive (the broker can't be asked, or
+            errors) -> return `_SUBMIT_QUERY_FAILED`. This is the dangerous
+            case: a critical alert is raised HERE, naming the entry and
+            saying a position MAY be live and unprotected -- this must never
+            surface as a silent "no position taken" skip.
+
+        No second idempotency mechanism is invented: the ADOPT-vs-not
+        decision is still `resolve_submit_after_timeout` (ORD-04), fed by
+        whatever the broker's `find_matching_order` query found. That query
+        matches the intent's ORD-04 idempotency key against the broker's
+        server-side `external_identifier` (stamped by
+        `TastytradeAdapter._build_order`) -- OUR OWN unique client id, so an
+        adopted order is provably the bot's, never the operator's
+        structurally-identical order on a shared account (OWN-01/OWN-03).
+        """
+        try:
+            found_id = await self._broker.find_matching_order(intent)
+        except Exception as query_exc:
+            if self._alerts is not None:
+                self._alerts.alert(
+                    "critical",
+                    f"entry {entry_id} order submit raised AND the broker "
+                    "query to confirm it also failed -- a live, STOPLESS "
+                    "condor MAY be resting at the broker right now; this "
+                    "was NOT recorded as a clean skip -- check the broker "
+                    "by hand before assuming nothing happened",
+                    submit_error=repr(submit_exc), query_error=repr(query_exc))
+            return _SUBMIT_QUERY_FAILED
+
+        decision = resolve_submit_after_timeout(
+            intent.idempotency_key, {intent.idempotency_key} if found_id is not None else ())
+        return found_id if decision["exists"] else None
 
     async def _filled(self, order_id) -> bool:
         for f in await self._broker.fills_since(None):
