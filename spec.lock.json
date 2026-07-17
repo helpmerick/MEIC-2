@@ -1,8 +1,8 @@
 {
-  "spec/01-strategy-rules.md": "768ff97e5002d272887f2378cdcb4c9e4dd42a564bd8091818072ffc0b576d76",
+  "spec/01-strategy-rules.md": "630a111fef2259b1d35a521fdef09b23d58ab49c9ff419de8f73edfed559811e",
   "spec/02-edge-cases.md": "e5eb56a9a946a249f450da9695ff608b802e90fc1692a2a9540cb1739f405eba",
   "spec/03-use-cases.md": "82a2b9183aa9886eb5d15182085db6e5b0ac0d93df31a3dc9afe4b45fa8c6c34",
-  "spec/04-test-cases.md": "10902ead5164a4f515f72be822ddb40b65f22cffc70c30b39408977b7ff401fc",
+  "spec/04-test-cases.md": "cfb4778609550cdca92fa149f5af61ab9a46c855cce1890ec722267397387082",
   "spec/05-architecture-ddd.md": "df10678510baab133b34a3b9c3c7c79e428ea62a40f54a58708c3b18b7ff5b62",
   "spec/06-configuration.md": "e5a062266b00087806939a24bc71940954142a28b9941f6095f738249dc4a159",
   "spec/07-user-flow.mermaid": "5d09bd0f2747ad28faaac58c96762a108fc6d0fffdc2d8f0be93c5f6beafe650",

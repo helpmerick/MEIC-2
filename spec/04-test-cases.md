@@ -1554,11 +1554,11 @@ Scenario: Safety-gate inputs are live signals, never constants (v1.68 — the ei
   And RSK-01a's flatten_in_progress wired to lambda False is the pinned regression
   And DAT-04's halt input (no provider, inverted polarity) is the ninth-finding pinned regression
 
-Scenario: The halt gate blocks when unmeasured (DAT-04a)
-  Given no trading-status reading, or one stale beyond 300 seconds
-  Then entries are blocked with reason "market_halted"
-  And a status of not-active blocks identically
-  And all four gate inputs share False-means-block polarity
+Scenario: The halt input is retired, never stubbed (DAT-04a v1.80 contingency executed)
+  Given the retired trading-status input
+  Then no halt module, gate input, or market_halted skip reason exists in the build
+  And no gate input was replaced by a constant (the wiring audit still fails constants)
+  And a frozen-quote scenario still blocks entries via the freshness gates with their own reasons
 
 Scenario: stop_limit has no construction path (STP-03 tombstone)
   Then no code constructs a stop_limit order and the config loader rejects stop_order_type
