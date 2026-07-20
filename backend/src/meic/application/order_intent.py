@@ -29,7 +29,7 @@ from decimal import Decimal
 # stop-limit unfilled through a gap leaves a naked short with no guarantee the
 # bot is alive, and the marketable stop_market path is the only one this
 # system builds or proves. TC-NFR-07 scenario 2 pins this absence.
-ORDER_TYPES = frozenset({"limit", "marketable_limit", "stop_market"})
+ORDER_TYPES = frozenset({"limit", "marketable_limit", "market", "stop_market"})
 STOP_TYPES = frozenset({"stop_market"})
 PRICED_TYPES = frozenset({"limit", "marketable_limit"})
 ACTIONS = frozenset({"buy_to_open", "sell_to_open", "buy_to_close", "sell_to_close"})
@@ -165,7 +165,6 @@ def marketable_close(
     entry_id: str,
     right: str,
     contracts: int,
-    price: Decimal,
     strike: Decimal | None = None,
     symbol: str | None = None,
     underlying: str = "SPXW",
@@ -176,8 +175,8 @@ def marketable_close(
     """A marketable buy-to-close on ONE leg (CLS-01 legs, STP-03b escalation,
     DCY buy-back, LEX long recovery)."""
     return OrderIntent(
-        order_type="marketable_limit", tif="Day", contracts=contracts, kind=kind,
-        entry_id=entry_id, price=price, underlying=underlying, expiration=expiration,
+        order_type="market", tif="Day", contracts=contracts, kind=kind,
+        entry_id=entry_id, underlying=underlying, expiration=expiration,
         idempotency_key=idempotency_key,
         legs=(buy_to_close_leg(right=right, contracts=contracts, strike=strike, symbol=symbol),),
     )

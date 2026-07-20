@@ -144,7 +144,7 @@ class CloseEntry:
             qty = self._exit_qty(leg)
             intent = marketable_close(
                 entry_id=entry_id, right=right_of(leg.side), contracts=qty,
-                price=close_price, symbol=leg.symbol,
+                symbol=leg.symbol,
                 idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
             )
             stop_id = resting_stop_ids.get(leg.side)
