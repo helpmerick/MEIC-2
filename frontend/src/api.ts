@@ -100,8 +100,15 @@ export const api = {
   confirmLive: (on: boolean) => post<PanelState>(`/confirm-live?on=${on}`),
   updateConfig: (patch: Record<string, unknown>) =>
     post<{ accepted: Record<string, unknown> }>("/config", patch),
+  // CLS-06 (v1.85): the close-boundary result taxonomy -- beyond the
+  // baseline `closed`/`already_closed`/`unknown_entry`/`cancelled`, a
+  // pre-action failure comes back `close_failed` (nothing sent, position
+  // unchanged) and a mid-sequence failure comes back `close_partial` naming
+  // which sides closed and which remain. Both are additive/optional so
+  // every existing caller (which only read `.result`) is unaffected.
   closeEntry: (entryId: string) =>
-    post<{ result: string }>(`/close/${encodeURIComponent(entryId)}`),
+    post<{ result: string; reason?: string; sides_closed?: string[]; sides_remaining?: string[] }>(
+      `/close/${encodeURIComponent(entryId)}`),
   // --- v1.58 TPF/TPT: set/raise/lower/clear per entry (UI-13/14/15) ---------
   // Server-side gap validation is authoritative (UI-03): a violating level
   // throws ApiError(422) with a precise reason, never silently clamped.

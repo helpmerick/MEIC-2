@@ -53,6 +53,28 @@ export function App() {
         flash(`${id}: cancel raced a fill — position may be live, check alerts`, "err");
       } else if (r.result === "cancelled") {
         flash(`Cancelled entry ${id}`, "ok");
+      } else if (r.result === "close_failed") {
+        // CLS-06/UI-16: a pre-action failure -- nothing was sent to the
+        // broker, the position is unchanged. Never a raw 500 (the
+        // 2026-07-20 incident this fixes), always a precise reason toast.
+        flash(`${id}: close failed — nothing sent, position unchanged (${r.reason})`, "err");
+      } else if (r.result === "close_partial") {
+        // CLS-06/UI-16: a mid-sequence failure -- some sides closed, some
+        // remain. This must never read as a clean failure OR a clean close;
+        // it names the sides so the operator knows exactly what to check
+        // and that clicking Close again resumes the SAME canonical path.
+        const remaining = r.sides_remaining ?? [];
+        if (remaining.length === 0) {
+          // CLS-06 journal-down edge: every CLS-owned exit completed but the
+          // closing journal write failed -- nothing is left to re-close, so
+          // "click Close again" would mislead; point at the alerts instead.
+          flash(`${id}: close COMPLETE at broker but the closing journal write failed — `
+            + `check alerts (${r.reason})`, "err");
+        } else {
+          const closed = (r.sides_closed ?? []).join("+") || "none";
+          flash(`${id}: close PARTIAL — closed ${closed}, STILL OPEN ${remaining.join("+")} — `
+            + `click Close again (${r.reason})`, "err");
+        }
       } else {
         flash(r.result === "closed" ? `Closed ${id}` : `${id}: ${r.result}`, "ok");
       }

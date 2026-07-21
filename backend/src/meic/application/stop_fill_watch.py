@@ -219,9 +219,24 @@ def _open_short_legs(events, *, today: str | None = None, max_age_days: int | No
             continue
         if not _within_catchup_window(entry_id, today=today, max_age_days=max_age_days):
             continue
+        # CLS-06: while a partial-close window is open, the fold strips the
+        # remainder's SIDES back out of `sides_closed` (so the projection
+        # honestly shows them open) -- but a SHORT on such a side may itself
+        # have already exited (its replace-exit landed; only the sibling long
+        # remains in `incomplete_close_legs`). Without this guard the
+        # side-level check below would treat that short as still open, and
+        # the triage's symbol-fallback could misread the close's own
+        # buy-to-close fill as a stop-out. A short whose symbol is NOT among
+        # the journaled remaining legs has already completed its exit --
+        # skip it. Baseline (no partial window) is byte-identical:
+        # `incomplete_close_legs` is empty and the guard never activates.
+        incomplete_symbols = ({r[0] for r in e.incomplete_close_legs}
+                              if e.incomplete_close_legs else None)
         shorts = {leg.side: leg for leg in e.legs if leg.role == "short"}
         for side, leg in shorts.items():
             if side in e.sides_stopped or side in e.sides_closed or side in e.sides_expired:
+                continue
+            if incomplete_symbols is not None and leg.symbol not in incomplete_symbols:
                 continue
             spec = specs.get((entry_id, side))
             if spec is not None:

@@ -363,6 +363,28 @@ class EntryClosed(Event):
 
 
 @dataclass(frozen=True)
+class CloseIncomplete(Event):
+    """CLS-06 (v1.85) — journaled marker that a close raised MID-SEQUENCE:
+    some sides already closed-and-journaled (the per-side `SideClosed`/
+    `ShortStopped` events above are authoritative, REC-01), `EntryClosed` NOT
+    reached. `remaining` names exactly the legs that did not complete this
+    call — (symbol, side, role, signed_qty), the same shape `close_assembly`
+    assembles — so the boundary (`PanelCommands.close_as`) can restrict a
+    follow-up close to ONLY those legs, never re-touching an already-closed
+    short (the CLS-01 double-fill risk a side-only, symbol-blind retry would
+    reopen). REC-01 makes the remainder restart-survivable across a crash;
+    resolved by the eventual `EntryClosed` once the remainder closes clean.
+    Reporting only — CLS-01's procedure and CLS-02's single implementation
+    are unchanged; this event never triggers a second close path itself."""
+    entry_id: str
+    initiator: str
+    sides_closed: tuple[str, ...]
+    remaining: tuple[tuple[str, str, str, int], ...]  # (symbol, side, role, signed_qty)
+    reason: str
+    at: str | None = None  # ORD-11 (v1.67): see StopPlaced.at
+
+
+@dataclass(frozen=True)
 class LongSaleStarted(Event):
     entry_id: str
     side: str

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from .events import (
+    CloseIncomplete,
     CondorFilled,
     CondorProposed,
     DayArmed,
@@ -53,6 +54,12 @@ class EntryProjection:
     sides_closed: tuple[str, ...] = ()
     sides_expired: tuple[str, ...] = ()
     close_initiator: str | None = None  # CLS-04: how the entry closed
+    # CLS-06 (v1.85): the legs a mid-sequence close failure left OPEN --
+    # (symbol, side, role, signed_qty) tuples, straight off the journaled
+    # `CloseIncomplete.remaining`. Additive, default empty so every log
+    # recorded before this rule replays unchanged. Cleared back to () once
+    # the eventual `EntryClosed` lands (the remainder closed clean).
+    incomplete_close_legs: tuple = ()
     placed_at: str | None = None  # UI card: fill time (CondorFilled.at), ISO, null if absent
     legs: tuple[FilledLeg, ...] = ()  # ORD-09: broker-reported strikes/prices for the card
     # EOD-01 v1.59: SUM of attributed `SettlementRecorded.value` -- REAL DOLLARS
@@ -93,8 +100,14 @@ class EntryProjection:
         (CLS-01, any initiator), has nothing left pending."""
         if not self.legs or self.close_initiator is not None:
             return False
+        # CLS-06 -- a partial-close window can now hold SideClosed without
+        # EntryClosed (close_initiator still None): a short bought back by
+        # the close (SideClosed) is resolved, never settlement-pending, so
+        # sides_closed filters here exactly like sides_stopped (mirroring
+        # server.py's expiry sweep and stop_fill_watch's _open_short_legs).
         unresolved_shorts = [leg for leg in self.legs
-                             if leg.role == "short" and leg.side not in self.sides_stopped]
+                             if leg.role == "short" and leg.side not in self.sides_stopped
+                             and leg.side not in self.sides_closed]
         if not unresolved_shorts:
             return False
         return any(leg.symbol not in self.settled_symbols for leg in unresolved_shorts)
@@ -177,9 +190,23 @@ def apply(state: DayState, event: Event) -> DayState:
             e, settlements=e.settlements + event.value,
             settlement_fees=e.settlement_fees + (event.fee or Decimal("0")),
             settled_symbols=e.settled_symbols | {event.symbol})))
+    if isinstance(event, CloseIncomplete):
+        # CLS-06: the projection must honestly show the remainder's side(s)
+        # as still OPEN -- strip them back out of `sides_closed` (the shorts'
+        # replace-exit and/or longs' sell that DID complete this call already
+        # put some of those same sides into `sides_closed` earlier in this
+        # very call; only the sides named in `remaining` get un-done).
+        e = _entry(state, event.entry_id)
+        remaining_sides = {leg[1] for leg in event.remaining}
+        return replace(state, entries=_put(state, replace(
+            e, incomplete_close_legs=event.remaining,
+            sides_closed=tuple(s for s in e.sides_closed if s not in remaining_sides))))
     if isinstance(event, EntryClosed):
         e = _entry(state, event.entry_id)
-        return replace(state, entries=_put(state, replace(e, close_initiator=event.initiator)))
+        # CLS-06: a close that completes (the remainder closed clean, or a
+        # normal never-partial close) clears any prior incomplete marker.
+        return replace(state, entries=_put(state, replace(
+            e, close_initiator=event.initiator, incomplete_close_legs=())))
     if isinstance(event, DayCompleted):
         return replace(state, completed=True)
     return state

@@ -126,6 +126,12 @@ class CloseEntry:
         resting_stop_ids: dict[str, str],
         live_legs: list[LiveLeg],
         close_price: Decimal,
+        # CLS-06 (v1.85, optional/additive -- every existing caller is
+        # unaffected): when given, each leg is appended AFTER its exit
+        # genuinely completes, so a caller that catches an exception raised
+        # mid-sequence (PanelCommands.close_as) can read exactly which legs
+        # did and didn't land -- the partial-truth report, not a guess.
+        progress: list | None = None,
     ) -> None:
         if initiator not in VALID_INITIATORS:
             raise ValueError(f"unknown close initiator {initiator!r} (CLS-02)")
@@ -153,6 +159,8 @@ class CloseEntry:
                 # USER_UNPROTECTED, ...) — direct marketable buy-to-close.
                 await self._broker.submit(intent)
                 self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
+                if progress is not None:  # CLS-06: this short's exit completed
+                    progress.append(leg)
                 continue
 
             outcome, fill_price = await self._replace_stop(entry_id, leg.side, stop_id, intent)
@@ -177,14 +185,21 @@ class CloseEntry:
                 self._events.append(ShortStopped(
                     entry_id=entry_id, side=leg.side, fill=fill_price or close_price,
                     slippage=Decimal("0"), initiator="resting_stop", fee=fee, at=self._at()))
+                if progress is not None:  # CLS-06: a FILLED race IS a completed exit
+                    progress.append(leg)
             elif outcome == "STILL_RESTING":
                 # ORD-08 transient, retries exhausted this call — the original
                 # stop is untouched and still protecting the short. Never
                 # naked, never double-ordered; CLS-01(4) is deferred, not
-                # violated, for this leg.
+                # violated, for this leg. CLS-06: NOT progress -- the leg
+                # remains open-and-protected, so a later leg's raise must
+                # land this one in the remainder too (a second click re-
+                # attempts its replace, never skips it as "done").
                 continue
             else:  # "REPLACED" or "TERMINAL" — the short is now closed.
                 self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
+                if progress is not None:
+                    progress.append(leg)
 
         # CLS-01 (3): remaining LONG legs — plain marketable sells, no stops,
         # no race. A long whose short raced to FILLED is excluded here: LEX
@@ -203,6 +218,8 @@ class CloseEntry:
                 legs=(OrderLeg(right=right_of(leg.side), action="sell_to_close",
                                qty=qty, symbol=leg.symbol),)))
             self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
+            if progress is not None:  # CLS-06: the long's sell completed
+                progress.append(leg)
 
         # CLS-04: record the close with its initiator (the ONLY per-initiator diff)
         self._events.append(EntryClosed(entry_id=entry_id, initiator=initiator, at=self._at()))

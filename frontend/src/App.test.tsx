@@ -64,6 +64,61 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     expect(toast.closest(".toast")?.className).toContain("err");
   });
 
+  // CLS-06 (v1.85): the close-boundary result taxonomy -- a pre-action
+  // failure and a mid-sequence failure must render distinctly from each
+  // other and from a clean close/cancel, never as a raw error and never
+  // silently indistinguishable from success (the 2026-07-20 incident this
+  // rule fixes).
+  it("close_failed toasts as a pre-action failure — nothing sent, position unchanged (CLS-06)", async () => {
+    vi.spyOn(api, "closeEntry").mockResolvedValue({
+      result: "close_failed", reason: "tif_no_after_hours_market_orders",
+    });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    const toast = await waitFor(() => screen.getByText(/close failed.*nothing sent.*position unchanged/i));
+    expect(toast.closest(".toast")?.className).toContain("err");
+    expect(toast.textContent).toMatch(/tif_no_after_hours_market_orders/);
+  });
+
+  it("close_partial toasts the closed and remaining sides — never a clean failure or a clean close (CLS-06)", async () => {
+    vi.spyOn(api, "closeEntry").mockResolvedValue({
+      result: "close_partial", reason: "tif_no_after_hours_market_orders",
+      sides_closed: ["PUT"], sides_remaining: ["CALL"],
+    });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    const toast = await waitFor(() => screen.getByText(/close PARTIAL/));
+    expect(toast.closest(".toast")?.className).toContain("err");
+    expect(toast.textContent).toMatch(/closed PUT/);
+    expect(toast.textContent).toMatch(/STILL OPEN CALL/);
+    expect(toast.textContent).toMatch(/click Close again/i);
+  });
+
+  it("close_partial with no remaining sides toasts the journal-down edge, not an empty STILL OPEN (CLS-06)", async () => {
+    // The EntryClosed-append-failed edge: every CLS-owned exit completed at
+    // the broker but the closing journal write failed — nothing is left to
+    // re-close, so the toast points at the alerts instead of asking for a
+    // misleading second click.
+    vi.spyOn(api, "closeEntry").mockResolvedValue({
+      result: "close_partial", reason: "journal write failed",
+      sides_closed: ["PUT", "CALL"], sides_remaining: [],
+    });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    const toast = await waitFor(() => screen.getByText(/close COMPLETE at broker/));
+    expect(toast.closest(".toast")?.className).toContain("err");
+    expect(toast.textContent).toMatch(/closing journal write failed/);
+    expect(toast.textContent).toMatch(/check alerts/i);
+    expect(toast.textContent).not.toMatch(/STILL OPEN/);
+    expect(toast.textContent).not.toMatch(/click Close again/i);
+  });
+
   it("Flatten all does nothing when the operator cancels the confirmation", async () => {
     const spy = vi.spyOn(api, "flatten").mockResolvedValue({ result: "flattened", entries: [] });
     vi.spyOn(window, "prompt").mockReturnValue(null); // cancelled

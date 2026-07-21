@@ -53,6 +53,13 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.SideClosed: ev.SideClosed(entry_id="2026-07-09#1", side="PUT"),
         ev.SideExpired: ev.SideExpired(entry_id="2026-07-09#1", side="CALL"),
         ev.EntryClosed: ev.EntryClosed(entry_id="2026-07-09#1", initiator="take_profit"),
+        # CLS-06 (v1.85): a mid-sequence close failure -- `remaining` is a
+        # tuple of (symbol, side, role, signed_qty) tuples, the nested-tuple
+        # shape the self-describing codec must round-trip generically.
+        ev.CloseIncomplete: ev.CloseIncomplete(
+            entry_id="2026-07-09#1", initiator="manual", sides_closed=("PUT",),
+            remaining=(("SPXW  260709C07555000", "CALL", "long", 1),),
+            reason="tif_no_after_hours_market_orders", at="2026-07-09T10:31:00-04:00"),
         ev.LongSaleStarted: ev.LongSaleStarted(entry_id="2026-07-09#1", side="PUT"),
         ev.LongSaleRepriced: ev.LongSaleRepriced(entry_id="2026-07-09#1", side="PUT",
                                                   step=2, price=D("0.45")),

@@ -1309,6 +1309,23 @@ def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int =
     caller treats that exactly like a stale snapshot: pause, never guess.
     """
     gone = set(e.sides_stopped) | set(e.sides_closed) | set(e.sides_expired)
+    # CLS-06: while a partial-close window is open, the fold strips the
+    # remainder's SIDES back out of `sides_closed` so the projection shows
+    # them open -- but a SHORT on such a side may itself already be flat at
+    # the broker (its replace-exit landed; only the sibling long remains in
+    # `incomplete_close_legs`). Marking that side "open" here would feed the
+    # flat short's stale mid into the TPF/TPT profit% -- a phantom
+    # cost-to-close on a position that no longer exists. A short whose
+    # symbol is NOT among the journaled remaining legs has completed its
+    # exit: treat its side as gone (its realized effect is the journal's
+    # job, never a re-mark -- same TPF-05 principle as the sets above).
+    # Baseline is byte-identical: `incomplete_close_legs` is empty outside
+    # the window and this loop never runs.
+    if e.incomplete_close_legs:
+        remaining_syms = {r[0] for r in e.incomplete_close_legs}
+        for leg in e.legs:
+            if leg.role == "short" and leg.symbol not in remaining_syms:
+                gone.add(leg.side)
     by_side: dict[str, dict] = {"PUT": {}, "CALL": {}}
     for leg in e.legs:
         by_side.setdefault(leg.side, {})[leg.role] = leg
