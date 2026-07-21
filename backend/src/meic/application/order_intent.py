@@ -73,6 +73,14 @@ class OrderIntent:
     price: Decimal | None = None        # limit / marketable_limit
     stop_trigger: Decimal | None = None  # stop_market (STP-03: stop_limit tombstoned)
     replaced_from: str = ""         # DCY-04: the resting stop this one supersedes
+    # UND-04 (/ES Stage 1, additive): "cash_index" | "futures_option" -- which
+    # ACL path (adapters/tastytrade/adapter.py `_option_for`/`_build_order`)
+    # resolves this intent's legs. Default "cash_index" is the pre-v1.86
+    # shape every SPX/RUT intent already builds -- byte-identical. A
+    # "futures_option" intent's legs MUST already carry a resolved `symbol`
+    # (never `strike`): `occ_symbol` is structurally equity-only and cannot
+    # build a futures-option symbol (see the adapter's guard).
+    instrument_class: str = "cash_index"
 
     def __post_init__(self) -> None:
         if self.order_type not in ORDER_TYPES:

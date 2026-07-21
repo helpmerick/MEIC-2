@@ -34,6 +34,21 @@ from .ticks import TickRung, TickTable
 # constant it builds from real broker data).
 _INDEX_TICKS = (TickRung(Decimal("3.00"), Decimal("0.05")), TickRung(None, Decimal("0.10")))
 
+# /ES (STK-08, PROD probe 2026-07-21): the CME futures-option tick schedule,
+# genuinely DIFFERENT from the SPX/RUT index schedule above -- 0.05 below
+# 5.00 / 0.10 below 20 / 0.25 below 100 / 0.50 at-or-above. Verified against
+# the broker's own `tick_sizes` on a live NestedFutureOptionChain expiration
+# (read-only probe); do not re-derive. This is still a code-constant PROFILE
+# fact (UND-01's "known facts, never a fetched dial" shape) -- actual ORDER
+# PLACEMENT still consults the broker API at runtime per STK-08, this table
+# is the ratified SHAPE the strategy runs against, same as `_INDEX_TICKS`.
+_ES_TICKS = (
+    TickRung(Decimal("5.00"), Decimal("0.05")),
+    TickRung(Decimal("20.00"), Decimal("0.10")),
+    TickRung(Decimal("100.00"), Decimal("0.25")),
+    TickRung(None, Decimal("0.50")),
+)
+
 
 @dataclass(frozen=True)
 class UnderlyingProfile:
@@ -182,24 +197,49 @@ PROFILES: dict[str, UnderlyingProfile] = {
     "/ES": UnderlyingProfile(
         name="/ES",
         index_symbol="/ES",
-        option_root="EW",       # NOT verified this phase -- placeholder only, see UND-03 note below
+        # UND-04 (/ES Stage 1, PROD probe 2026-07-21): `option_root` is the
+        # CHAIN-FETCH key -- the exact string `NestedFutureOptionChain.get`
+        # takes ("/ES"), read-only-probe-verified -- NOT the per-expiration
+        # daily option root (E3B Tue / E4C Wed / E4D Thu / EW4 Fri), which
+        # VARIES by weekday and is read live off each expiration's own
+        # `option_root_symbol` (adapters/dxlink/chain_snapshot.py) — never
+        # constructed or hardcoded here. `profile_by_root("/ES")` resolves
+        # this profile from that same chain-fetch string, mirroring how
+        # SPX's "SPXW" / RUT's "RUTW" are exactly what THEIR chain-fetch
+        # calls use.
+        option_root="/ES",
         instrument_class="futures_option",
-        # UND-01/02: the ONLY /ES fact ratified in spec text this phase is the
-        # x50 multiplier. Every other /ES field below is an unverified
-        # placeholder — the profile is `enabled=False` precisely so nothing
-        # can trade against these numbers before the UND-03 phase verifies
-        # them for real (force-close-before-settlement invariant required).
+        # UND-01/02: multiplier is a spec-ratified fact (x50). Every other
+        # /ES field below is now VERIFIED against a real broker chain (PROD
+        # probe 2026-07-21, read-only) -- Stage 1 builds the ADAPTER PATH
+        # only; the profile stays `enabled=False` so nothing can trade
+        # against these numbers before Stage 2 lands the F3 force-close
+        # invariant (UND-03 / TC-UND-02).
         multiplier=Decimal("50"),
         settlement="physical_futures_assignment",  # UND-03: exercise assigns a future -- never held to settlement
-        expiring_last_trade=time(16, 0),   # UNVERIFIED placeholder
+        # last-trade/expiry 16:00 ET (20:00 UTC); American exercise (PROD
+        # probe 2026-07-21).
+        expiring_last_trade=time(16, 0),
         session_open=time(9, 30),          # UND-05: entry window runs the equity day regardless of /ES's ~23h session
         session_close=time(16, 0),
-        tick_rungs=_INDEX_TICKS,           # UNVERIFIED placeholder
-        strike_increment_note="pending UND-03 verification",
-        daily_0dte=False,                  # UNVERIFIED this phase
-        margin_model="futures_defined_risk_pending_verification",
+        # STK-08 (PROD probe 2026-07-21): genuinely PER-PROFILE broker ticks
+        # (0.05/0.10/0.25/0.50), not the shared cash-index `_INDEX_TICKS`.
+        tick_rungs=_ES_TICKS,
+        strike_increment_note="5-pt strikes near ATM (PROD probe 2026-07-21)",
+        # Tue/Wed/Thu/Fri daily roots verified live (PROD probe 2026-07-21);
+        # Monday's root was not enumerated in that probe, but CME's daily
+        # 0DTE /ES weeklies run every trading day under the same pattern, so
+        # this is set True rather than an unverified guess of False.
+        daily_0dte=True,
+        margin_model="futures_defined_risk_pending_verification",  # OUT OF SCOPE this stage (fees/margin: Stage 2)
+        # UND-04 (FIX-5 shape): unverified this phase which dxfeed event the
+        # FRONT FUTURE actually publishes -- defaults to the SPX-shape
+        # defense-in-depth race (`_index_spot` subscribes and races BOTH
+        # Quote and Trade regardless of this hint; see chain_snapshot.py).
+        spot_event_hint="quote",
         enabled=False,
         disabled_reason="UND-03 /ES phase not yet built — force-close invariant required",
+        # Stage 1: adapter path only; enable + F3 force-close = Stage 2 (UND-03/TC-UND-02).
     ),
 }
 

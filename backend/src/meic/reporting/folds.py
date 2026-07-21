@@ -97,20 +97,23 @@ def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
     CONTRACT_MULTIPLIER (100). A fill with no broker-allocated price
     contributes 0 (honest, never fabricated).
 
-    FLAG UND-03/ES: `imported_fill_dollars` must resolve the multiplier
-    PER-UNDERLYING before /ES is enabled (imported /ES fills would otherwise
-    value at x100). Correct NOW -- every RPT-16-importable underlying this
-    phase (SPX/RUT) is x100 -- but an imported /ES fill is x50; `ExternalFillImported`
-    carries no underlying field yet, so add one (or resolve from `symbol`'s
-    OCC root via `domain.underlying.profile_by_root`) and scale by
-    `profile.multiplier` here when the /ES phase (UND-03) lands. Do NOT build
-    this now -- /ES is REFUSED this phase (UND-06 build order)."""
+    UND-02/UND-04 (/ES Stage 1): the multiplier is resolved PER-UNDERLYING
+    from `fill.underlying` (additive field, default "SPX" for every
+    pre-v1.86 imported row) via `profile_for`, exactly like `multiplier_of`
+    resolves it for a folded `EntryProjection` above -- so a future imported
+    /ES fill values at x50, never the flat x100. An unrecognised/absent
+    underlying falls back to `CONTRACT_MULTIPLIER` (100), same convention as
+    `multiplier_of`. /ES itself is still REFUSED this phase (UND-06 build
+    order) so no real /ES row can reach this yet; this is the money-math
+    seam Stage 2 needs already in place."""
     if fill.value is not None:
         return fill.value
     if fill.price is None:
         return Decimal("0")
     sign = Decimal(1) if fill.action.lower().startswith("sell") else Decimal(-1)
-    return sign * fill.price * Decimal(fill.quantity) * CONTRACT_MULTIPLIER
+    profile = profile_for(getattr(fill, "underlying", "SPX"))
+    multiplier = profile.multiplier if profile is not None else CONTRACT_MULTIPLIER
+    return sign * fill.price * Decimal(fill.quantity) * multiplier
 
 
 def imported_day_fees(fills: tuple[ExternalFillImported, ...]) -> Decimal:

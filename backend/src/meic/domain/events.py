@@ -644,6 +644,13 @@ class ExternalFillImported(Event):
     imported_at: str     # ISO wall-clock timestamp of the IMPORT itself (audit trail, RPT-16(5))
     source: str          # e.g. "tastytrade_history"
     value: Decimal | None = None  # settlement rows only -- see docstring above
+    # UND-02 (v1.86, additive): the row's traded underlying name ("SPX" |
+    # "RUT" | "/ES"), same convention as `CondorFilled.underlying` -- so
+    # `reporting/folds.py::imported_fill_dollars` can scale a Trade-style
+    # imported fill by ITS OWN profile multiplier (/ES x50) instead of the
+    # flat x100 every SPX/RUT import already uses correctly today. Default
+    # "SPX" replays every pre-v1.86 log entry byte-identical.
+    underlying: str = "SPX"
 
 
 @dataclass(frozen=True)

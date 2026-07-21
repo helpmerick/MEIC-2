@@ -93,6 +93,42 @@ _TERMINAL_DEAD_STATUSES = frozenset({
 })
 
 
+def _leg_right(symbol: str, instrument_type) -> str:
+    """ORD-09 / UND-04 (/ES Stage 1, FIX 2 fail-closed): read a filled leg's
+    option right ("P"|"C") off its BROKER-REPORTED symbol, dispatched by the
+    broker's own `instrument_type`.
+
+      * "Future Option" / InstrumentType.FUTURE_OPTION -> parse off the
+        futures-option layout (fut_symbol.py). NEVER the equity OCC column-12
+        slice: for "./ESU6 E3BN6 260721P7185" index 12 is a SPACE, so the
+        equity slice silently misreads a PUT as a CALL -- a money-DIRECTION
+        error (the exact fail-OPEN this fix closes, cert review 2026-07-21).
+      * "Equity Option" -> the equity OCC column-12 convention, byte-identical
+        to the pre-/ES behaviour.
+      * ABSENT or UNRECOGNISED instrument_type -> SHAPE-DETECT, fail closed:
+        a futures-option broker symbol carries the front future's "./" prefix
+        (PROD probe 2026-07-21) -> futures parse; a 21-char OCC symbol with a
+        P/C at column 12 -> equity slice; anything else RAISES rather than
+        defaulting to the equity slice (which could misread the right).
+    """
+    itype = str(instrument_type or "").lower().replace(" ", "_").split(".")[-1]
+    if itype == "future_option":
+        from meic.adapters.tastytrade.fut_symbol import parse_future_option_symbol
+        return parse_future_option_symbol(symbol)[1]
+    if itype == "equity_option":
+        return "P" if symbol[12:13] == "P" else "C"
+    # absent/unrecognised: shape-detect, never blindly slice column 12.
+    if symbol.startswith("./"):
+        from meic.adapters.tastytrade.fut_symbol import parse_future_option_symbol
+        return parse_future_option_symbol(symbol)[1]  # unambiguous futures shape
+    if len(symbol) == 21 and symbol[12:13] in ("P", "C"):
+        return symbol[12:13]                           # OCC equity shape
+    raise ValueError(
+        f"cannot determine option right for leg symbol {symbol!r}: absent/"
+        "unrecognised instrument_type and no recognisable symbol shape -- "
+        "failing closed rather than guessing a right (FIX 2, cert 2026-07-21)")
+
+
 def _is_adoptable_status(status: str) -> bool:
     """ORD-04/EC-API-03 (2026-07-17 review finding F1 — INVERTED filter): may a
     `get_live_orders()` row carrying OUR external identifier be adopted as the
@@ -155,9 +191,19 @@ class TastytradeAdapter:
             self._account = accounts[0]
 
     # ---- intent translation (ACL) --------------------------------------------
-    async def _option_for(self, symbol: str):
-        """Resolve an OCC symbol to the SDK instrument. Overridable so the ACL
-        can be contract-tested without a session (see the intent-contract suite)."""
+    async def _option_for(self, symbol: str, *, instrument_class: str = "cash_index"):
+        """Resolve a symbol to the SDK instrument. Overridable so the ACL can
+        be contract-tested without a session (see the intent-contract suite).
+
+        UND-04 (/ES Stage 1): `instrument_class="futures_option"` resolves
+        via the SDK's `FutureOption` (CME futures-option symbology, PROD
+        probe 2026-07-21: e.g. "./ESU6 E3BN6 260721C7185") instead of the
+        equity `Option`. The default keeps every existing call
+        (`self._option_for(symbol)`, no kwarg) byte-identical -- only
+        `_build_order`'s futures-option branch ever passes the kwarg."""
+        if instrument_class == "futures_option":
+            from tastytrade.instruments import FutureOption
+            return await FutureOption.get(self._session, symbol)
         from tastytrade.instruments import Option
         return await Option.get(self._session, symbol)
 
@@ -188,9 +234,26 @@ class TastytradeAdapter:
 
         legs = []
         for leg in intent.legs:
+            # UND-04 (/ES Stage 1): a futures-option leg MUST already carry a
+            # resolved `symbol` -- `occ_symbol` is structurally equity-only
+            # (21-char, x1000-scaled OCC) and cannot build a futures-option
+            # symbol (PROD probe 2026-07-21 shape: "./ESU6 E3BN6 260721C7185").
+            # Fail closed rather than silently building a wrong/garbage
+            # symbol via the equity constructor.
+            # FIX 4 (fail-closed): `not leg.symbol` (not just `is None`) so an
+            # EMPTY-STRING futures symbol also fails closed here rather than
+            # falling through to `occ_symbol`, matching the equity path's own
+            # `leg.symbol or occ_symbol(...)` truthiness below.
+            if not leg.symbol and intent.instrument_class == "futures_option":
+                raise ValueError(
+                    "futures-option leg requires a resolved symbol "
+                    "(occ_symbol is equity-only)")
             symbol = leg.symbol or occ_symbol(
                 intent.underlying, intent.expiration, leg.right, leg.strike)
-            opt = await self._option_for(symbol)
+            if intent.instrument_class == "futures_option":
+                opt = await self._option_for(symbol, instrument_class="futures_option")
+            else:
+                opt = await self._option_for(symbol)
             legs.append(opt.build_leg(D(leg.qty), action_map[leg.action]))
 
         kwargs: dict[str, Any] = dict(
@@ -512,7 +575,7 @@ class TastytradeAdapter:
             symbol = str(leg.symbol)
             legs.append(FilledLeg(
                 symbol=symbol,                       # verbatim, never reconstructed
-                right="P" if symbol[12:13] == "P" else "C",
+                right=_leg_right(symbol, getattr(leg, "instrument_type", None)),
                 role="short" if "sell_to_open" in action else "long",
                 qty=int(Decimal(str(getattr(leg, "quantity", 0)))),
                 price=self._allocated_price(leg),
