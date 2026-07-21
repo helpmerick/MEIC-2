@@ -113,7 +113,7 @@ class StopWatchdog:
 
         order_id = await self.broker.submit(marketable_close(
             entry_id=entry_id, right=right_of(side), contracts=contracts,
-            symbol=symbol, kind="escalation",
+            price=ask, symbol=symbol, kind="escalation",
             idempotency_key=f"escalate:{entry_id}:{side}"))
         if resting_id is not None:
             # REPRICE-RACE SWEEP (2026-07-11): NOT WIRED LIVE today, guarded

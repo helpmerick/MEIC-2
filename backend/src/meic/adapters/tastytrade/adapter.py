@@ -182,8 +182,7 @@ class TastytradeAdapter:
         # OrderIntent.ORDER_TYPES, so `intent.order_type` can never be
         # "stop_limit" here -- no OrderType.STOP_LIMIT entry exists to build one.
         type_map = {"stop_market": OrderType.STOP,
-                    "limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT,
-                    "market": OrderType.MARKET}
+                    "limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT}
         action_map = {a.value.lower().replace(" ", "_"): a for a in OrderAction}
         tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
 
