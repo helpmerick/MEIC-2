@@ -34,6 +34,8 @@ Single source of truth for every configurable parameter. The backend config sche
 | `cal_auto_refresh` | bool | true | immediate | CAL-09 v1.77 — daily official-source auto-populate; off = manual paste only |
 | `cal_refresh_fail_alert_days` | 1–14 | 3 | immediate | CAL-09 — consecutive fetch failures before a persistent alert |
 | `event_warning_lead_days` | 0–5 | 3 | immediate | CAL-11 v1.84 — how many TRADING days before a calendar event the dismissable warning banner appears (0 = day-of only); display-only, never blocks |
+| `underlying` | SPX \| RUT \| /ES | SPX | next-entry (per schedule row) | UND-01 — profile-driven; unverified value refused |
+| `eod_close_time` (/ES) | 09:30–15:59 ET | 15:55 (MANDATORY for /ES) | next-entry | UND-03 — /ES force-close before settlement; validation refuses /ES without it |
 | ~~`chain_atm_band_pts`~~ | — | — | — | RETIRED v1.51 (fixed band can't track the moving 0DTE dead-strike boundary); config validation REJECTS the key |
 | `chain_retry_seconds` | 1–30 | 5 | next-entry | STK-10/11 — retry interval within the entry window before `incomplete_chain` skip |
 | `min_short_premium` | $0.05–$20.00 | $1.00 | next-entry | STK-05 — floor on each SHORT leg's gross premium (wings not factored) |
@@ -43,7 +45,7 @@ Single source of truth for every configurable parameter. The backend config sche
 
 ### Per-entry overrides
 
-`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only — **pin-at-Save semantics (v1.47, operator-ratified): every schedule row stores CONCRETE values for all its parameters at Save time; globals are pre-fill defaults for NEW rows only and NEVER retro-apply to saved rows (extends v1.44's `contracts_per_entry` precedent to all row fields; what the row displays is exactly what trades)** — : `contracts` (v1.44), `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `probe_down_max` (v1.44 — the UI may display it as dollars: n × $0.05, e.g. 15 → “within $0.75 below target”; the up-cap stays `probe_up_max`, NEVER symmetric), `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`, `take_profit_target_pct` (v1.58). Example:
+`entry_times` may alternatively be given as a list of entry objects, each optionally overriding these strategy/stop parameters for that entry only (incl. `underlying`, v1.86) — **pin-at-Save semantics (v1.47, operator-ratified): every schedule row stores CONCRETE values for all its parameters at Save time; globals are pre-fill defaults for NEW rows only and NEVER retro-apply to saved rows (extends v1.44's `contracts_per_entry` precedent to all row fields; what the row displays is exactly what trades)** — : `contracts` (v1.44), `strike_method`, `short_delta_target`, `target_premium` (premium method), `wing_width`, `min_short_premium`, `min_total_credit`, `probe_down_max` (v1.44 — the UI may display it as dollars: n × $0.05, e.g. 15 → “within $0.75 below target”; the up-cap stays `probe_up_max`, NEVER symmetric), `stop_loss_pct`, `stop_basis`, `stop_rebate_markup`, `take_profit_target_pct` (v1.58). Example:
 
 ```yaml
 entries:

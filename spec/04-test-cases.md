@@ -1770,6 +1770,35 @@ Scenario: Baseline and existing results are byte-identical
   And already_closed, unknown_entry, and the CLS-03 cancel path are unchanged
 ```
 
+**TC-UND-01** — UND-01/02 multiplier & profiles (v1.86)
+```gherkin
+Scenario: Dollar math uses the profile multiplier
+  Given an SPX entry and a /ES entry with identical width and credit
+  Then every SPX dollar figure uses x100 and every /ES figure uses x50
+  And RSK-04 sums the day as SPX-worst-case(x100) + ES-worst-case(x50), never a shared multiplier
+
+Scenario: An unverified underlying is refused, never guessed
+  Given a schedule row naming an unsupported or unverified underlying
+  Then config validation refuses it and no entry is attempted
+```
+
+**TC-UND-02** — UND-03 /ES no-assignment invariant (v1.86, F3)
+```gherkin
+Scenario: /ES requires and enforces a pre-16:00 force-close
+  Given a /ES entry
+  Then config validation refuses it without a valid eod_close_time before 16:00 (default 15:55)
+  And at eod_close_time the entry force-closes via the canonical close (initiator eod)
+  And no /ES position is ever held into settlement
+
+Scenario: An unclosed /ES leg raises a critical alert
+  Given a /ES leg not confirmed flat by eod_close_deadline
+  Then an RSK-06 critical alert fires naming the position (assignment risk)
+
+Scenario: Cash underlyings are unchanged
+  Given an SPX or RUT entry held to expiry
+  Then it cash-settles per EOD-01 with no assignment handling and the never-more-than-premium contract holds
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1806,6 +1835,7 @@ Scenario: Baseline and existing results are byte-identical
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
+| UND-01→06 | TC-UND-01, TC-UND-02 | | | |
 | STK-01→11 | TC-STK-01→08 | | EOD-01→05 | TC-EOD-01→05 |
 | ORD-01→07 | TC-ORD-01→05, TC-ENT-05 | | RSK-01→08 | TC-RSK-01→08 |
 | DAT-01→05 | TC-DAT-01→03 | | REC-01→06 | TC-REC-01→04, TC-API-01 |

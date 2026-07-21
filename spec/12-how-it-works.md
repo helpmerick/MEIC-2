@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.85 (operator-commissioned 2026-07-15; current through spec v1.85).** A complete, non-technical
+**v1.86 (operator-commissioned 2026-07-15; current through spec v1.86).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.85 — describes spec v1.85; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.86 — describes spec v1.86; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -185,8 +185,14 @@ from there.
 ## 1. What the bot trades, and the shape of the trade
 
 The bot trades a single options structure called an **iron condor**, built
-fresh each day out of SPX index options that expire the same day they're
-traded ("0DTE" — zero days to expiry). Every entry has exactly four legs, all
+fresh each day out of index (or E-mini futures) options that expire the same
+day they're traded ("0DTE" — zero days to expiry). The default and original
+underlying is **SPX**; the bot can also trade **RUT** (Russell 2000, which
+works identically — cash-settled, no assignment) and **/ES** (E-mini S&P
+futures). /ES is different in one safety-critical way: its options settle into
+a futures position if held to expiry, so the bot **always closes /ES trades at
+3:55 PM ET**, before that can ever happen — you're never left holding a
+futures position overnight. Every entry has exactly four legs, all
 on the same expiration: a short put, a long put further out that protects it,
 a short call, and a long call further out that protects it (STK-01). "Short"
 means the bot sells that option and collects money for it up front; "long"
@@ -821,7 +827,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.85 — describes spec v1.85 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.86 — describes spec v1.86 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 
