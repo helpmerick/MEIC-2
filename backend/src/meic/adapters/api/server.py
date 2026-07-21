@@ -483,6 +483,26 @@ def _decay_cutoff_time(env: dict[str, str]) -> dtime:
     return dtime(h, mm)
 
 
+def _es_eod_close_deadline(env: dict[str, str]) -> dtime:
+    """EOD-02/UND-03 `eod_close_deadline` (doc 06 §134: ET time > close_time,
+    default 15:59) -- the marketable-fallback hard deadline the force-close
+    scheduler applies to every MANDATORY-eod-close underlying (today: /ES
+    only). Parsed the SAME "HH:MM"/"HH.MM" shape `_decay_cutoff_time` above
+    uses; an unparseable value falls back to the spec default rather than
+    crashing boot (the reject-the-dial convention every other dial here
+    follows)."""
+    import re as _re
+
+    raw = env.get("MEIC_EOD_CLOSE_DEADLINE", "15:59").strip()
+    m = _re.fullmatch(r"(\d{1,2})[.:](\d{2})", raw)
+    if not m:
+        return dtime(15, 59)
+    h, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= mm <= 59):
+        return dtime(15, 59)
+    return dtime(h, mm)
+
+
 def _settlement_lookback_days(env: dict[str, str]) -> int:
     """EOD-01 v1.59 follow-up (2026-07-13): how many RECENT prior trading days
     `_maybe_eod_reconcile_once`'s look-back re-checks for a settlement that
@@ -1826,6 +1846,66 @@ async def _run_lex_ladder_watchdog_loop(comp, wd, alerts, *, clock,
         except Exception as exc:  # noqa: BLE001 -- must never crash the app
             alerts.alert("warning", f"LEX-07 ladder watchdog pass failed: {exc!r}")
         await asyncio.sleep(idle_seconds)
+
+
+async def _run_force_close_scheduler_loop(comp, scheduler, alerts, *, clock,
+                                          idle_seconds: float = 5.0) -> None:
+    """UND-03/F3 (v1.86 /ES Stage 2): supervises
+    `ForceCloseScheduler.run_once` forever -- same shape as
+    `_run_lex_ladder_watchdog_loop` above (one supervised background task,
+    created unconditionally at startup, cancelled on shutdown). NEVER crashes
+    the app: a broker hiccup mid-close is alerted and the next tick simply
+    re-derives what's still open from the journal and retries -- exactly the
+    idempotent-retry shape `ForceCloseScheduler.run_once`'s own docstring
+    describes. Runs unconditionally regardless of whether any /ES entry has
+    ever been placed -- the policy-table lookup inside `run_once` is what
+    makes this scheduler completely inert for an SPX/RUT-only day."""
+    while True:
+        try:
+            await scheduler.run_once(clock.now())
+        except Exception as exc:  # noqa: BLE001 -- must never crash the app
+            # SETTLEMENT-SAFETY (2026-07-21 final review): the loop's OWN
+            # except-body must never itself kill the loop. A failing
+            # `alerts.alert` here (a broken sink) would otherwise propagate
+            # out of the `except` and end the `while True` silently -- and a
+            # dead force-close loop means every open /ES rides into
+            # settlement with no protection. Swallow an alert failure to a
+            # logger, exactly as every other alert-sink use in this module
+            # treats its sink as best-effort.
+            try:
+                alerts.alert("warning", f"UND-03/F3 force-close scheduler pass failed: {exc!r}")
+            except Exception as alert_exc:  # noqa: BLE001
+                logger.error("force-close loop alert sink failed: %r", alert_exc)
+        await asyncio.sleep(idle_seconds)
+
+
+def _force_close_task_done_callback(alerts):
+    """SETTLEMENT-SAFETY (2026-07-21 final review): the done-callback for
+    `force_close_scheduler_task`, mirroring `_health_task_done_callback`
+    exactly. The force-close loop's `except Exception` cannot catch a
+    BaseException (or anything asyncio raises AROUND `run_once`), and a
+    silently dead force-close loop is the single worst F3 outcome -- every
+    open /ES entry rides into settlement with ZERO alert. This is the same
+    death detection every other safety-critical supervised loop already has
+    (health_task's done-callback, the ENT-10 day task's `day_task_failed`
+    latch). A cancelled task (deliberate shutdown, see
+    `_stop_force_close_scheduler_loop`) is not a crash and is never alerted.
+    The whole callback is wrapped in a bare except so a broken callback can
+    never itself become an unhandled crash."""
+    def _on_done(task) -> None:
+        try:
+            if task.cancelled():
+                return
+            exc = task.exception()  # retrieval — must run before anything else can fail
+            if exc is not None:
+                alerts.alert(
+                    "critical",
+                    "RSK-06: UND-03/F3 force-close scheduler task DIED -- /ES "
+                    f"force-close protection is DOWN, open /ES entries risk "
+                    f"settlement/assignment: {exc!r}")
+        except Exception as cb_exc:  # noqa: BLE001 — a broken callback must not crash anything
+            logger.error("force-close task done-callback itself failed: %r", cb_exc)
+    return _on_done
 
 
 async def _decay_watcher_pass(
@@ -3324,6 +3404,47 @@ def live_app():
     @app.on_event("shutdown")
     async def _stop_lex_ladder_watchdog_loop() -> None:
         task = getattr(app.state, "lex_ladder_watchdog_task", None)
+        if task:
+            task.cancel()
+
+    # UND-03/F3 (v1.86 /ES Stage 2, 2026-07-21): the force-close scheduler --
+    # /ES is NEVER held to settlement (American exercise would assign a
+    # futures position, breaking the cash-settlement/defined-risk contract
+    # EOD-01 relies on). Constructed and ticked UNCONDITIONALLY, same shape
+    # as every other watcher above -- the policy table
+    # (`force_close_scheduler.default_policies`) is what makes it inert on an
+    # SPX/RUT-only day: only underlyings with `mandatory_eod_close` (today:
+    # /ES only) get an entry, so `run_once` finds nothing to do unless a /ES
+    # entry actually exists. Purely journal + `comp.close`/`comp.broker` --
+    # same close path every other close in this codebase uses (CLS-01/02),
+    # never a second implementation.
+    from meic.application.force_close_scheduler import ForceCloseScheduler, default_policies
+
+    es_eod_close_deadline = _es_eod_close_deadline(env)
+    app.state.es_eod_close_deadline = es_eod_close_deadline
+    # FIX 2 (half-day): the SAME algorithmic early-close calendar the EOD-03
+    # sweep already computed above (`eod_half_days`, a 10-year window) so a
+    # 13:00-ET half day force-closes /ES before 13:00, not at 15:55.
+    force_close_scheduler = ForceCloseScheduler(
+        comp, policies=default_policies(eod_close_deadline=es_eod_close_deadline),
+        half_days=eod_half_days)
+    app.state.force_close_scheduler = force_close_scheduler
+
+    @app.on_event("startup")
+    async def _start_force_close_scheduler_loop() -> None:
+        app.state.force_close_scheduler_task = asyncio.create_task(_run_force_close_scheduler_loop(
+            comp, force_close_scheduler, alerts, clock=comp.clock, idle_seconds=quote_stream_poll_s))
+        # SETTLEMENT-SAFETY (2026-07-21 final review): alert CRITICAL if the
+        # force-close task itself ever dies -- the same death detection
+        # health_task has (see `_force_close_task_done_callback`). Without it
+        # a dead force-close loop rides every open /ES into settlement
+        # silently, the exact F3 outcome this whole component prevents.
+        app.state.force_close_scheduler_task.add_done_callback(
+            _force_close_task_done_callback(alerts))
+
+    @app.on_event("shutdown")
+    async def _stop_force_close_scheduler_loop() -> None:
+        task = getattr(app.state, "force_close_scheduler_task", None)
         if task:
             task.cancel()
 

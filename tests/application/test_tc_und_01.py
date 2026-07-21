@@ -65,10 +65,16 @@ def test_tc_und_01_rsk04_sums_a_mixed_day_at_each_entrys_own_multiplier():
 
 
 def test_tc_und_01_unverified_underlying_refused_never_guessed():
-    """UND-01: a schedule row naming an unsupported ("XSP") or not-yet-
-    tradable ("/ES", UND-03 pending) underlying is REFUSED at validation,
-    never guessed — "RUT" and "SPX" are accepted, and an UNSET row defaults
-    to SPX, byte-identical to every pre-v1.86 schedule."""
+    """UND-01: a schedule row naming an unsupported ("XSP") underlying is
+    REFUSED at validation, never guessed — "RUT" and "SPX" are accepted, and
+    an UNSET row defaults to SPX, byte-identical to every pre-v1.86 schedule.
+
+    UND-03/F3 (v1.86 /ES Stage 2, 2026-07-21): /ES graduated from Stage 1's
+    blanket refusal ("UND-03 pending") to a force-close-gated profile -- an
+    /ES row that doesn't override `eod_close_time` now resolves CLEANLY,
+    using the PROFILE's own default (15:55 ET), so it no longer refuses here.
+    The F3 refusal-without-a-valid-eod_close_time case is TC-UND-02's own
+    coverage (tests/application/test_tc_und_02.py), not this test's."""
     defaults = ScheduleDefaults()
 
     def errors_for(name: str | None):
@@ -79,9 +85,9 @@ def test_tc_und_01_unverified_underlying_refused_never_guessed():
     xsp_errors = errors_for("XSP")
     assert any(e.field == "underlying" for e in xsp_errors)
 
-    es_errors = errors_for("/ES")
-    es_underlying_error = next(e for e in es_errors if e.field == "underlying")
-    assert "UND-03" in es_underlying_error.reason  # names the pending UND-03 phase
+    # /ES resolves cleanly via its own profile default (UND-03/F3) -- no
+    # longer refused now that Stage 2 has landed the force-close invariant.
+    assert errors_for("/ES") == []
 
     assert errors_for("RUT") == []
     assert errors_for("SPX") == []

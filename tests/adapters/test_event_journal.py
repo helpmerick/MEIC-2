@@ -25,12 +25,16 @@ def _sample_instances() -> dict[type, ev.Event]:
         ev.EntrySkipped: ev.EntrySkipped(date="2026-07-09", entry_number=1, reason="not_armed"),
         ev.DayCompleted: ev.DayCompleted(date="2026-07-09"),
         ev.ModeSwitchStaged: ev.ModeSwitchStaged(target="live", effective="next_day"),
-        ev.CondorProposed: ev.CondorProposed(entry_id="2026-07-09#1", put_short=D("5600"),
-                                              call_short=D("5700")),
+        # UND-03/F3 (v1.86): both carry the additive journaled `eod_close_time`
+        # ("HH:MM" ET string) so the round-trip codec test below actually
+        # exercises the new field (not just its default None).
+        ev.CondorProposed: ev.CondorProposed(entry_id="2026-07-21#1", put_short=D("6250"),
+                                              call_short=D("6350"), underlying="/ES",
+                                              eod_close_time="15:55"),
         ev.CondorFilled: ev.CondorFilled(
-            entry_id="2026-07-09#1", net_credit=D("4.00"), fee=D("1.42"),
+            entry_id="2026-07-21#1", net_credit=D("4.00"), fee=D("1.42"),
             short_premium=D("6.00"), legs=(leg,), initiator="manual_entry",
-            at="2026-07-09T10:00:00+00:00"),
+            at="2026-07-21T10:00:00+00:00", underlying="/ES", eod_close_time="15:30"),
         ev.StopPlaced: ev.StopPlaced(entry_id="2026-07-09#1", side="PUT", trigger=D("3.80")),
         ev.StopReplaced: ev.StopReplaced(entry_id="2026-07-09#1", side="PUT"),
         ev.ReconciliationMismatch: ev.ReconciliationMismatch(detail="broker mismatch"),
@@ -97,6 +101,12 @@ def _sample_instances() -> dict[type, ev.Event]:
         # sweep's own critical alerts.
         ev.EodSweepCompleted: ev.EodSweepCompleted(
             date="2026-07-11", cancelled=2, uncancellable=0, raced_fills=1),
+        # UND-03/F3/EOD-02 (v1.86 /ES Stage 2): the force-close scheduler's
+        # own once-per-day-ish journal gate -- counts only, same convention
+        # as EodSweepCompleted above (the entry/leg names live in the
+        # scheduler's own RSK-06 critical alert).
+        ev.ForceCloseSweepCompleted: ev.ForceCloseSweepCompleted(
+            date="2026-07-21", closed=1, unresolved=0),
         # EOD-01 v1.59 (LIVE settlement capture, distinct from the RPT-16
         # import above): the pinned 2026-07-09 C7540 cash-settled assignment.
         ev.SettlementRecorded: ev.SettlementRecorded(

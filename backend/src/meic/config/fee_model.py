@@ -59,6 +59,28 @@ DEFAULT_INDEX_OPTION_FEES: dict[str, Decimal] = {
 
 DEFAULT_EXCHANGE_FEE = DEFAULT_INDEX_OPTION_FEES["SPX"]  # doc 06 `underlying` default is SPX
 
+# UND-02/F3 (v1.86 /ES Stage 2, 2026-07-21): tastytrade's FUTURES OPTIONS fee
+# schedule (same published "Commissions & Fees" document, futures options
+# table) is STRUCTURALLY different from the index-option table above:
+# commission bills on BOTH open AND close, on EVERY leg (short or long alike)
+# -- never short-open-only, never close-free. Published figures: $1.25 per
+# contract commission (charged once on open, once again on close), $0.30
+# clearing fee, $0.01 NFA fee. The CME Globex per-product exchange fee is an
+# ESTIMATE pending exact verification -- VALIDATE EXACT ON FIRST REAL /ES
+# TRADE (operator ruling, F3 build) -- kept here, never hardcoded inline, so
+# a later correction is a one-line config change.
+FUTURES_COMMISSION = Decimal("1.25")
+FUTURES_CLEARING_FEE = Decimal("0.30")
+FUTURES_NFA_FEE = Decimal("0.01")
+FUTURES_EXCHANGE_FEES: dict[str, Decimal] = {
+    "/ES": Decimal("1.50"),  # ESTIMATE -- validate exact on first real /ES trade
+}
+DEFAULT_FUTURES_EXCHANGE_FEE = FUTURES_EXCHANGE_FEES["/ES"]
+# UND-01: the futures-option underlyings this bot trades (today: /ES only) --
+# `FeeModel.is_futures_option` keys off this set, never a hardcoded string
+# check, so a later futures-option profile only needs a table entry.
+FUTURES_OPTION_UNDERLYINGS: frozenset[str] = frozenset({"/ES"})
+
 
 class FeeModelRejected(ValueError):
     def __init__(self, field_name: str, reason: str) -> None:
@@ -87,41 +109,98 @@ class FeeModel:
     index_option_fees: dict[str, Decimal] = field(
         default_factory=lambda: dict(DEFAULT_INDEX_OPTION_FEES))
     default_exchange_fee: Decimal = DEFAULT_EXCHANGE_FEE
+    # UND-02/F3 (v1.86 /ES Stage 2): the FUTURES-OPTION fee structure --
+    # entirely separate fields from the index-option ones above, never
+    # reused, because the billing RULE differs (see `is_futures_option`/
+    # `per_contract_fee` below): commission on both open AND close, every leg.
+    futures_commission: Decimal = FUTURES_COMMISSION
+    futures_clearing_fee: Decimal = FUTURES_CLEARING_FEE
+    futures_nfa_fee: Decimal = FUTURES_NFA_FEE
+    futures_exchange_fees: dict[str, Decimal] = field(
+        default_factory=lambda: dict(FUTURES_EXCHANGE_FEES))
+    default_futures_exchange_fee: Decimal = DEFAULT_FUTURES_EXCHANGE_FEE
+    futures_option_underlyings: frozenset[str] = FUTURES_OPTION_UNDERLYINGS
 
     def exchange_fee(self, underlying: str | None = None) -> Decimal:
         key = (underlying or self.underlying).upper()
         return self.index_option_fees.get(key, self.default_exchange_fee)
+
+    def is_futures_option(self, underlying: str | None = None) -> bool:
+        """UND-02/F3: True iff `underlying` (or the model's own default) is a
+        futures-option underlying (today: /ES only) -- keyed off
+        `futures_option_underlyings`, never a hardcoded string check, so a
+        later futures-option profile only needs a table entry here."""
+        key = (underlying or self.underlying).upper()
+        return key in {u.upper() for u in self.futures_option_underlyings}
+
+    def futures_exchange_fee(self, underlying: str | None = None) -> Decimal:
+        key = (underlying or self.underlying).upper()
+        return self.futures_exchange_fees.get(key, self.default_futures_exchange_fee)
 
     def per_contract_fee(self, *, role: str, opening: bool, underlying: str | None = None) -> Decimal:
         """The total fee for ONE contract of ONE leg.
 
         `role` is "short" | "long" (FilledLeg.role); `opening` is True for an
         opening trade (an entry fill), False for a closing trade (stop
-        buyback, LEX sale, decay buyback, manual close). Commission applies
-        only when `opening and role == "short"` (sell-to-open) -- see the
-        module docstring for why. Every other component applies
-        unconditionally, matching the schedule's "applies to all opening
-        and closing trades."
+        buyback, LEX sale, decay buyback, manual close).
+
+        Index options (SPX/RUT/...): commission applies only when
+        `opening and role == "short"` (sell-to-open) -- see the module
+        docstring for why. Every other component applies unconditionally,
+        matching the schedule's "applies to all opening and closing trades."
+
+        Futures options (/ES): a STRUCTURALLY different schedule (UND-02/F3)
+        -- commission bills on BOTH `opening` values, on EVERY `role` (short
+        or long alike), never gated by either. `opening`/`role` are still
+        accepted (uniform call signature for every caller in this codebase)
+        but deliberately unused in this branch -- the futures-option
+        commission is unconditional by construction, not because the branch
+        forgot to check them.
         """
+        if self.is_futures_option(underlying):
+            return (self.futures_commission + self.futures_clearing_fee
+                    + self.futures_nfa_fee + self.futures_exchange_fee(underlying))
         total = self.clearing_fee + self.regulatory_fee + self.exchange_fee(underlying)
         if opening and role == "short":
             total += self.commission_open
         return total
 
+    def _per_share_divisor(self, underlying: str | None) -> Decimal:
+        """UND-02/F3 (v1.86 /ES Stage 2): the SAME profile multiplier the
+        reporting layer re-scales by (`reporting/folds.py::multiplier_of`) --
+        resolved identically, so the per-share fee this records and the
+        `* multiplier_of(entry) * contracts` conversion there are EXACT
+        inverses for every underlying (SPX/RUT ÷100·×100, /ES ÷50·×50). A
+        HARDCODED ÷100 here (the original bug) recorded a /ES fee at HALF its
+        true value, because /ES re-scales by ×50 not ×100. Falls back to 100
+        for an unknown underlying, byte-identical to `multiplier_of`'s own
+        fallback so the two never disagree. Lazy import: `domain.underlying`
+        is pure (imports only `domain.ticks`), so there is no cycle, but the
+        lazy form matches `config/validation.py`'s own convention and keeps
+        `config` free of a load-time domain dependency."""
+        from meic.domain.underlying import profile_for
+        profile = profile_for(underlying or self.underlying)
+        return profile.multiplier if profile is not None else Decimal(100)
+
     def per_share_fee(self, *, role: str, opening: bool, underlying: str | None = None) -> Decimal:
         """The SAME fee, rescaled to the "per-share" unit every other money
         field on these events uses (`CondorFilled.net_credit`,
         `ShortStopped.fill`, `LongSold.recovery` are all per-share -- REAL
-        dollars need `* 100 * contracts`, applied ONCE at the reporting
-        layer; see `domain/projection.py`'s and `reporting/folds.py`'s own
-        docstrings). A real per-contract dollar fee is, by construction,
-        already linear in contracts (each contract is charged its own
-        commission/clearing/exchange fee) -- exactly the same linearity
-        `entry_dollars`'s `* 100 * contracts` assumes for `net_credit` et al.
-        So dividing by 100 here (and NEVER multiplying by contracts again)
-        is what makes `entry_dollars_fees` recover the real per-contract
-        dollar total, contracts-count-independent: for N contracts,
-        `(fee_per_contract / 100) * 100 * N == fee_per_contract * N`.
+        dollars need `* multiplier * contracts`, applied ONCE at the
+        reporting layer; see `domain/projection.py`'s and
+        `reporting/folds.py`'s own docstrings). A real per-contract dollar
+        fee is, by construction, already linear in contracts (each contract
+        is charged its own commission/clearing/exchange fee) -- exactly the
+        same linearity `entry_dollars`'s `* multiplier * contracts` assumes
+        for `net_credit` et al.
+
+        UND-02/F3 (v1.86): dividing by THIS UNDERLYING'S OWN multiplier (NOT
+        a hardcoded 100) is what makes `entry_dollars_fees` recover the real
+        per-contract dollar total for EVERY underlying -- SPX/RUT (÷100·×100)
+        AND /ES (÷50·×50). For N contracts of underlying U with multiplier M:
+        `(fee_per_contract / M) * M * N == fee_per_contract * N`. The prior
+        hardcoded ÷100 silently recorded a /ES fee at HALF value (÷100 then
+        ×50), the exact defect this fix closes.
 
         Mixing scales here (recording real dollars directly, or worse,
         real-dollars-times-contracts) is exactly the "silently double- or
@@ -131,7 +210,8 @@ class FeeModel:
         (a day's total pnl going wildly negative from ordinary-sized fees is
         the symptom of getting this multiplication backwards).
         """
-        return self.per_contract_fee(role=role, opening=opening, underlying=underlying) / Decimal(100)
+        return (self.per_contract_fee(role=role, opening=opening, underlying=underlying)
+                / self._per_share_divisor(underlying))
 
 
 def validate_fee_model(patch: dict) -> None:
@@ -140,7 +220,13 @@ def validate_fee_model(patch: dict) -> None:
     it does not fit `config/validation.py`'s single-key checks, but follows
     the identical reject-never-clamp convention: PNL-01 money going into a
     fee table must never silently become negative or non-numeric)."""
-    numeric_keys = ("commission_open", "clearing_fee", "regulatory_fee", "default_exchange_fee")
+    numeric_keys = (
+        "commission_open", "clearing_fee", "regulatory_fee", "default_exchange_fee",
+        # UND-02/F3 (v1.86 /ES Stage 2): the futures-option scalar fields --
+        # same reject-never-clamp convention as the index-option ones above.
+        "futures_commission", "futures_clearing_fee", "futures_nfa_fee",
+        "default_futures_exchange_fee",
+    )
     for key in numeric_keys:
         if key not in patch:
             continue
@@ -161,6 +247,17 @@ def validate_fee_model(patch: dict) -> None:
                 raise FeeModelRejected(f"index_option_fees.{symbol}", "not_a_number") from exc
             if value < 0:
                 raise FeeModelRejected(f"index_option_fees.{symbol}", "negative")
+    futures_fees = patch.get("futures_exchange_fees")
+    if futures_fees is not None:
+        if not isinstance(futures_fees, dict):
+            raise FeeModelRejected("futures_exchange_fees", "not_a_table")
+        for symbol, raw in futures_fees.items():
+            try:
+                value = Decimal(str(raw))
+            except Exception as exc:  # noqa: BLE001
+                raise FeeModelRejected(f"futures_exchange_fees.{symbol}", "not_a_number") from exc
+            if value < 0:
+                raise FeeModelRejected(f"futures_exchange_fees.{symbol}", "negative")
 
 
 def fee_model_from_config(cfg: dict | None) -> FeeModel:
@@ -171,7 +268,11 @@ def fee_model_from_config(cfg: dict | None) -> FeeModel:
     if not cfg:
         return FeeModel()
     kwargs: dict = {}
-    for key in ("commission_open", "clearing_fee", "regulatory_fee", "default_exchange_fee"):
+    for key in (
+        "commission_open", "clearing_fee", "regulatory_fee", "default_exchange_fee",
+        "futures_commission", "futures_clearing_fee", "futures_nfa_fee",
+        "default_futures_exchange_fee",
+    ):
         if key in cfg:
             kwargs[key] = Decimal(str(cfg[key]))
     if "underlying" in cfg:
@@ -179,5 +280,9 @@ def fee_model_from_config(cfg: dict | None) -> FeeModel:
     if "index_option_fees" in cfg:
         kwargs["index_option_fees"] = {
             str(sym).upper(): Decimal(str(v)) for sym, v in cfg["index_option_fees"].items()
+        }
+    if "futures_exchange_fees" in cfg:
+        kwargs["futures_exchange_fees"] = {
+            str(sym).upper(): Decimal(str(v)) for sym, v in cfg["futures_exchange_fees"].items()
         }
     return FeeModel(**kwargs)

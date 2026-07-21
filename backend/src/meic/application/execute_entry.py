@@ -95,6 +95,13 @@ class Condor:
     # (worst-case multiplier, OCC option root) and journaled onto
     # `CondorFilled` at fill time (see `_record_fill`).
     underlying: str = "SPX"
+    # UND-03/F3 (v1.86 /ES Stage 2): this row's PINNED eod_close_time as an
+    # "HH:MM" ET string (doc 06 §38), carried from the ResolvedEntry through
+    # selection and journaled onto CondorProposed/CondorFilled at fire time
+    # so the force-close scheduler honours a per-row override. None (every
+    # non-/ES row and every caller that doesn't set it -- paper/runtime,
+    # manual, legacy) -> the scheduler uses the profile default (15:55).
+    eod_close_time: str | None = None
 
     @property
     def put_wing(self) -> Decimal:
@@ -335,7 +342,8 @@ class ExecuteEntryAttempt:
         entry_id = f"{day}#{n}"
         self._events.append(CondorProposed(
             entry_id=entry_id, put_short=condor.put_short, call_short=condor.call_short,
-            underlying=condor.underlying))
+            underlying=condor.underlying,
+            eod_close_time=condor.eod_close_time))  # UND-03/F3 (v1.86) pinned close time
 
         # 4. ORD-01/02/03 — one 4-leg limit, repriced down to the floor
         return await self._work_order(day, n, entry_id, condor, initiator,
@@ -554,7 +562,8 @@ class ExecuteEntryAttempt:
             broker_order_id=str(working_id),  # OWN-01/OWN-03: the entry's own order id
             blackout_overridden=blackout_overridden,  # CAL-06 (v1.71) audit
             target_premium=condor.target_premium,   # RPT-17 (v1.82) audit
-            underlying=condor.underlying))           # UND-01 (v1.86) audit/replay
+            underlying=condor.underlying,            # UND-01 (v1.86) audit/replay
+            eod_close_time=condor.eod_close_time))   # UND-03/F3 (v1.86) pinned close time
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:

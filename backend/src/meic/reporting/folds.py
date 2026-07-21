@@ -97,15 +97,15 @@ def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
     CONTRACT_MULTIPLIER (100). A fill with no broker-allocated price
     contributes 0 (honest, never fabricated).
 
-    UND-02/UND-04 (/ES Stage 1): the multiplier is resolved PER-UNDERLYING
-    from `fill.underlying` (additive field, default "SPX" for every
-    pre-v1.86 imported row) via `profile_for`, exactly like `multiplier_of`
-    resolves it for a folded `EntryProjection` above -- so a future imported
-    /ES fill values at x50, never the flat x100. An unrecognised/absent
-    underlying falls back to `CONTRACT_MULTIPLIER` (100), same convention as
-    `multiplier_of`. /ES itself is still REFUSED this phase (UND-06 build
-    order) so no real /ES row can reach this yet; this is the money-math
-    seam Stage 2 needs already in place."""
+    UND-02/UND-04: the multiplier is resolved PER-UNDERLYING from
+    `fill.underlying` (additive field, default "SPX" for every pre-v1.86
+    imported row) via `profile_for`, exactly like `multiplier_of` resolves
+    it for a folded `EntryProjection` above -- so an imported /ES fill values
+    at x50, never the flat x100. An unrecognised/absent underlying falls back
+    to `CONTRACT_MULTIPLIER` (100), same convention as `multiplier_of`.
+    UND-03/F3 (v1.86 /ES Stage 2): /ES is now `enabled=True` and real /ES
+    fills DO reach this path -- this per-underlying x50 resolution is live,
+    not just a seam."""
     if fill.value is not None:
         return fill.value
     if fill.price is None:

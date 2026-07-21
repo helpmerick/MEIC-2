@@ -1,10 +1,13 @@
 """UND-04 (/ES Stage 1, 2026-07-21) — the futures-option ADAPTER PATH only.
 
-/ES stays `enabled=False` this stage (validation still refuses it for live
-entries -- the F3 safety layer + enable is Stage 2, UND-03/TC-UND-02). These
-tests prove the PLUMBING Stage 2 will need already works, offline, and that
-the SPX/RUT cash-index path is byte-identical past every dispatch seam this
-stage adds:
+Stage 1 (this file's original scope) built the adapter PATH with /ES kept
+`enabled=False` -- the F3 safety layer + enable was deferred to Stage 2
+(UND-03/TC-UND-02, tests/application/test_tc_und_02.py), which has since
+landed: /ES is now `enabled=True`, gated ONLY by a mandatory pre-16:00
+`eod_close_time` (see `test_es_profile_carries_the_verified_facts_and_is_now_enabled`
+below). These tests otherwise still prove the PLUMBING this stage's adapter
+path added, offline, and that the SPX/RUT cash-index path is byte-identical
+past every dispatch seam this stage added:
 
   1. the futures-option chain-fetch branch (chain_snapshot.py) -- front-future
      resolution, expiration selection across subchains, and strike/streamer
@@ -27,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal as D
 from types import SimpleNamespace
 
@@ -67,7 +70,7 @@ async def _resolved(v):
 
 # --- profile shape (UND-01/02) ------------------------------------------------
 
-def test_es_profile_carries_the_verified_facts_and_stays_disabled():
+def test_es_profile_carries_the_verified_facts_and_is_now_enabled():
     profile = PROFILES["/ES"]
     assert profile.multiplier == D("50")
     assert profile.instrument_class == "futures_option"
@@ -79,9 +82,14 @@ def test_es_profile_carries_the_verified_facts_and_stays_disabled():
     assert profile.ticks.tick_for(D("500.00")) == D("0.50")
     from meic.domain.underlying import _INDEX_TICKS
     assert profile.tick_rungs != _INDEX_TICKS  # STK-08 v1.86 FLAG resolved
-    # Stage 1: still NEVER tradeable this stage.
-    assert profile.enabled is False
-    assert "UND-03" in (profile.disabled_reason or "")
+    # Stage 2 (UND-03/F3, this phase): /ES is now enabled -- gated ONLY by a
+    # mandatory pre-16:00 eod_close_time (never a blanket disable). See
+    # tests/application/test_tc_und_02.py for the force-close invariant this
+    # gate protects.
+    assert profile.enabled is True
+    assert profile.disabled_reason is None
+    assert profile.mandatory_eod_close is True
+    assert profile.default_eod_close_time == time(15, 55)
 
 
 # --- 1. futures-option chain-fetch branch (chain_snapshot.py) -----------------

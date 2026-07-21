@@ -91,6 +91,12 @@ class EntryProjection:
     # (folds.py/day_table.py) resolves this to a profile multiplier/fee
     # lookup instead of assuming SPX unconditionally.
     underlying: str = "SPX"
+    # UND-03/F3 (v1.86 /ES Stage 2, additive): the entry's PINNED
+    # eod_close_time ("HH:MM" ET string), folded off `CondorFilled.eod_close_time`.
+    # None (every non-/ES entry, pre-v1.86 log, or a /ES entry on its profile
+    # default) -> the force-close scheduler uses the profile default (15:55).
+    # A per-row override (e.g. "15:30") is honoured replay-correctly.
+    eod_close_time: str | None = None
 
     @property
     def pnl(self) -> Decimal:
@@ -174,7 +180,8 @@ def apply(state: DayState, event: Event) -> DayState:
             placed_at=event.at, legs=event.legs,
             put_floor=event.put_floor, call_floor=event.call_floor,
             blackout_overridden=event.blackout_overridden,
-            underlying=event.underlying)))
+            underlying=event.underlying,
+            eod_close_time=getattr(event, "eod_close_time", None))))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(

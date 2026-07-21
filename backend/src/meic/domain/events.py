@@ -137,6 +137,16 @@ class CondorProposed(Event):
     # "RUT" | "/ES"). Default "SPX" replays every pre-v1.86 log entry
     # byte-identical (same convention as every other additive field here).
     underlying: str = "SPX"
+    # UND-03/F3 (v1.86 /ES Stage 2, additive): the row's PINNED eod_close_time
+    # as an "HH:MM" ET string (doc 06 §38 pin-at-Save), stamped from the
+    # ResolvedEntry at fire time -- the replay-correct source the force-close
+    # scheduler derives each entry's OWN due-time from. Stored as a STRING
+    # (not a `datetime.time`) so it round-trips cleanly through the same
+    # str-based event codec every other field uses. None (every non-/ES row,
+    # every pre-v1.86 log entry, and a /ES row taking its profile default)
+    # replays byte-identical; the scheduler falls back to the profile default
+    # (15:55) for None. Same additive convention as `underlying` above.
+    eod_close_time: str | None = None
 
 
 # `fee` on every fill-bearing event: the per-contract commissions/fees (PNL-01)
@@ -243,6 +253,16 @@ class CondorFilled(Event):
     # Default "SPX" replays every pre-v1.86 log entry byte-identical, same
     # convention as every other additive field on this event.
     underlying: str = "SPX"
+    # UND-03/F3 (v1.86 /ES Stage 2, additive): the entry's PINNED
+    # eod_close_time as an "HH:MM" ET string (doc 06 §38 pin-at-Save),
+    # journaled AT FILL TIME (stamped from the Condor, itself carried from
+    # the ResolvedEntry) so the force-close scheduler derives THIS entry's
+    # own due-time replay-correctly -- a per-row override (e.g. 15:30) is
+    # honoured, not silently ignored. None (every non-/ES entry, every
+    # pre-v1.86 log entry, and a /ES entry taking its profile default)
+    # replays byte-identical and the scheduler falls back to the profile
+    # default (15:55). Same additive convention as `underlying` above.
+    eod_close_time: str | None = None
 
 
 @dataclass(frozen=True)
@@ -676,6 +696,24 @@ class EodSweepCompleted(Event):
     cancelled: int = 0
     uncancellable: int = 0
     raced_fills: int = 0
+
+
+@dataclass(frozen=True)
+class ForceCloseSweepCompleted(Event):
+    """UND-03/F3/EOD-02 (v1.86, /ES Stage 2): one force-close pass ran for
+    `date` -- mirrors `EodSweepCompleted`'s audit-inclusion shape (EOD-03) so
+    the day's own audit trail shows the /ES pre-settlement force-close pass
+    actually executed, not merely that individual entries closed.
+
+    Journaled by `application/force_close_scheduler.ForceCloseScheduler`
+    each time its `run_once` pass force-closes at least one entry or leaves
+    one unresolved past `eod_close_deadline`. Counts only -- the entry/leg
+    names for an unresolved position are already in the RSK-06 critical
+    alert the scheduler raises alongside this event (the same "counts only,
+    names are in the alert" convention `EodSweepCompleted` itself uses)."""
+    date: str
+    closed: int = 0
+    unresolved: int = 0
 
 
 @dataclass(frozen=True)

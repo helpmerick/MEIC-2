@@ -40,6 +40,11 @@ class ScheduleDefaults:
     strike_method: str = "premium"
     short_delta_target: Decimal = Decimal("0.10")
     underlying: str = "SPX"          # UND-01 (v1.86): row default -- behaviour byte-identical when unset
+    # EOD-01/02 (doc 06 §129-135): the GLOBAL `eod_close_time` default is
+    # "off" (None) -- cash underlyings hold to expiry unless the operator
+    # explicitly sets one. UND-03/F3's /ES default (15:55) is a PROFILE fact,
+    # resolved separately in `resolve()` below -- never inherited from here.
+    eod_close_time: time | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,10 @@ class EntrySpec:
     strike_method: str | None = None
     short_delta_target: Decimal | None = None
     underlying: str | None = None    # UND-01 (v1.86): pin-at-Save per-row override, doc 06 §37
+    # UND-03/F3 (v1.86 /ES Stage 2): pin-at-Save per-row override, doc 06 §38.
+    # Unset (None) resolves to the row's UNDERLYING PROFILE default (/ES:
+    # 15:55) when the profile mandates one, else the global default ("off").
+    eod_close_time: time | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,11 @@ class ResolvedEntry:
     strike_method: str
     short_delta_target: Decimal
     underlying: str          # UND-01 (v1.86)
+    # UND-03/F3 (v1.86 /ES Stage 2): defaulted (None) so every pre-existing
+    # direct `ResolvedEntry(...)` construction across the codebase (tests
+    # included) stays byte-identical without threading this field through --
+    # the same additive-field convention `underlying` itself established.
+    eod_close_time: time | None = None
 
 
 @dataclass(frozen=True)
@@ -94,11 +108,24 @@ _OVERRIDABLE = (
 
 
 def resolve(entry: EntrySpec, defaults: ScheduleDefaults) -> ResolvedEntry:
-    """Doc 06 §37: unset fields inherit the global value."""
+    """Doc 06 §37: unset fields inherit the global value.
+
+    `eod_close_time` (UND-03/F3, doc 06 §38) is resolved SEPARATELY from the
+    generic inheritance loop above: an unset row on a MANDATORY-eod-close
+    profile ("/ES") defaults to THAT PROFILE's own default (15:55), never the
+    cash-underlying global default ("off"/None) -- the two are genuinely
+    different defaults for genuinely different instrument classes, not one
+    inheritance chain. A row that explicitly overrides it always wins.
+    """
     values = {name: (getattr(entry, name) if getattr(entry, name) is not None
                      else getattr(defaults, name))
               for name in _OVERRIDABLE}
-    return ResolvedEntry(time=entry.time, **values)
+    eod_close_time = entry.eod_close_time
+    if eod_close_time is None:
+        profile = profile_for(values["underlying"])
+        profile_default = profile.default_eod_close_time if profile is not None else None
+        eod_close_time = profile_default if profile_default is not None else defaults.eod_close_time
+    return ResolvedEntry(time=entry.time, eod_close_time=eod_close_time, **values)
 
 
 def _is_step(value: Decimal, step: str) -> bool:
@@ -151,6 +178,17 @@ def validate_entry(e: ResolvedEntry, index: int) -> list[ScheduleError]:
         bad("underlying", "unknown_or_unverified_underlying")
     elif not profile.enabled:
         bad("underlying", profile.disabled_reason or "unknown_or_unverified_underlying")
+    elif profile.mandatory_eod_close:
+        # UND-03/F3 (v1.86 /ES Stage 2): a mandatory-eod-close profile ("/ES")
+        # is NEVER held to settlement -- refused without a valid `eod_close_time`
+        # AT OR BEFORE 15:55 (the F3 force-close requirement). The 15:55 cap
+        # (not 15:59) aligns validation with the runtime clamp: the force-close
+        # scheduler clamps the effective close to session_close - 5min = 15:55
+        # on a normal day, so a 15:56-15:59 value would be silently ignored --
+        # what is ACCEPTED here must be what is HONORED. Cash underlyings
+        # (SPX/RUT, `mandatory_eod_close=False`) never reach this branch.
+        if e.eod_close_time is None or not (time(9, 30) <= e.eod_close_time <= time(15, 55)):
+            bad("eod_close_time", "es_requires_eod_close_time_at_or_before_1555_und03_f3")
     return errs
 
 

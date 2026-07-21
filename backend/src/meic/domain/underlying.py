@@ -54,10 +54,14 @@ _ES_TICKS = (
 class UnderlyingProfile:
     """One ratified underlying (UND-01). Every fact is comment-cited to its
     verified source at the point it is set below — never re-derived, never
-    guessed. `enabled=False` (this phase: only `/ES`) means the profile is a
-    KNOWN name but not yet tradable — `profile_for` still resolves it (a
-    pure lookup), so callers that need to refuse a disabled underlying check
-    `.enabled` themselves and report `.disabled_reason`."""
+    guessed. `enabled=False` means the profile is a KNOWN name but not yet
+    tradable — `profile_for` still resolves it (a pure lookup), so callers
+    that need to refuse a disabled underlying check `.enabled` themselves and
+    report `.disabled_reason`. (/ES Stage 1 was `enabled=False` while only the
+    adapter path existed; Stage 2 (UND-03/F3, this phase) lifts it to True —
+    see `mandatory_eod_close` below, which is what actually gates a /ES entry
+    now: config validation refuses it without a valid pre-16:00
+    `eod_close_time`, never a blanket disable.)"""
 
     name: str                       # "SPX" | "RUT" | "/ES"
     index_symbol: str               # the underlying INDEX/future symbol dxlink subscribes to
@@ -98,6 +102,22 @@ class UnderlyingProfile:
     spot_event_hint: str = "quote"
     enabled: bool = True
     disabled_reason: str | None = None
+    # UND-03/F3 (v1.86 /ES Stage 2, operator-ruled 2026-07-21): True only for
+    # a futures-option underlying whose exercise would assign a position
+    # (never SPX/RUT — both cash-settle, EOD-01 unchanged). Such a profile
+    # is NEVER held to settlement: `config/validation.py::validate_underlying`
+    # and `domain/schedule.py::validate_entry` both REFUSE it without a valid
+    # pre-16:00 `eod_close_time`, and `application/force_close_scheduler`
+    # force-closes every open entry of THIS underlying via the canonical
+    # close (CLS-01, initiator "eod") once that time is reached — the only
+    # underlyings this scheduler ever touches.
+    mandatory_eod_close: bool = False
+    # The profile's OWN default `eod_close_time` when a schedule row doesn't
+    # override it (doc 06 §37/38: "15:55 (MANDATORY for /ES)") — genuinely
+    # different from the cash-underlying global default (`off`/None, EOD-01/
+    # 02), never inherited from it. None for every profile with
+    # `mandatory_eod_close=False`.
+    default_eod_close_time: time | None = None
 
     @property
     def ticks(self) -> TickTable:
@@ -210,11 +230,14 @@ PROFILES: dict[str, UnderlyingProfile] = {
         option_root="/ES",
         instrument_class="futures_option",
         # UND-01/02: multiplier is a spec-ratified fact (x50). Every other
-        # /ES field below is now VERIFIED against a real broker chain (PROD
-        # probe 2026-07-21, read-only) -- Stage 1 builds the ADAPTER PATH
-        # only; the profile stays `enabled=False` so nothing can trade
-        # against these numbers before Stage 2 lands the F3 force-close
-        # invariant (UND-03 / TC-UND-02).
+        # /ES field below is VERIFIED against a real broker chain (PROD probe
+        # 2026-07-21, read-only). Stage 1 built the ADAPTER PATH only, with
+        # the profile `enabled=False` so nothing could trade against these
+        # numbers before the F3 force-close invariant landed. Stage 2 (this
+        # phase, UND-03/TC-UND-02) lands F3 and lifts `enabled` to True below
+        # -- the profile is now tradable, gated ONLY by `mandatory_eod_close`
+        # (config validation refuses a /ES entry without a valid pre-16:00
+        # `eod_close_time`, never a blanket disable).
         multiplier=Decimal("50"),
         settlement="physical_futures_assignment",  # UND-03: exercise assigns a future -- never held to settlement
         # last-trade/expiry 16:00 ET (20:00 UTC); American exercise (PROD
@@ -237,9 +260,15 @@ PROFILES: dict[str, UnderlyingProfile] = {
         # defense-in-depth race (`_index_spot` subscribes and races BOTH
         # Quote and Trade regardless of this hint; see chain_snapshot.py).
         spot_event_hint="quote",
-        enabled=False,
-        disabled_reason="UND-03 /ES phase not yet built — force-close invariant required",
-        # Stage 1: adapter path only; enable + F3 force-close = Stage 2 (UND-03/TC-UND-02).
+        enabled=True,
+        disabled_reason=None,
+        # UND-03/F3 (Stage 2, this phase): /ES is NEVER held to settlement --
+        # American exercise would assign a futures position, breaking the
+        # cash-settlement/defined-risk contract (EOD-01). Mandatory pre-16:00
+        # force-close via the canonical close (CLS-01, initiator "eod"),
+        # default 15:55 ET -- see `application/force_close_scheduler.py`.
+        mandatory_eod_close=True,
+        default_eod_close_time=time(15, 55),
     ),
 }
 

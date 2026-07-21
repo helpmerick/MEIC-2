@@ -178,6 +178,19 @@ REGISTRY: tuple[WiringEntry, ...] = (
         constructed=lambda state: hasattr(state, "day_task_failed"),
         ticked=_task_check("day_supervisor"),
     ),
+    WiringEntry(
+        rule_ids=("UND-03", "UND-06", "EOD-02", "RSK-06"),
+        component="ForceCloseScheduler",
+        proof="app.state.force_close_scheduler is a real ForceCloseScheduler; "
+              "app.state.force_close_scheduler_task is alive. UND-03/F3 (v1.86 /ES "
+              "Stage 2): the pre-settlement force-close invariant this component "
+              "exists to guarantee is proven functionally (a real force-close, "
+              "initiator eod) by tests/application/test_tc_und_02.py -- this registry "
+              "entry proves only the structural half NFR-07 asks for.",
+        constructed=_isinstance_check(
+            "force_close_scheduler", "meic.application.force_close_scheduler:ForceCloseScheduler"),
+        ticked=_task_check("force_close_scheduler_task"),
+    ),
 )
 
 

@@ -222,3 +222,112 @@ def test_fee_model_from_config_overrides_only_what_is_given():
     model = fee_model_from_config({"clearing_fee": "0.20"})
     assert model.clearing_fee == D("0.20")
     assert model.commission_open == D("1.00")  # untouched default
+
+
+# --- UND-02/F3 (v1.86 /ES Stage 2): futures-option fees -----------------------
+#
+# tastytrade's FUTURES OPTIONS schedule is structurally different from the
+# index-option table above: commission bills on BOTH open AND close, on
+# EVERY leg (short or long alike) -- never short-open-only, never
+# close-free. Published figures (2026-07 schedule, F3 build): $1.25/contract
+# commission (open AND close) + $0.30 clearing + $0.01 NFA + the CME
+# per-product exchange fee (ESTIMATED pending exact verification on the
+# first real /ES trade, operator ruling).
+
+def test_es_futures_option_bills_commission_on_both_open_and_close():
+    """CRITICAL (UND-02/F3): unlike an index option, a /ES close is NOT
+    commission-free -- both `per_contract_fee(opening=True)` and
+    `per_contract_fee(opening=False)` bill the full futures-option total,
+    for EVERY role (short and long alike)."""
+    model = FeeModel()
+    expected = model.futures_commission + model.futures_clearing_fee \
+        + model.futures_nfa_fee + model.futures_exchange_fee("/ES")
+
+    for role in ("short", "long"):
+        opening_fee = model.per_contract_fee(role=role, opening=True, underlying="/ES")
+        closing_fee = model.per_contract_fee(role=role, opening=False, underlying="/ES")
+        assert opening_fee == expected, f"role={role} opening fee"
+        assert closing_fee == expected, f"role={role} closing fee"
+        assert opening_fee > 0 and closing_fee > 0
+        # both directions bill the SAME total -- neither is commission-free,
+        # the whole point of this test (a round trip pays commission TWICE).
+        assert opening_fee == closing_fee
+
+
+def test_es_futures_option_uses_the_published_component_figures():
+    model = FeeModel()
+    assert model.futures_commission == D("1.25")
+    assert model.futures_clearing_fee == D("0.30")
+    assert model.futures_nfa_fee == D("0.01")
+    assert model.futures_exchange_fee("/ES") > 0   # ESTIMATE, validate on first real trade
+
+
+def test_per_share_fee_divides_by_the_underlyings_own_multiplier_not_a_hardcoded_100():
+    """FIX 3 (the masked 50%-fee bug): `per_share_fee` must be the exact
+    inverse of the reporting layer's `* multiplier_of(entry)` re-scale, so
+    `per_share_fee(U) * multiplier(U) == per_contract_fee(U)` for EVERY
+    underlying. The original hardcoded ÷100 broke this for /ES (÷100 then ×50
+    = HALF). Asserting `per_contract_fee` alone (the tests above) could not
+    catch it -- this per-underlying divisor guard does."""
+    from meic.config.fee_model import FeeModel as _FM
+    from meic.domain.underlying import profile_for
+
+    model = _FM()
+    for underlying in ("SPX", "RUT", "/ES"):
+        multiplier = profile_for(underlying).multiplier
+        for role, opening in (("short", True), ("long", True),
+                              ("short", False), ("long", False)):
+            per_share = model.per_share_fee(role=role, opening=opening, underlying=underlying)
+            per_contract = model.per_contract_fee(role=role, opening=opening, underlying=underlying)
+            # per_share * multiplier must recover the real per-contract fee EXACTLY.
+            assert per_share * multiplier == per_contract, (
+                f"{underlying} {role} opening={opening}: "
+                f"{per_share} * {multiplier} != {per_contract}")
+    # /ES specifically: the divisor is 50, not 100 -- the direct guard on the
+    # exact regression (a ÷100 would make this per_share half of what it is).
+    es_ps = model.per_share_fee(role="short", opening=True, underlying="/ES")
+    assert es_ps == D("3.06") / D("50")
+    assert es_ps != D("3.06") / D("100")  # the halved-fee bug value, excluded
+
+
+def test_es_is_detected_as_a_futures_option_underlying_never_a_hardcoded_string_check():
+    model = FeeModel()
+    assert model.is_futures_option("/ES") is True
+    assert model.is_futures_option("SPX") is False
+    assert model.is_futures_option("RUT") is False
+
+
+def test_index_options_are_completely_unaffected_by_the_futures_fee_branch():
+    """Do NOT change index-option fee behaviour: SPX/RUT stay close-free,
+    commission still only on a sell-to-open short -- byte-identical to
+    before the /ES futures-option branch existed."""
+    model = FeeModel()
+    for underlying in ("SPX", "RUT"):
+        opening_short = model.per_contract_fee(role="short", opening=True, underlying=underlying)
+        expected_opening_short = (model.clearing_fee + model.regulatory_fee
+                                  + model.exchange_fee(underlying) + model.commission_open)
+        assert opening_short == expected_opening_short
+        # closing a short or long is commission-free for an index option,
+        # regardless of underlying -- clearing + regulatory + exchange only.
+        closing = model.per_contract_fee(role="short", opening=False, underlying=underlying)
+        assert closing == model.per_contract_fee(role="long", opening=False, underlying=underlying)
+        assert closing == model.clearing_fee + model.regulatory_fee + model.exchange_fee(underlying)
+
+
+def test_validate_fee_model_accepts_and_rejects_futures_fee_fields():
+    validate_fee_model({
+        "futures_commission": "1.25", "futures_clearing_fee": "0.30",
+        "futures_nfa_fee": "0.01", "futures_exchange_fees": {"/ES": "1.50"},
+    })  # must not raise
+    with pytest.raises(FeeModelRejected):
+        validate_fee_model({"futures_commission": "-1.25"})
+    with pytest.raises(FeeModelRejected):
+        validate_fee_model({"futures_exchange_fees": {"/ES": "-1.50"}})
+
+
+def test_fee_model_from_config_overrides_futures_fee_fields():
+    model = fee_model_from_config({"futures_commission": "2.00",
+                                   "futures_exchange_fees": {"/ES": "3.00"}})
+    assert model.futures_commission == D("2.00")
+    assert model.futures_exchange_fee("/ES") == D("3.00")
+    assert model.futures_clearing_fee == D("0.30")  # untouched default

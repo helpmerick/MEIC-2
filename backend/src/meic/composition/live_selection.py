@@ -54,6 +54,11 @@ class SelectionConfig:
     min_validated_strikes: int = 10
     contracts: int = 1                        # ENT-04 (v1.44): this row's own size
     underlying: str = "SPX"                   # UND-01 (v1.86): this row's own traded underlying
+    # UND-03/F3 (v1.86 /ES Stage 2): the row's PINNED eod_close_time as an
+    # "HH:MM" ET string (doc 06 §38), carried through to the Condor and
+    # journaled so the force-close scheduler honours a per-row override.
+    # None (every non-/ES row, and a /ES row taking its profile default).
+    eod_close_time: str | None = None
 
     @classmethod
     def for_entry(cls, entry, *, completeness_pct: Decimal = Decimal("90")) -> "SelectionConfig":
@@ -68,7 +73,14 @@ class SelectionConfig:
                    min_short_premium=entry.min_short_premium,
                    min_total_credit=entry.min_total_credit,
                    completeness_pct=completeness_pct, contracts=entry.contracts,
-                   underlying=entry.underlying)  # UND-01 (v1.86)
+                   underlying=entry.underlying,  # UND-01 (v1.86)
+                   # UND-03/F3 (v1.86): pin-at-Save close time as "HH:MM" ET.
+                   # `ResolvedEntry.eod_close_time` is a `datetime.time | None`
+                   # (schedule resolution already applied the profile default
+                   # for a /ES row that didn't override it); format to the
+                   # journal's "HH:MM" string here, None stays None.
+                   eod_close_time=(entry.eod_close_time.strftime("%H:%M")
+                                   if entry.eod_close_time is not None else None))
 
 
 def floor_candidates(snap: Any, config: SelectionConfig) -> dict:
@@ -429,4 +441,5 @@ class LiveCondorSelector:
             contracts=c.contracts,   # ENT-04 (v1.44): the ROW's size, not a global knob
             target_premium=c.target_premium,  # RPT-17 (v1.82): audit-only passthrough
             underlying=c.underlying,  # UND-01 (v1.86): the ROW's own traded underlying
+            eod_close_time=c.eod_close_time,  # UND-03/F3 (v1.86): the ROW's pinned close time
         ), None
