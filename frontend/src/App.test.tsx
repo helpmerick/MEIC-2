@@ -140,6 +140,30 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await waitFor(() => expect(screen.getByText(/flattened 2 entries/i)).toBeInTheDocument());
   });
 
+  // CLS-06/RSK-01a: a failed emergency flatten must NEVER read as a green
+  // success — it left positions open. The handler branches on the result.
+  it("Flatten all shows an ERROR toast when the backend reports flatten_failed", async () => {
+    vi.spyOn(api, "flatten").mockResolvedValue({ result: "flatten_failed", reason: "journal read failed" });
+    vi.spyOn(window, "prompt").mockReturnValue("FLATTEN");
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /flatten all/i }));
+
+    await waitFor(() => expect(screen.getByText(/flatten failed: journal read failed/i)).toBeInTheDocument());
+    expect(screen.queryByText(/^flattened 0 entr/i)).not.toBeInTheDocument();
+  });
+
+  it("Flatten all warns 'still open' when some entries did not fully close", async () => {
+    vi.spyOn(api, "flatten").mockResolvedValue(
+      { result: "flattened", entries: ["e1"], incomplete: [{ entry_id: "e2" }] });
+    vi.spyOn(window, "prompt").mockReturnValue("FLATTEN");
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: /flatten all/i }));
+
+    await waitFor(() => expect(screen.getByText(/flattened 1, but 1 still open/i)).toBeInTheDocument());
+  });
+
   // 2026-07-16 operator order (an INFORMED reversal of v1.76 — the operator
   // saw the "Removal was rejected" text and repeated the order): the drill's
   // visible trigger — the "Operational tools" disclosure AND the Outage-drill

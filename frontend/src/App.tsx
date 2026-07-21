@@ -126,7 +126,17 @@ export function App() {
     if (typed === null) return;
     try {
       const r = await api.flatten(typed);
-      flash(`Flattened ${r.entries?.length ?? 0} entr${(r.entries?.length ?? 0) === 1 ? "y" : "ies"}`, "ok");
+      const n = r.entries?.length ?? 0;
+      const nIncomplete = r.incomplete?.length ?? 0;
+      // CLS-06/RSK-01a: never render a failed or partial flatten as a clean
+      // success — a half-open book reported as flat is the money-risk here.
+      if (r.result === "flatten_failed") {
+        flash(`Flatten failed: ${r.reason ?? "unknown error"}`, "err");
+      } else if (nIncomplete > 0) {
+        flash(`Flattened ${n}, but ${nIncomplete} still open — click Flatten again`, "err");
+      } else {
+        flash(`Flattened ${n} entr${n === 1 ? "y" : "ies"}`, "ok");
+      }
       refresh();
     } catch (e) {
       flash(e instanceof ApiError && e.status === 400 ? "Flatten needs the typed FLATTEN confirmation"

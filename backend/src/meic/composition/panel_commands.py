@@ -19,6 +19,7 @@ unknowable, and a set/raise/lower request is rejected rather than guessed.
 from __future__ import annotations
 
 import itertools
+import logging
 from decimal import Decimal
 
 from meic.application.manual_close import FLATTEN_CONFIRMATION, ManualClose
@@ -28,6 +29,8 @@ from meic.domain import tpf as tpf_domain
 from meic.domain import tpt as tpt_domain
 from meic.domain.events import CloseIncomplete, ShortStopped
 from meic.domain.projection import EntryProjection, fold
+
+logger = logging.getLogger("meic.panel_commands")
 
 _SIDES = ("PUT", "CALL")
 
@@ -136,6 +139,20 @@ class PanelCommands:
         return await self.close_as(entry_id, "manual")
 
     async def close_as(self, entry_id: str, initiator: str) -> dict:
+        """CLS-06 close boundary (v1.85). `_close_as_inner` already reports every
+        MODELED failure structurally through its own inner handlers (cancel,
+        assemble, submit -> close_failed / close_partial). This wrapper is the
+        never-a-raw-500 BACKSTOP only for the UNMODELED escape: an unguarded
+        pre-action read (fold / _open_sides / the remainder filter), all of which
+        run BEFORE any broker submit, so `pre_submit` (position untouched) is the
+        accurate stage. TC-CLS-06: no raw 500 ever reaches the frontend."""
+        try:
+            return await self._close_as_inner(entry_id, initiator)
+        except Exception as exc:
+            logger.exception("CLS-06: close_as backstop caught unmodeled failure for entry %s", entry_id)
+            return {"result": "close_failed", "stage": "pre_submit", "reason": str(exc)}
+
+    async def _close_as_inner(self, entry_id: str, initiator: str) -> dict:
         """The ONE close path every PanelCommands caller uses (CLS-02):
         `manual` (the operator's Close button, UC-14), `take_profit` (the TPF
         floor monitor) and `take_profit_target` (the TPT target monitor, both
@@ -318,8 +335,17 @@ class PanelCommands:
             # for the remainder.
             return {"result": "close_partial", "stage": "in_flight", "reason": reason,
                     "sides_closed": sides_closed, "sides_remaining": sides_remaining}
-        self._clear_tpf(entry_id)
-        self._clear_tpt(entry_id)
+        # CLS-06: close SUCCEEDED and EntryClosed is journaled above. TPF/TPT
+        # cleanup is bookkeeping and must never fail the close -- but attempt BOTH
+        # independently and log a failure (do not swallow silently).
+        try:
+            self._clear_tpf(entry_id)
+        except Exception:
+            logger.exception("CLS-06: TPF cleanup failed after successful close of %s", entry_id)
+        try:
+            self._clear_tpt(entry_id)
+        except Exception:
+            logger.exception("CLS-06: TPT cleanup failed after successful close of %s", entry_id)
         return {"result": "closed", "initiator": initiator}
 
     def _cancel_service(self) -> ManualClose:
@@ -407,11 +433,28 @@ class PanelCommands:
         try:
             day = fold(self._comp.events)
             closed = []
+            incomplete = []
             for entry_id, e in day.entries.items():
                 if not e.close_initiator and _open_sides(e):
-                    await self.close(entry_id)
-                    closed.append(entry_id)
-            return {"result": "flattened", "entries": closed}
+                    res = await self.close(entry_id)
+                    if res.get("result") in ("closed", "already_closed"):
+                        closed.append(entry_id)
+                    else:
+                        # RSK-01a/CLS-06: an entry that did NOT fully close must be
+                        # surfaced, never counted as flattened — a half-open book
+                        # reported as flat is the partial-truth risk this prevents.
+                        incomplete.append({"entry_id": entry_id, **res})
+            return {"result": "flattened", "entries": closed, "incomplete": incomplete}
+        except Exception as exc:
+            # CLS-06 / RSK-01a: per-entry closes already report structurally
+            # (self.close routes through the close_as backstop); this catches a
+            # PRE-loop failure such as the journal read, so flatten never leaks a
+            # raw 500 either. NOTE: `flatten_failed` (result string) and
+            # `incomplete` (per-entry not-fully-closed list on the success path
+            # above) are both new response elements (flag for TC-FLT-01
+            # ratification).
+            logger.exception("CLS-06: flatten backstop caught pre-loop failure")
+            return {"result": "flatten_failed", "reason": str(exc)}
         finally:
             self._flatten_in_progress = False
 

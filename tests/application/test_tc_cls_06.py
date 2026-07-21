@@ -5,6 +5,7 @@ REAL `/close/{entry_id}` endpoint (create_app + PanelCommands +
 PaperComposition) so the whole boundary — not just PanelCommands.close_as in
 isolation — is exercised, exactly as the incident was."""
 import asyncio
+import logging
 from datetime import datetime
 from decimal import Decimal as D
 
@@ -12,7 +13,9 @@ from fastapi.testclient import TestClient
 
 from meic.adapters.api.app import create_app
 from meic.application.cancel_taxonomy import ReplaceFilled
+from meic.application.manual_close import FLATTEN_CONFIRMATION
 from meic.composition.paper import PaperComposition
+import meic.composition.panel_commands as panel_commands_module
 from meic.composition.panel_commands import PanelCommands
 from meic.domain.events import CloseIncomplete, CondorFilled, EntryClosed, FilledLeg, ShortStopped, SideClosed
 from meic.domain.projection import fold
@@ -303,3 +306,101 @@ def test_tc_cls_06_baseline_and_existing_results_byte_identical():
     resp3 = _http_close(comp, entry_id="nope")
     assert resp3.status_code == 200
     assert resp3.json() == {"result": "unknown_entry"}
+
+
+def test_tc_cls_06_unmodeled_pre_action_raise_hits_close_as_backstop(monkeypatch, caplog):
+    """CLS-06: an UNMODELED pre-action failure -- `fold()` itself raising,
+    before `_close_as_inner`'s own try/except blocks even begin -- must still
+    surface over the REAL HTTP boundary as a 200 `close_failed/pre_submit`
+    JSON body (never the raw 500 the incident produced), the position must be
+    untouched (no new events land in the journal), AND the backstop must LOG
+    the swallowed traceback at ERROR level (observability, not silent)."""
+    comp = _seed_protected_entry()
+
+    def _boom_fold(events):
+        raise RuntimeError("unmodeled projection failure")
+    monkeypatch.setattr(panel_commands_module, "fold", _boom_fold)
+
+    events_before = len(list(comp.events))
+    with caplog.at_level(logging.ERROR, logger="meic.panel_commands"):
+        resp = _http_close(comp)  # drives the real /close endpoint via TestClient
+
+    assert resp.status_code == 200  # proves: no raw 500 reaches the frontend
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["result"] == "close_failed"
+    assert body["stage"] == "pre_submit"
+    assert isinstance(body["reason"], str) and body["reason"]
+    assert len(list(comp.events)) == events_before
+
+    # FIX 1: the backstop logged the traceback at ERROR level, not silently.
+    assert any(rec.levelno == logging.ERROR and rec.name == "meic.panel_commands"
+               for rec in caplog.records)
+
+
+def test_tc_cls_06_post_success_cleanup_failure_still_reports_closed(monkeypatch):
+    """CLS-06: TPF/TPT cleanup runs AFTER the close SUCCEEDED and EntryClosed
+    is already journaled -- a raise there (pure bookkeeping) must NEVER turn a
+    completed close into a reported failure. FIX 2: the two clears are attempted
+    INDEPENDENTLY, so a raising `_clear_tpf` must NOT skip `_clear_tpt`."""
+    comp = _seed_protected_entry()
+    cmd = PanelCommands(comp)
+
+    def _boom_clear_tpf(entry_id):
+        raise RuntimeError("tpf cleanup blew up")
+    tpt_calls = []
+
+    def _spy_clear_tpt(entry_id):
+        tpt_calls.append(entry_id)
+    monkeypatch.setattr(cmd, "_clear_tpf", _boom_clear_tpf)
+    monkeypatch.setattr(cmd, "_clear_tpt", _spy_clear_tpt)
+
+    result = asyncio.run(cmd.close(ENTRY_ID))
+
+    assert result == {"result": "closed", "initiator": "manual"}
+    assert any(isinstance(e, EntryClosed) for e in comp.events)
+    # FIX 2: TPT cleanup STILL ran even though TPF cleanup raised first.
+    assert tpt_calls == [ENTRY_ID]
+
+
+def test_tc_cls_06_flatten_pre_loop_failure_reports_flatten_failed(monkeypatch):
+    """CLS-06/RSK-01a: a PRE-loop failure inside `flatten` (e.g. the journal
+    read itself, `fold(self._comp.events)`) must report `flatten_failed`
+    rather than raise, and `flatten_in_progress` must still be cleared by the
+    `finally` afterward."""
+    comp = _seed_protected_entry()
+    cmd = PanelCommands(comp)
+
+    def _boom_fold(events):
+        raise RuntimeError("journal read failed")
+    monkeypatch.setattr(panel_commands_module, "fold", _boom_fold)
+
+    result = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+
+    assert result["result"] == "flatten_failed"
+    assert isinstance(result["reason"], str) and result["reason"]
+    assert cmd.flatten_in_progress is False
+
+
+def test_tc_cls_06_flatten_surfaces_per_entry_incomplete_not_as_flattened():
+    """CLS-06/RSK-01a: an entry whose close does NOT fully complete during a
+    Flatten All must be surfaced in `incomplete` and NEVER counted in
+    `entries` -- a half-open book reported as flat is the partial-truth risk
+    this exists to prevent. Here the single open entry's close fails pre-action
+    (`working_orders()` raises inside assemble_close_inputs), so its close
+    returns close_failed; the flatten result must still be `flattened` with an
+    EMPTY `entries` and that entry named in `incomplete`."""
+    comp = _seed_protected_entry()
+    comp.broker = _BrokerRaisesOnMethod(comp.broker, "working_orders")
+    cmd = PanelCommands(comp)
+
+    result = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+
+    assert result["result"] == "flattened"
+    assert result["entries"] == []  # NOT counted as flattened
+    assert len(result["incomplete"]) == 1
+    inc = result["incomplete"][0]
+    assert inc["entry_id"] == ENTRY_ID
+    assert inc["result"] == "close_failed"
+    assert inc["stage"] == "pre_submit"
+    assert cmd.flatten_in_progress is False

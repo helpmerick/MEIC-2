@@ -123,7 +123,11 @@ export const api = {
   clearTpt: (entryId: string) =>
     post<{ result: string; entry_id: string }>(`/entries/${encodeURIComponent(entryId)}/tpt/clear`),
   flatten: (confirmation: string) =>
-    post<{ result: string; entries?: string[] }>("/flatten", { confirmation }),
+    // CLS-06/RSK-01a: `result` may be "flatten_failed" (pre-loop failure, with
+    // `reason`), and `incomplete` lists any entry that did NOT fully close —
+    // both must be surfaced, never rendered as a clean flatten.
+    post<{ result: string; entries?: string[]; reason?: string;
+           incomplete?: { entry_id: string }[] }>("/flatten", { confirmation }),
   // UC-12 v1.56: LIVE mode requires a typed DRILL confirmation; PAPER needs
   // none (the caller passes "" and the backend simply ignores it there).
   outageDrill: (confirmation: string = "") =>
