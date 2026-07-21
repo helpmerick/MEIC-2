@@ -1,0 +1,28 @@
+# MEIC bot — LIVE panel (real broker/account; boots DISARMED).
+#
+#   docker compose -f docker-compose.live.yml up -d --build   # build + run
+#   docker compose -f docker-compose.live.yml logs -f         # watch
+#   docker compose -f docker-compose.live.yml down            # stop (volume persists)
+#
+# Secrets come from .env at RUNTIME (env_file) — never baked into the image.
+# Port published to host 127.0.0.1 ONLY (NFR-06). Durable REC-07 state lives in
+# the external named volume `meic-live-data` (seeded from the pre-Docker journal).
+
+services:
+  meic-live:
+    build:
+      context: .
+      dockerfile: Dockerfile.live
+    image: meic-bot-live:latest
+    container_name: meic-panel-live
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8010:8000"    # NFR-06: localhost only, never 0.0.0.0
+    volumes:
+      - meic-live-data:/data
+    restart: unless-stopped
+
+volumes:
+  meic-live-data:
+    external: true

@@ -1,0 +1,11 @@
+# Live-mode image deps = the paper runtime set PLUS the broker SDK.
+# (The paper image deliberately omits tastytrade; live_app needs it.)
+#
+# EXACT pins to reproduce the proven bare-metal .venv. Do NOT loosen: tastytrade
+# 13.2.0 swaps its HTTP dep from `httpx` to `httpx2` (import name httpx2), which
+# does NOT satisfy the app's `import httpx` in calendar_sources — the container
+# crash-loops with ModuleNotFoundError: httpx. Pin the SDK and declare the real
+# httpx explicitly so a resolver drift can never silently change the broker path.
+-r requirements-runtime.txt
+tastytrade==13.0.0  # broker SDK — exact proven version (13.2.0 pulls httpx2, breaks httpx)
+httpx==0.28.1       # real httpx — app calendar_sources (DAY-01 BEA/BLS/FOMC) imports it
