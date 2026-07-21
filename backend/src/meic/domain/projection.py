@@ -85,6 +85,12 @@ class EntryProjection:
     # entry is report-tagged blackout_overridden". False for every scheduled
     # entry and every pre-v1.71 fill.
     blackout_overridden: bool = False
+    # UND-01 (v1.86, additive): the entry's traded underlying, folded straight
+    # off `CondorFilled.underlying` (journaled at fill time). Default "SPX"
+    # replays every pre-v1.86 log entry byte-identical -- the reporting layer
+    # (folds.py/day_table.py) resolves this to a profile multiplier/fee
+    # lookup instead of assuming SPX unconditionally.
+    underlying: str = "SPX"
 
     @property
     def pnl(self) -> Decimal:
@@ -167,7 +173,8 @@ def apply(state: DayState, event: Event) -> DayState:
             short_premium=e.short_premium + event.short_premium,
             placed_at=event.at, legs=event.legs,
             put_floor=event.put_floor, call_floor=event.call_floor,
-            blackout_overridden=event.blackout_overridden)))
+            blackout_overridden=event.blackout_overridden,
+            underlying=event.underlying)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(
@@ -219,6 +226,19 @@ def fold(events: list[Event]) -> DayState:
     for event in events:
         state = apply(state, event)
     return state
+
+
+def entry_underlying(events: list[Event], entry_id: str, default: str = "SPX") -> str:
+    """UND-01/UND-02 (v1.86): the JOURNALED underlying of one entry, folded
+    from its `CondorFilled.underlying` -- the one replay-correct source for
+    per-entry multiplier/fee resolution on the exit paths (PNL-01: a RUT
+    leg's closing fee must price against RUT's exchange fee, never SPX's).
+    `default` ("SPX") covers an entry absent from the fold (never filled) and
+    every pre-v1.86 log entry -- byte-identical to before this existed."""
+    entry = fold(events).entries.get(entry_id)
+    if entry is None:
+        return default
+    return getattr(entry, "underlying", default) or default
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ from decimal import Decimal
 from meic.config.fee_model import FeeModel
 from meic.domain.events import ShortStopped, WatchdogEscalated
 from meic.domain.fees import fee_for_leg
+from meic.domain.projection import entry_underlying
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import marketable_close, right_of
@@ -145,9 +146,11 @@ class StopWatchdog:
         # intent.
         actual = await self._await_fill_price(order_id)
         fill_price = actual if actual is not None else ask
-        # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
-        # (see domain/fees.py) -- never scaled by contracts here.
-        fee = fee_for_leg(self.fee_model, role="short", opening=False)
+        # PNL-01/UND-02 (v1.86): closing a short (buy-to-close) --
+        # commission-free. Per-share (see domain/fees.py) -- never scaled by
+        # contracts here; priced by THIS entry's JOURNALED underlying.
+        fee = fee_for_leg(self.fee_model, role="short", opening=False,
+                          underlying=entry_underlying(self.events, entry_id))
         at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
         self.events.append(ShortStopped(
             entry_id=entry_id, side=side, fill=fill_price, slippage=Decimal("0"),

@@ -26,21 +26,29 @@ from typing import Iterable
 from meic.config.fee_model import FeeModel
 
 
-def fee_for_leg(model: FeeModel, *, role: str, opening: bool) -> Decimal:
+def fee_for_leg(model: FeeModel, *, role: str, opening: bool, underlying: str | None = None) -> Decimal:
     """THE fee function. The PER-SHARE fee for filling one leg.
 
     `role` is "short" | "long"; `opening` is True for an entry fill, False
     for any closing fill (stop buyback, watchdog escalation, decay buyback,
-    LEX sale, manual close)."""
-    return model.per_share_fee(role=role, opening=opening)
+    LEX sale, manual close).
+
+    UND-02 (v1.86): `underlying` is the ENTRY's own traded underlying (e.g.
+    "SPX" | "RUT"), threaded to `FeeModel.per_share_fee`'s exchange-fee
+    table lookup (RUT $0.18 vs SPX $0.60). `None` (every pre-v1.86 caller,
+    and any call site not yet threading a per-entry underlying) falls back
+    to `model.underlying` (SPX) -- byte-identical to before this parameter
+    existed."""
+    return model.per_share_fee(role=role, opening=opening, underlying=underlying)
 
 
-def fee_for_legs(model: FeeModel, legs: Iterable, *, opening: bool) -> Decimal:
+def fee_for_legs(model: FeeModel, legs: Iterable, *, opening: bool, underlying: str | None = None) -> Decimal:
     """The SAME function, summed over multiple legs -- `CondorFilled`'s
     four-leg entry fill (two different roles, hence two different rates).
     `legs` are FilledLeg-shaped (`.role`); no new computation, just
-    `fee_for_leg` applied per leg and totalled."""
+    `fee_for_leg` applied per leg and totalled. `underlying` (UND-02):
+    see `fee_for_leg` above."""
     return sum(
-        (fee_for_leg(model, role=leg.role, opening=opening) for leg in legs),
+        (fee_for_leg(model, role=leg.role, opening=opening, underlying=underlying) for leg in legs),
         Decimal("0"),
     )

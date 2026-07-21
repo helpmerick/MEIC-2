@@ -28,6 +28,7 @@ from meic.domain import tpt as tpt_domain
 from meic.domain.events import CondorFilled, EntrySkipped
 from meic.domain.projection import day_report, fold
 from meic.domain.schedule import ScheduleDefaults, resolve, validate_entry
+from meic.domain.underlying import profile_for
 from meic.reporting.folds import entry_day
 
 
@@ -647,6 +648,9 @@ def create_app(
             card = {
                 "entry_id": e.entry_id,
                 "status": e.status,
+                # UND-01 (v1.86): the entry's traded underlying -- the UI
+                # shows a small tag when this is not "SPX" (default).
+                "underlying": e.underlying,
                 "net_credit": str(e.net_credit),
                 "pnl": str(e.pnl),
                 "sides_stopped": list(e.sides_stopped),
@@ -676,7 +680,12 @@ def create_app(
                 # filled (v1.52 rule) — contracts read off the recorded short
                 # leg qty, same source `_live_pnl_enricher` uses.
                 contracts = next((leg.qty for leg in e.legs if leg.role == "short"), 1)
-                fb = tpt_domain.armed_feedback(int(target_level), e.net_credit, contracts=contracts)
+                # UND-02 (v1.86): the entry's OWN profile multiplier, not a
+                # hardcoded ×100.
+                _profile = profile_for(e.underlying)
+                _multiplier = _profile.multiplier if _profile is not None else Decimal("100")
+                fb = tpt_domain.armed_feedback(int(target_level), e.net_credit, contracts=contracts,
+                                               multiplier=_multiplier)
                 card["tpt_feedback"] = {"debit": str(fb["debit"]), "keep": str(fb["keep"])}
             cards.append(card)
         cards.sort(key=lambda c: c["entry_id"])

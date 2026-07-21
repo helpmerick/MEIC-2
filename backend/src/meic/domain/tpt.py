@@ -39,15 +39,22 @@ def reached(target: Decimal, current_profit: Decimal) -> bool:
     return current_profit >= target
 
 
-def armed_feedback(level: int, net_credit: Decimal, *, contracts: int = 1) -> dict[str, Decimal]:
+def armed_feedback(
+    level: int, net_credit: Decimal, *, contracts: int = 1,
+    multiplier: Decimal = Decimal("100"),
+) -> dict[str, Decimal]:
     """TPT-06 (operator-confirmed format): "Exit armed: TP X% — closes at
     debit <= $D (keep >= $P)" where D = net credit * (1 - X%) (the per-spread
-    debit price) and P = net credit * X% * 100 * contracts (real dollars, the
-    x100 options multiplier). Pinned vector: credit 4.00, target 60%, 1
-    contract => debit <= 1.60, keep >= $240."""
+    debit price) and P = net credit * X% * multiplier * contracts (real
+    dollars, the profile's options multiplier). Pinned vector: credit 4.00,
+    target 60%, 1 contract, multiplier 100 => debit <= 1.60, keep >= $240.
+
+    UND-02 (v1.86): `multiplier` is the entry's underlying profile multiplier
+    (SPX/RUT ×100, /ES ×50) — default 100 keeps every pre-v1.86 caller
+    byte-identical."""
     if level not in ALL_LEVELS:
         raise ValueError(f"invalid TPT level {level}: valid set is {ALL_LEVELS}")
     pct = Decimal(level) / 100
     debit = net_credit * (1 - pct)
-    keep = net_credit * pct * 100 * contracts
+    keep = net_credit * pct * multiplier * contracts
     return {"debit": debit, "keep": keep}

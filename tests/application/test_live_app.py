@@ -1682,3 +1682,146 @@ def test_reconcile_endpoint_surfaces_an_unreachable_broker_rather_than_swallowin
 
     assert r.status_code == 200
     assert r.json()["status"] == "unreachable"
+
+
+# --- UND-01/UND-04 (v1.86) per-underlying chain-snapshot registry (_Snapshots) --
+# FIX-7 (sync only in take(), lookups are plain dict reads), FIX-8 (per-stream
+# outage isolation), FIX-9 (direct registry coverage). The registry is a local
+# class inside `_wire_live_day`; it is reached through `app.state.chain_snapshots`
+# (the same handle test_warmup... above drives), with `snapshot_chain` faked per
+# option-root -- no live connection.
+
+def _und_snaps_app(monkeypatch, tmp_path, *, chain_by_root):
+    """Build a live app with `snapshot_chain` faked per option-root
+    ("SPXW"/"RUTW"); `chain_by_root(root)` returns a snapshot (or raises, to
+    drive the FIX-8 isolation path)."""
+    from types import SimpleNamespace
+
+    from meic.adapters.api.server import live_app
+
+    _cert_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MEIC_USER_PASSWORD", "panel-secret")
+    app = live_app()
+
+    async def _fake_snapshot_chain(session, *, underlying="SPXW", index_symbol="SPX",
+                                   now=None, **kw):
+        return chain_by_root(underlying)
+
+    import meic.adapters.dxlink.chain_snapshot as _cs_mod
+    monkeypatch.setattr(_cs_mod, "snapshot_chain", _fake_snapshot_chain)
+    return app
+
+
+def _healthy_snap(root):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(spot=Decimal("6000"), stale=False)
+
+
+def test_tc_und_01_snapshots_wanted_and_sync_track_schedule_and_open_entries(monkeypatch, tmp_path):
+    """FIX-9: `_wanted()` = {armed schedule rows' underlyings} ∪ {open entries'
+    underlyings}, unknown-profile dropped, empty -> {SPX}; `sync()` builds the
+    missing streams and drops the no-longer-wanted."""
+    from meic.domain.events import CondorFilled, FilledLeg
+
+    app = _und_snaps_app(monkeypatch, tmp_path, chain_by_root=_healthy_snap)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+
+    # empty schedule, nothing open -> the {SPX} legacy-compat fallback
+    comp.state.entry_schedule = []
+    assert snaps._wanted() == {"SPX"}
+
+    # armed rows carry their own underlyings; an unknown ("XSP") is dropped
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "RUT"},
+                                 {"time": "11:00", "underlying": "SPX"},
+                                 {"time": "12:00", "underlying": "XSP"}]
+    assert snaps._wanted() == {"RUT", "SPX"}
+
+    # an OPEN RUT entry keeps RUT wanted even without an armed RUT row
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "SPX"}]
+    comp.events.append(CondorFilled(
+        entry_id="2026-07-21#1", net_credit=Decimal("4.00"), underlying="RUT",
+        legs=(FilledLeg(symbol="RUTW  260721P02250000", right="P", role="short", qty=1),)))
+    assert snaps._wanted() == {"SPX", "RUT"}
+
+    # sync() builds both; then drop RUT once neither armed nor open
+    snaps.sync()
+    assert set(snaps._streams) == {"SPX", "RUT"}
+    comp.events.clear()
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "SPX"}]
+    snaps.sync()
+    assert set(snaps._streams) == {"SPX"}
+
+
+def test_tc_und_01_snapshots_lookups_do_not_sync_and_fail_closed(monkeypatch, tmp_path):
+    """FIX-7: a LOOKUP never folds the journal / syncs -- it is a plain dict
+    read. Before the first probe's take(), a wanted underlying's stream is not
+    built yet, so the lookup fail-closes (None) rather than forcing a sync;
+    the stream appears at the next take()."""
+    import asyncio
+
+    app = _und_snaps_app(monkeypatch, tmp_path, chain_by_root=_healthy_snap)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "RUT"}]
+    # A lookup ahead of any take(): fail-closed, and it did NOT build/sync.
+    assert snaps.snapshot_for("RUT") is None
+    assert snaps.provider_for("RUT") is None
+    assert set(snaps._streams) == set()
+
+    # The probe builds it (the ONE sync), and the lookup now resolves.
+    asyncio.run(snaps.take())
+    assert "RUT" in snaps._streams
+    assert snaps.provider_for("RUT") is not None
+    assert snaps.snapshot_for("RUT") is not None
+
+
+def test_tc_und_01_snapshots_take_isolates_a_raising_stream(monkeypatch, tmp_path):
+    """FIX-8: one stream's snapshot_chain raising (a transient RUTW failure)
+    marks ONLY that stream stale, alerts (RSK-06 warning, naming the
+    underlying), and the loop CONTINUES so SPX still refreshes -- a RUT-only
+    data problem never takes SPX's per-underlying read surfaces down."""
+    import asyncio
+
+    def chain(root):
+        if root == "RUTW":
+            raise RuntimeError("transient RUTW feed error")
+        return _healthy_snap(root)
+
+    app = _und_snaps_app(monkeypatch, tmp_path, chain_by_root=chain)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "SPX"},
+                                 {"time": "11:00", "underlying": "RUT"}]
+    asyncio.run(snaps.take())
+
+    # SPX refreshed despite RUT's failure; RUT isolated stale with no snapshot.
+    assert snaps.snapshot_for("SPX") is not None
+    assert snaps._streams["SPX"].stale is False
+    assert snaps._streams["RUT"].stale is True
+    assert snaps.snapshot_for("RUT") is None
+
+    # a warning alert naming RUT reached the operator (RSK-06)
+    assert any(a["level"] == "warning" and "RUT" in a["message"]
+               for a in comp.alerts.recent()), "the RUT outage must alert, naming the underlying"
+
+
+def test_tc_und_01_snapshots_legacy_last_stale_shim_maps_to_default_stream(monkeypatch, tmp_path):
+    """FIX-9: the legacy `.last`/`.stale` surface (read AND stubbed by every
+    pre-v1.86 consumer/test) maps to the SPX/default stream -- so
+    `snaps.last = fake; snaps.stale = False` keeps working, and a
+    per-underlying `snapshot_for("SPX")` sees the same object."""
+    from types import SimpleNamespace
+
+    app = _und_snaps_app(monkeypatch, tmp_path, chain_by_root=_healthy_snap)
+    snaps = app.state.chain_snapshots
+
+    fake = SimpleNamespace(spot=Decimal("6000"), stale=False)
+    snaps.stale = False
+    snaps.last = fake
+    assert snaps.last is fake
+    assert snaps.stale is False                     # only the default SPX stream, not stale
+    assert snaps.snapshot_for("SPX") is fake        # same object via the per-underlying seam

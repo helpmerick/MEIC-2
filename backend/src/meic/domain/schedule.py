@@ -18,6 +18,8 @@ from datetime import time, timedelta
 from decimal import Decimal
 from typing import Iterable
 
+from .underlying import profile_for
+
 STOP_PCT_SET = frozenset(range(95, 305, 5))          # {95,100,…,300} exactly (STP-02)
 SELECTABLE_STOP_BASES = ("total_credit", "short_premium")  # per_side gated (STP-02d)
 STRIKE_METHODS = ("premium", "delta")
@@ -37,6 +39,7 @@ class ScheduleDefaults:
     probe_down_max: int = 25
     strike_method: str = "premium"
     short_delta_target: Decimal = Decimal("0.10")
+    underlying: str = "SPX"          # UND-01 (v1.86): row default -- behaviour byte-identical when unset
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class EntrySpec:
     probe_down_max: int | None = None
     strike_method: str | None = None
     short_delta_target: Decimal | None = None
+    underlying: str | None = None    # UND-01 (v1.86): pin-at-Save per-row override, doc 06 §37
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ class ResolvedEntry:
     probe_down_max: int
     strike_method: str
     short_delta_target: Decimal
+    underlying: str          # UND-01 (v1.86)
 
 
 @dataclass(frozen=True)
@@ -84,7 +89,7 @@ class ScheduleError:
 _OVERRIDABLE = (
     "contracts", "target_premium", "wing_width", "stop_loss_pct", "stop_basis",
     "stop_rebate_markup", "min_short_premium", "min_total_credit",
-    "probe_down_max", "strike_method", "short_delta_target",
+    "probe_down_max", "strike_method", "short_delta_target", "underlying",
 )
 
 
@@ -135,6 +140,17 @@ def validate_entry(e: ResolvedEntry, index: int) -> list[ScheduleError]:
         bad("strike_method", "not_in_set")
     if not Decimal("0.03") <= e.short_delta_target <= Decimal("0.30"):    # STK-02
         bad("short_delta_target", "out_of_range")
+    # UND-01 (v1.86): an unknown or unverified underlying is REFUSED, never
+    # guessed. `profile_for` returns None for a name that matches no PROFILE
+    # at all ("XSP") -- refused with the generic reason. A KNOWN but DISABLED
+    # profile ("/ES" this phase) is refused with ITS OWN `disabled_reason`,
+    # which names the pending UND-03 phase -- never a second, drifting reason
+    # string invented here.
+    profile = profile_for(e.underlying)
+    if profile is None:
+        bad("underlying", "unknown_or_unverified_underlying")
+    elif not profile.enabled:
+        bad("underlying", profile.disabled_reason or "unknown_or_unverified_underlying")
     return errs
 
 

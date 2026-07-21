@@ -137,10 +137,14 @@ function MarkupHint({ row, index }: { row: ScheduleRow; index: number }) {
   const val = normalizeMoneyInput(raw);
   if (!(Number(val) > 0)) return null;
   const contracts = Number(row.contracts) || 1;
+  // UND-02 (v1.86): the row's OWN profile multiplier, server-supplied
+  // (never decided here, UI-03) -- default 100 for a row not yet round-
+  // tripped through Save (a brand-new row carries no `multiplier` field yet).
+  const multiplier = Number(row.multiplier) || 100;
   const sentence = markupTooltip(row);
   return (
     <span className="time-hint" data-testid={`markup-hint-${index}`}>
-      worst case +${stopRebateMarkupWorstCase(val, contracts)}
+      worst case +${stopRebateMarkupWorstCase(val, contracts, multiplier)}
       {sentence && (
         <Tooltip
           id={markupTooltipId(index)}
@@ -203,6 +207,52 @@ export function SchedulePanel({
 
   const patch = (i: number, field: keyof ScheduleRow, value: string) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+
+  // UND-01/UND-02 (v1.86): switching the Underlying dropdown on a NEW
+  // (unsaved — no durable id yet) row re-prefills its untouched cells from
+  // the SERVER-owned per-profile defaults (`view.prefills`; UI-03: the
+  // frontend never decides these numbers). A cell the operator already
+  // typed into (non-empty and not the OLD profile's own prefill) is left
+  // alone; a SAVED row (has an id) only ever changes its `underlying` —
+  // pin-at-Save (v1.47) means saved values never retro-change.
+  const changeUnderlying = (i: number, next: string) =>
+    setRows((rs) => rs.map((r, j) => {
+      if (j !== i) return r;
+      const updated: ScheduleRow = { ...r, underlying: next };
+      const prefills = view?.prefills;
+      if (r.id == null && prefills) {
+        const prev = prefills[r.underlying || "SPX"];
+        const to = prefills[next];
+        if (to && prev) {
+          // Re-prefill EVERY field the prefills map carries (harmless while
+          // RUT == SPX, but it will silently DESYNC once RUT values diverge
+          // -- close it now). A cell the operator TYPED a NON-DEFAULT value
+          // into (differs from the OLD profile's own prefill AND is present)
+          // is left alone; a blank cell or one still showing the old
+          // default adopts the NEW profile's default. This pins the whole
+          // profile onto a NEW row so a diverged RUT default never silently
+          // inherits the SPX global. A SAVED row (has an id) never reaches
+          // here -- pin-at-Save (v1.47) means its values never retro-change.
+          const keepsTyped = (cell: string | "" | undefined, prevDefault: string) =>
+            !!cell && cell !== prevDefault;
+          const adoptStr = (
+            field: "target_premium" | "wing_width" | "min_short_premium" | "min_total_credit",
+          ) => {
+            if (!keepsTyped(r[field] as string | "" | undefined, prev[field])) {
+              updated[field] = to[field];
+            }
+          };
+          adoptStr("target_premium");
+          adoptStr("wing_width");
+          adoptStr("min_short_premium");
+          adoptStr("min_total_credit");
+          const probe = r.probe_down_max;
+          const keptProbe = probe !== undefined && probe !== "" && probe !== prev.probe_down_max;
+          if (!keptProbe) updated.probe_down_max = to.probe_down_max;
+        }
+      }
+      return updated;
+    }));
 
   async function save() {
     setErrors([]);
@@ -268,6 +318,7 @@ export function SchedulePanel({
               {/* row counter (operator request 2026-07-12): 1..N down the left */}
               <th className="num rownum-head" aria-label="row number">#</th>
               <th className="num">Time (ET)</th>
+              <th className="num">Underlying</th>
               <th className="num">Target $</th>
               <th className="num">Width</th>
               <th className="num">Stop %</th>
@@ -301,6 +352,23 @@ export function SchedulePanel({
                     }
                   />
                   <TimeHint value={row.time} />
+                </td>
+                <td className="cell-num" data-label="Underlying">
+                  {/* UND-01 (v1.86): SPX default, RUT selectable, /ES disabled
+                      this phase (UND-03 not yet built) -- the backend, never
+                      this select, decides what an underlying MEANS (UI-03);
+                      this only offers the choice and shows back what the
+                      server accepted. */}
+                  <select
+                    aria-label={`underlying ${i + 1}`}
+                    value={row.underlying || "SPX"}
+                    onChange={(e) => changeUnderlying(i, e.target.value)}
+                    className={errorFor(rowErrors, i, "underlying") ? "invalid" : ""}
+                  >
+                    <option value="SPX">SPX</option>
+                    <option value="RUT">RUT</option>
+                    <option value="/ES" disabled title="coming in the /ES phase">/ES</option>
+                  </select>
                 </td>
                 <td className="cell-num" data-label="Target $">
                   <input

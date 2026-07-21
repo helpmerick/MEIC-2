@@ -23,6 +23,17 @@ from meic.application.order_intent import OrderIntent
 from meic.config.fee_model import FeeModel
 from meic.domain.fees import fee_for_leg
 from meic.domain.sim_fill import limit_fills, stop_fill_price, stop_triggered
+from meic.domain.underlying import profile_by_root
+
+# UND-02 (v1.86): the dollar multiplier for one `OrderIntent`, resolved from
+# its OCC option ROOT ("SPXW"/"RUTW") via the reverse profile lookup. An
+# intent whose root matches no known profile (should never reach the
+# simulator -- UND-01 validation refuses an unverified underlying long
+# before an entry fires) falls back to the SPX multiplier, ×100, byte-
+# identical to every pre-v1.86 call site below.
+def _multiplier_for(intent: OrderIntent) -> Decimal:
+    profile = profile_by_root(intent.underlying)
+    return profile.multiplier if profile is not None else Decimal("100")
 
 
 @dataclass
@@ -58,16 +69,22 @@ class SimLedger:
         return cls(cash=Decimal(d["cash"]), _margin_held=Decimal(d["margin_held"]))
 
 
-def spread_margin(width: Decimal, net_credit: Decimal, *, contracts: int = 1) -> Decimal:
-    """SIM-04 / RSK-04: SPX spread requirement = (width − credit) × 100 × qty,
-    the worse of the two sides (only one can settle ITM)."""
-    return max(Decimal("0"), (width - net_credit)) * 100 * contracts
+def spread_margin(
+    width: Decimal, net_credit: Decimal, *, contracts: int = 1,
+    multiplier: Decimal = Decimal("100"),
+) -> Decimal:
+    """SIM-04 / RSK-04: spread requirement = (width − credit) × multiplier ×
+    qty, the worse of the two sides (only one can settle ITM). UND-02
+    (v1.86): `multiplier` is the traded underlying's profile multiplier --
+    default 100 (SPX/RUT) keeps every pre-v1.86 caller byte-identical."""
+    return max(Decimal("0"), (width - net_credit)) * multiplier * contracts
 
 
 def condor_margin(intent: OrderIntent) -> Decimal | None:
     """SIM-04: the worst-case requirement of an opening condor, derived from the
     intent itself. The strikes are right there — a separate `margin_req` key
-    would be a second source of truth (and a second dialect)."""
+    would be a second source of truth (and a second dialect). UND-02: priced
+    at the intent's OWN underlying multiplier (`_multiplier_for`)."""
     if intent.kind != "iron_condor" or intent.price is None:
         return None
     puts = sorted(l.strike for l in intent.legs if l.right == "P")
@@ -75,7 +92,7 @@ def condor_margin(intent: OrderIntent) -> Decimal | None:
     if len(puts) != 2 or len(calls) != 2:
         return None
     width = max(puts[1] - puts[0], calls[1] - calls[0])
-    return spread_margin(width, intent.price, contracts=intent.contracts)
+    return spread_margin(width, intent.price, contracts=intent.contracts, multiplier=_multiplier_for(intent))
 
 
 @dataclass
@@ -140,7 +157,8 @@ class SimulatedBroker:
             o.status, o.fill_price = "FILLED", natural
             # Cash scales with size: a 2-contract condor collects twice the credit.
             self._settle(o, signed=(limit if is_credit else -limit) * o.intent.contracts,
-                         legs=len(o.intent.legs) * o.intent.contracts)
+                         legs=len(o.intent.legs) * o.intent.contracts,
+                         multiplier=_multiplier_for(o.intent))
             return True
         return False
 
@@ -154,13 +172,16 @@ class SimulatedBroker:
             price = stop_fill_price(trigger, tick=self._tick, slippage_ticks=self._slippage)
             o.status, o.fill_price = "FILLED", price
             # buy-to-close the WHOLE short: cost scales with contracts (v1.44)
-            self._settle(o, signed=-price * o.intent.contracts, legs=o.intent.contracts)
+            self._settle(o, signed=-price * o.intent.contracts, legs=o.intent.contracts,
+                        multiplier=_multiplier_for(o.intent))
             # SIM-05: a paper stop fill emits the SAME event a live fill would,
             # routing the side into SIDE_STOPPED -> LEX through the normal pipeline.
             side = "PUT" if o.intent.legs[0].right == "P" else "CALL"
             # PNL-01: closing a short (buy-to-close) -- commission-free.
             # Per-share (see domain/fees.py) -- never scaled by contracts here.
-            fee = fee_for_leg(self._fee_model, role="short", opening=False)
+            # UND-02: fee lookup resolves by this intent's own underlying.
+            underlying_name = getattr(profile_by_root(o.intent.underlying), "name", None)
+            fee = fee_for_leg(self._fee_model, role="short", opening=False, underlying=underlying_name)
             at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
             self.events.append(ShortStopped(
                 entry_id=o.intent.entry_id, side=side, fill=price,
@@ -168,8 +189,12 @@ class SimulatedBroker:
             return price
         return None
 
-    def _settle(self, o: SimOrder, *, signed: Decimal, legs: int) -> None:
-        self.ledger.post_fill(signed * 100, fee=self._fee * legs)
+    def _settle(self, o: SimOrder, *, signed: Decimal, legs: int,
+               multiplier: Decimal = Decimal("100")) -> None:
+        # UND-02 (v1.86): `multiplier` is the fill's own underlying profile
+        # multiplier (SPX/RUT ×100) -- default 100 keeps every pre-v1.86
+        # caller byte-identical.
+        self.ledger.post_fill(signed * multiplier, fee=self._fee * legs)
         o.mode = self.PAPER  # SIM-05 stamp — on the record, not the frozen intent
 
     # --- BrokerGateway surface ------------------------------------------------

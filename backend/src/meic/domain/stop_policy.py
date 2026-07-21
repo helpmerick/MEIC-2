@@ -76,11 +76,15 @@ def stop_trigger(
     return ticks.floor(raw)
 
 
-def markup_worst_case_increase(markup: Decimal, *, contracts: int = 1) -> Decimal:
+def markup_worst_case_increase(
+    markup: Decimal, *, contracts: int = 1, multiplier: Decimal = Decimal("100"),
+) -> Decimal:
     """UI-18: the worst-case extra loss a rebate markup can cause. The markup
     raises each short's stop by `markup`, so a stop-out pays that much more per
-    contract (×100); both sides stopping is the worst case (×2)."""
-    return markup * 100 * contracts * 2
+    contract (× the profile multiplier); both sides stopping is the worst
+    case (×2). UND-02 (v1.86): `multiplier` is the row's underlying profile
+    multiplier — default 100 keeps every pre-v1.86 caller byte-identical."""
+    return markup * multiplier * contracts * 2
 
 
 def effective_stop_pct(trigger: Decimal, net_credit: Decimal) -> Decimal:

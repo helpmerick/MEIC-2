@@ -54,6 +54,15 @@ class DXLinkAdapter:
                 yield stamp_quote(q, now=self._clock.now())
 
     async def spot(self, index: str) -> AsyncIterator[StampedQuote]:
-        """SPX index spot for intrinsic (DAT-05), same staleness rule."""
+        """SPX index spot for intrinsic (DAT-05), same staleness rule.
+
+        UND-04 (v1.86, FIX-5) WARNING -- Quote-ONLY, currently UNWIRED (no
+        production caller): this stream assumes the index publishes a
+        two-sided dxfeed Quote, which is true for SPX but NOT for RUT (NaN
+        bid/ask; the SDK parser skips the event, so this would yield
+        NOTHING -- cert triage 2026-07-21). The wired spot mechanism with
+        the Trade-last fallback lives in `chain_snapshot._index_spot`; do
+        not wire THIS method for a non-SPX index without adding the same
+        fallback."""
         async for q in self.quotes([index]):
             yield q

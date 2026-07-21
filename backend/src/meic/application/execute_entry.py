@@ -28,6 +28,7 @@ from meic.domain.fees import fee_for_legs
 from meic.domain.ladder import RepriceLadder
 from meic.domain.stop_policy import StopBasis, effective_cap_check, feasible
 from meic.domain.ticks import TickTable
+from meic.domain.underlying import profile_for
 
 from meic.domain.risk import worst_case_loss
 
@@ -88,6 +89,12 @@ class Condor:
     # fill credit. None for the paper-demo runtime's synthetic Condor
     # (composition/runtime.py), which sets no selection config at all.
     target_premium: Decimal | None = None
+    # UND-01 (v1.86): this row's traded underlying ("SPX" | "RUT" | "/ES").
+    # Default "SPX" keeps every pre-v1.86 caller byte-identical -- resolved
+    # to a `domain.underlying.UnderlyingProfile` by `ExecuteEntryAttempt`
+    # (worst-case multiplier, OCC option root) and journaled onto
+    # `CondorFilled` at fill time (see `_record_fill`).
+    underlying: str = "SPX"
 
     @property
     def put_wing(self) -> Decimal:
@@ -193,15 +200,37 @@ class ExecuteEntryAttempt:
     def _cancel_requested(self, entry_id: str) -> bool:
         return self._working is not None and self._working.cancel_requested(entry_id)
 
+    def _option_root(self, condor: Condor) -> str:
+        """UND-04 (v1.86): the OCC option root for THIS ROW's underlying
+        profile (e.g. "SPXW" | "RUTW"), not the "SPXW" literal. Falls back to
+        the service-level `self._underlying` (this class's own pre-v1.86
+        constructor default, "SPXW") when `condor.underlying` names no known
+        profile -- should never happen in production (UND-01 validation
+        refuses an unverified underlying long before an entry reaches here),
+        but a defensive fallback beats a crash mid-ladder. A default Condor
+        (`underlying="SPX"`) resolves to "SPXW" here, byte-identical to the
+        pre-v1.86 constant."""
+        profile = profile_for(condor.underlying)
+        return profile.option_root if profile is not None else self._underlying
+
     @staticmethod
     def worst_case(condor: Condor) -> Decimal:
         """RSK-04: this condor's structural worst case, at its own size.
 
         The wider wing governs: only one side can settle in the money, but we do
         not get to choose which. Also what UI-22's confirmation dialog shows.
+
+        UND-02 (v1.86): priced at THIS condor's OWN profile multiplier (SPX/
+        RUT ×100, /ES ×50) -- "a mixed-underlying day sums each entry's worst
+        case at its own multiplier", never a day-wide shared one. An unknown
+        `condor.underlying` (should never reach here -- ENT-03/UND-01
+        validation refuses it upstream) falls back to the SPX multiplier
+        rather than raising mid-attempt.
         """
         width = max(condor.put_short - condor.put_wing, condor.call_wing - condor.call_short)
-        return worst_case_loss(width, condor.mid_credit, contracts=condor.contracts)
+        profile = profile_for(condor.underlying)
+        multiplier = profile.multiplier if profile is not None else Decimal("100")
+        return worst_case_loss(width, condor.mid_credit, contracts=condor.contracts, multiplier=multiplier)
 
     async def attempt(
         self,
@@ -305,7 +334,8 @@ class ExecuteEntryAttempt:
         self._events.append(EntryWindowOpened(date=day, entry_number=n))
         entry_id = f"{day}#{n}"
         self._events.append(CondorProposed(
-            entry_id=entry_id, put_short=condor.put_short, call_short=condor.call_short))
+            entry_id=entry_id, put_short=condor.put_short, call_short=condor.call_short,
+            underlying=condor.underlying))
 
         # 4. ORD-01/02/03 — one 4-leg limit, repriced down to the floor
         return await self._work_order(day, n, entry_id, condor, initiator,
@@ -362,7 +392,7 @@ class ExecuteEntryAttempt:
             intent = OrderIntent(
                 order_type="limit", tif="Day", kind="iron_condor", entry_id=entry_id,
                 contracts=condor.contracts, price=step.price,
-                underlying=self._underlying, expiration=expiration,
+                underlying=self._option_root(condor), expiration=expiration,
                 idempotency_key=f"entry:{entry_id}",  # ORD-04
                 legs=condor_legs(
                     put_short=condor.put_short, put_long=condor.put_wing,
@@ -511,7 +541,10 @@ class ExecuteEntryAttempt:
         # still carry role/qty (only `price` is None there, see
         # `adapters/occ.py::simulated_fill_legs`), so paper entries get a
         # real, non-zero fee too (SIM-05: paper runs the identical pipeline).
-        fee = fee_for_legs(self._fee_model, legs, opening=True) if legs else Decimal("0")
+        # UND-02: fee lookup resolves by THIS entry's underlying (the fee
+        # table already carries RUT $0.18 exchange fee vs SPX $0.60,
+        # config/fee_model.py) -- never a hardcoded SPX assumption.
+        fee = fee_for_legs(self._fee_model, legs, opening=True, underlying=condor.underlying) if legs else Decimal("0")
         self._events.append(CondorFilled(
             entry_id=entry_id, net_credit=actual, fee=fee, short_premium=short_premium,
             legs=legs,
@@ -520,7 +553,8 @@ class ExecuteEntryAttempt:
             put_floor=put_floor, call_floor=call_floor,  # ENT-09b v1.57 audit
             broker_order_id=str(working_id),  # OWN-01/OWN-03: the entry's own order id
             blackout_overridden=blackout_overridden,  # CAL-06 (v1.71) audit
-            target_premium=condor.target_premium))  # RPT-17 (v1.82) audit
+            target_premium=condor.target_premium,   # RPT-17 (v1.82) audit
+            underlying=condor.underlying))           # UND-01 (v1.86) audit/replay
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:
@@ -537,7 +571,7 @@ class ExecuteEntryAttempt:
             return ()
 
         problems = crosscheck_leg_symbols(
-            legs, underlying=self._underlying, expiration=expiration,
+            legs, underlying=self._option_root(condor), expiration=expiration,
             strikes={("P", "short"): condor.put_short, ("P", "long"): condor.put_wing,
                      ("C", "short"): condor.call_short, ("C", "long"): condor.call_wing})
         if problems and self._alerts is not None:

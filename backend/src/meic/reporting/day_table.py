@@ -31,7 +31,7 @@ from meic.domain.events import (
     SideExpired,
 )
 from meic.domain.projection import EntryProjection
-from meic.reporting.folds import CONTRACT_MULTIPLIER, contracts_of, entry_credit_dollars
+from meic.reporting.folds import contracts_of, entry_credit_dollars, multiplier_of
 
 _SIDES = ("PUT", "CALL")
 # ORD-11: every event type whose own `at` can mark when an entry's lifecycle
@@ -213,7 +213,9 @@ def unmanaged_pnl(entry: EntryProjection, events: list[Event]) -> UnmanagedResul
     spread_value = ((close_sample.put_short_mid - close_sample.put_long_mid)
                     + (close_sample.call_short_mid - close_sample.call_long_mid))
     premium = entry_credit_dollars(entry)
-    unmanaged = premium - spread_value * CONTRACT_MULTIPLIER * contracts_of(entry)
+    # UND-02 (v1.86): scaled by THIS entry's OWN profile multiplier, not the
+    # flat SPX constant (mirrors reporting/folds.py's entry_dollars et al).
+    unmanaged = premium - spread_value * multiplier_of(entry) * contracts_of(entry)
     return UnmanagedResult(value=str(unmanaged), status="ok")
 
 

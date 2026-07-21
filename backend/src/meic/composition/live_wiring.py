@@ -224,6 +224,7 @@ def build_manual_entry(comp, *, selector, market_gates,
                        drift: BrokerClockProbe | None = None,
                        max_clock_drift_ms: float = 2000.0,
                        spot_provider: Callable[[], Any] | None = None,
+                       ensure_underlying: Callable[[str], Any] | None = None,
                        calendar_label: Callable[[str], str | None] | None = None) -> ManualEntry:
     """ENT-09. The manual fire crosses the identical rails as a scheduled entry —
     the SAME max_day_risk, the SAME open worst cases, the SAME reconcile block and
@@ -233,6 +234,12 @@ def build_manual_entry(comp, *, selector, market_gates,
     snapshot's spot -- feeds the refuse-and-re-pick check (`floor_inside_spot`).
     `None` (the default) means "spot unknowable", which `ManualEntry` treats
     as "skip the check" rather than refuse on a guess.
+
+    `ensure_underlying` (FIX-10, v1.86): async (underlying) -> None -- provisions
+    the row's own underlying's chain stream just-in-time before an ad-hoc
+    (ENT-11) fire selects, the ad-hoc analog of the scheduled row's ENT-08
+    warm-up. `None` (paper / pre-v1.86 callers) is a no-op -- the per-underlying
+    registry only exists in the live wiring.
     """
     from meic.application.entry_gates import clock_drift_blocks_entry
 
@@ -259,6 +266,7 @@ def build_manual_entry(comp, *, selector, market_gates,
     return ManualEntry(comp, selector, market_gates,
                        risk=risk, day=day,
                        blocks=blocks, spot_provider=spot_provider,
+                       ensure_underlying=ensure_underlying,
                        calendar_label=calendar_label)
 
 

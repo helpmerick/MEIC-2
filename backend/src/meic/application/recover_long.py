@@ -45,6 +45,7 @@ from meic.domain.events import (
 )
 from meic.domain.fees import fee_for_leg
 from meic.domain.ladder import RepriceLadder, lex_floor
+from meic.domain.projection import entry_underlying
 from meic.domain.ticks import TickTable
 
 # Reused, not copied (the "4th-normalizer trap" the 2026-07-09 health audit
@@ -234,9 +235,11 @@ class RecoverLong:
         # never a silently-kept intent.
         actual = await self._fill_price(order_id)
         price = actual if actual is not None else intended_price
-        # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
-        # (see domain/fees.py) -- never scaled by `qty` here.
-        fee = fee_for_leg(self._fee_model, role="long", opening=False)
+        # PNL-01/UND-02 (v1.86): closing a long (sell-to-close) --
+        # commission-free. Per-share (see domain/fees.py) -- never scaled by
+        # `qty` here; priced by THIS entry's JOURNALED underlying.
+        fee = fee_for_leg(self._fee_model, role="long", opening=False,
+                          underlying=entry_underlying(self._events, entry_id))
         at = self._clock.now().isoformat()  # ORD-11 (v1.67)
         self._events.append(LongSold(entry_id=entry_id, side=side, recovery=price, fee=fee, at=at))
         self._events.append(SideClosed(entry_id=entry_id, side=side, at=at))
@@ -281,9 +284,11 @@ class RecoverLong:
         record itself carries none (v1.65's EC-LEX-08(e) boot-synthesis path,
         pinned in tests/bdd/test_tc_lex_10.py). This method never re-derives
         or second-guesses the price it is handed."""
-        # PNL-01: closing a long (sell-to-close) -- commission-free. Per-share
-        # (see domain/fees.py) -- never scaled by `qty` here.
-        fee = fee_for_leg(self._fee_model, role="long", opening=False)
+        # PNL-01/UND-02 (v1.86): closing a long (sell-to-close) --
+        # commission-free. Per-share (see domain/fees.py) -- never scaled by
+        # `qty` here; priced by THIS entry's JOURNALED underlying.
+        fee = fee_for_leg(self._fee_model, role="long", opening=False,
+                          underlying=entry_underlying(self._events, entry_id))
         at = self._clock.now().isoformat()  # ORD-11 (v1.67)
         self._events.append(LongSold(entry_id=entry_id, side=side, recovery=recovery, fee=fee, at=at))
         self._events.append(SideClosed(entry_id=entry_id, side=side, at=at))

@@ -60,6 +60,7 @@ from meic.config.fee_model import FeeModel
 from meic.domain.events import EntryClosed, ShortStopped, SideClosed
 from meic.domain.fees import fee_for_leg
 from meic.domain.ownership import OwnershipLedger
+from meic.domain.projection import entry_underlying
 
 from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
@@ -166,9 +167,12 @@ class CloseEntry:
             outcome, fill_price = await self._replace_stop(entry_id, leg.side, stop_id, intent)
             if outcome == "FILLED":
                 stopped_sides.add(leg.side)
-                # PNL-01: closing a short (buy-to-close) -- commission-free,
-                # per the fee model (see domain/fees.py).
-                fee = fee_for_leg(self._fee_model, role="short", opening=False)
+                # PNL-01/UND-02 (v1.86): closing a short (buy-to-close) --
+                # commission-free, per the fee model (see domain/fees.py) --
+                # priced by THIS entry's JOURNALED underlying (a RUT leg's
+                # exchange fee is $0.18, never SPX's $0.60).
+                fee = fee_for_leg(self._fee_model, role="short", opening=False,
+                                  underlying=entry_underlying(self._events, entry_id))
                 # KNOWN NUANCE (2026-07-14, flagged not fixed): `stop_id` here may
                 # in fact be an in-flight DCY-02 decay buyback's order id
                 # (close_assembly.py's `assemble_close_inputs` now folds a

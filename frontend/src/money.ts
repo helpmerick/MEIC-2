@@ -44,16 +44,22 @@ function multiplyDecimalString(value: string, factor: number): string {
 }
 
 /** Real cash value of a per-share premium Decimal STRING for `contracts`
- * contracts: `premium * 100 * contracts`, exact. */
-function scale(premium: string, contracts: number): string {
-  return multiplyDecimalString(premium, 100 * contracts);
+ * contracts: `premium * multiplier * contracts`, exact.
+ *
+ * UND-02 (v1.86): `multiplier` is the row/entry's OWN underlying profile
+ * multiplier (SPX/RUT ×100, /ES ×50) — the backend, never this module,
+ * decides which multiplier applies (CLAUDE.md rule 6: no trading logic in
+ * the frontend); this is purely display arithmetic on a number the backend
+ * already supplied. Default 100 keeps every pre-v1.86 caller byte-identical. */
+function scale(premium: string, contracts: number, multiplier = 100): string {
+  return multiplyDecimalString(premium, multiplier * contracts);
 }
 
 /** "+$520" / "-$105" — a signed contract-dollar amount, matching the
  * codebase's existing `money()` sign convention (>= 0 gets "+"). Use for any
  * P&L-shaped figure (entry P&L, per-side premium, per-entry table rows). */
-export function contractDollars(premium: string, contracts = 1): string {
-  const scaled = scale(premium, contracts);
+export function contractDollars(premium: string, contracts = 1, multiplier = 100): string {
+  const scaled = scale(premium, contracts, multiplier);
   const negative = scaled.startsWith("-");
   return (negative ? "-$" : "+$") + (negative ? scaled.slice(1) : scaled);
 }
@@ -62,8 +68,8 @@ export function contractDollars(premium: string, contracts = 1): string {
  * literal `$` template (e.g. `credit $${contractDollarsPlain(...)}`) where a
  * forced +/- sign would be new and unwanted, such as a credit that is always
  * collected (never negative in practice). */
-export function contractDollarsPlain(premium: string, contracts = 1): string {
-  const scaled = scale(premium, contracts);
+export function contractDollarsPlain(premium: string, contracts = 1, multiplier = 100): string {
+  const scaled = scale(premium, contracts, multiplier);
   return scaled.startsWith("-") ? scaled.slice(1) : scaled;
 }
 
@@ -74,8 +80,8 @@ export function contractDollarsPlain(premium: string, contracts = 1): string {
  * summing the resulting (generally whole-cent-of-dollar) numbers in
  * floating point introduces no meaningful error for realistic option
  * premiums. */
-export function contractDollarsValue(premium: string, contracts = 1): number {
-  return Number(scale(premium, contracts));
+export function contractDollarsValue(premium: string, contracts = 1, multiplier = 100): number {
+  return Number(scale(premium, contracts, multiplier));
 }
 
 /** "+$520" / "-$40.50" from a plain number (e.g. a sum of several
@@ -149,10 +155,14 @@ export function isValidStopRebateMarkup(value: string): boolean {
 
 /** UI-18: the worst-case extra dollar loss a `stop_rebate_markup` can cause,
  * mirroring domain/stop_policy.py's `markup_worst_case_increase` exactly —
- * `markup * 100 * contracts * 2` (both sides stopping is the worst case).
- * Exact BigInt digit arithmetic (same `multiplyDecimalString` this module's
- * other exports already use) — no float ever touches the number. Caller is
- * expected to have already checked `isValidStopRebateMarkup`. */
-export function stopRebateMarkupWorstCase(markup: string, contracts = 1): string {
-  return multiplyDecimalString(markup, 100 * contracts * 2);
+ * `markup * multiplier * contracts * 2` (both sides stopping is the worst
+ * case). Exact BigInt digit arithmetic (same `multiplyDecimalString` this
+ * module's other exports already use) — no float ever touches the number.
+ * Caller is expected to have already checked `isValidStopRebateMarkup`.
+ *
+ * UND-02 (v1.86): `multiplier` is the row's OWN underlying profile
+ * multiplier, supplied by the backend — default 100 keeps every pre-v1.86
+ * caller byte-identical (this module never decides the multiplier itself). */
+export function stopRebateMarkupWorstCase(markup: string, contracts = 1, multiplier = 100): string {
+  return multiplyDecimalString(markup, multiplier * contracts * 2);
 }

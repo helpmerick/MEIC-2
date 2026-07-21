@@ -49,6 +49,9 @@ export interface EntryLeg {
 export interface EntryCard {
   entry_id: string;
   status: EntryStatus;
+  // UND-01 (v1.86): the entry's traded underlying ("SPX" | "RUT" | "/ES").
+  // The card shows a small tag when this is not "SPX" (the default).
+  underlying?: string;
   net_credit: string;
   pnl: string;
   sides_stopped: string[];
@@ -125,6 +128,15 @@ export interface ScheduleRow {
   stop_loss_pct?: number | "";  // STP-02: the discrete set
   stop_basis?: string;          // total_credit | short_premium (per_side is rejected)
   stop_rebate_markup?: string | "";
+  underlying?: string;           // UND-01 (v1.86): "SPX" | "RUT" | "/ES" (default SPX)
+  multiplier?: string;           // UND-02 (v1.86): server-computed profile multiplier (e.g. "100")
+  // UND-02 (v1.86): per-entry liquidity overrides the panel has no cell for,
+  // but which the Underlying dropdown PINS from the profile prefills on a new
+  // row so a diverged RUT default never silently inherits the SPX global.
+  // Absent = inherit global (unchanged); backend reads them via spec_from_row.
+  min_short_premium?: string | "";
+  min_total_credit?: string | "";
+  probe_down_max?: number | "";
   worst_case_estimate?: string; // server-computed, read-only
   effective_stop_pct_estimate?: string | null; // STP-02b (v1.67), server-computed, read-only
   id?: number;                   // ENT-10(4)/v1.53: durable entry id, assigned at Save.
@@ -141,6 +153,16 @@ export interface ScheduleView {
   config_version: string | null;
   estimate_note: string;
   risk_scope_note: string;
+  // UND-02 (v1.86): per-underlying liquidity PREFILL defaults, server-owned
+  // (UI-03: the frontend never decides these numbers). Used only to
+  // re-prefill a NEW unsaved row when its Underlying dropdown changes.
+  prefills?: Record<string, {
+    target_premium: string;
+    wing_width: string;
+    min_short_premium: string;
+    min_total_credit: string;
+    probe_down_max: number;
+  }>;
 }
 
 export interface ScheduleError {

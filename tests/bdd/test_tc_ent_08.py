@@ -36,7 +36,7 @@ def _row(**over) -> ResolvedEntry:
     base = dict(time=time(10, 0), contracts=1, target_premium=D("3.00"), wing_width=D("50"),
                 stop_loss_pct=95, stop_basis="total_credit", stop_rebate_markup=D("0.00"),
                 min_short_premium=D("1.00"), min_total_credit=D("2.00"), probe_down_max=25,
-                strike_method="premium", short_delta_target=D("0.10"))
+                strike_method="premium", short_delta_target=D("0.10"), underlying="SPX")
     return ResolvedEntry(**{**base, **over})
 
 

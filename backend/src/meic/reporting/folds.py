@@ -30,9 +30,24 @@ from decimal import Decimal
 
 from meic.domain.events import DayArmed, Event, EntrySkipped, ExternalFillImported
 from meic.domain.projection import EntryProjection, fold
+from meic.domain.underlying import profile_for
 from meic.reporting.corrections import corrected_value
 
 CONTRACT_MULTIPLIER = Decimal(100)
+
+
+def multiplier_of(entry: EntryProjection) -> Decimal:
+    """UND-02 (v1.86): THIS entry's own profile multiplier (SPX/RUT ×100,
+    /ES ×50), resolved from `EntryProjection.underlying` (folded from
+    `CondorFilled.underlying`, default "SPX"). An unknown underlying (should
+    never reach here -- UND-01 validation refuses it long before an entry
+    fires) falls back to `CONTRACT_MULTIPLIER` (100) rather than raising
+    mid-report. Every real-dollar conversion below uses THIS, never the
+    flat `CONTRACT_MULTIPLIER` constant directly, so a mixed-underlying day
+    reports each entry at its own multiplier (mirrors RSK-04's own
+    per-entry-multiplier rule, domain/risk.py)."""
+    profile = profile_for(getattr(entry, "underlying", "SPX"))
+    return profile.multiplier if profile is not None else CONTRACT_MULTIPLIER
 
 
 def entry_day(entry_id: str) -> str:
@@ -80,7 +95,16 @@ def imported_fill_dollars(fill: ExternalFillImported) -> Decimal:
     A Trade-style fill leg (`value` is None) keeps the original math: a
     Sell* action is a credit (+), a Buy* action is a debit (-), scaled by
     CONTRACT_MULTIPLIER (100). A fill with no broker-allocated price
-    contributes 0 (honest, never fabricated)."""
+    contributes 0 (honest, never fabricated).
+
+    FLAG UND-03/ES: `imported_fill_dollars` must resolve the multiplier
+    PER-UNDERLYING before /ES is enabled (imported /ES fills would otherwise
+    value at x100). Correct NOW -- every RPT-16-importable underlying this
+    phase (SPX/RUT) is x100 -- but an imported /ES fill is x50; `ExternalFillImported`
+    carries no underlying field yet, so add one (or resolve from `symbol`'s
+    OCC root via `domain.underlying.profile_by_root`) and scale by
+    `profile.multiplier` here when the /ES phase (UND-03) lands. Do NOT build
+    this now -- /ES is REFUSED this phase (UND-06 build order)."""
     if fill.value is not None:
         return fill.value
     if fill.price is None:
@@ -138,13 +162,15 @@ def entry_dollars(entry: EntryProjection) -> Decimal:
     dollars (the broker's own signed net cash effect for a captured
     settlement) — added directly, never re-scaled by the contract
     multiplier, exactly as `imported_fill_dollars` treats a settlement row's
-    `value`."""
-    return entry.pnl * CONTRACT_MULTIPLIER * contracts_of(entry) + entry.settlements
+    `value`. UND-02 (v1.86): scaled by THIS entry's OWN profile multiplier
+    (`multiplier_of`), not the flat SPX constant."""
+    return entry.pnl * multiplier_of(entry) * contracts_of(entry) + entry.settlements
 
 
 def entry_credit_dollars(entry: EntryProjection) -> Decimal:
-    """Real-dollar total net credit collected for one entry."""
-    return entry.net_credit * CONTRACT_MULTIPLIER * contracts_of(entry)
+    """Real-dollar total net credit collected for one entry. UND-02: scaled
+    by THIS entry's OWN profile multiplier (`multiplier_of`)."""
+    return entry.net_credit * multiplier_of(entry) * contracts_of(entry)
 
 
 def entries_win_loss_by_day(events: list[Event]) -> dict[str, tuple[int, int, int]]:
@@ -359,8 +385,9 @@ def entry_dollars_fees(entry: EntryProjection) -> Decimal:
     back out the fee in `core_results`, rather than mixing two scales).
     EOD-01 v1.59: `entry.settlement_fees` is already real dollars (a captured
     settlement row's own fee) -- added directly, same convention as
-    `entry_dollars`/`imported_day_fees`."""
-    return entry.fees * CONTRACT_MULTIPLIER * contracts_of(entry) + entry.settlement_fees
+    `entry_dollars`/`imported_day_fees`. UND-02 (v1.86): scaled by THIS
+    entry's OWN profile multiplier (`multiplier_of`)."""
+    return entry.fees * multiplier_of(entry) * contracts_of(entry) + entry.settlement_fees
 
 
 def entry_trading_fees_dollars(entry: EntryProjection) -> Decimal:
@@ -370,5 +397,6 @@ def entry_trading_fees_dollars(entry: EntryProjection) -> Decimal:
     bar there) is already net of that same fee -- folding it into `fees` too
     would double-count it and break the waterfall's cent-exact reconciliation
     against `expected_net` (`entry_dollars`, which also already includes the
-    settlement). Use `entry_dollars_fees` above for any DISPLAY total."""
-    return entry.fees * CONTRACT_MULTIPLIER * contracts_of(entry)
+    settlement). Use `entry_dollars_fees` above for any DISPLAY total.
+    UND-02 (v1.86): scaled by THIS entry's OWN profile multiplier."""
+    return entry.fees * multiplier_of(entry) * contracts_of(entry)

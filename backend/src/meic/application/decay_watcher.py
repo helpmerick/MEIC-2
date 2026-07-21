@@ -17,6 +17,7 @@ from decimal import Decimal
 from meic.config.fee_model import FeeModel
 from meic.domain.events import DecayBuybackPlaced, EntryClosed, ShortStopped
 from meic.domain.fees import fee_for_leg
+from meic.domain.projection import entry_underlying
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import OrderIntent, buy_to_close_leg, protective_stop, right_of
@@ -131,9 +132,11 @@ class DecayWatcher:
         and was ALREADY broker-actual there (`_resolve_by_order_id`). The
         ORD-09a fix here is correct if/when this method is ever wired, but it
         must not be credited as a live seam."""
-        # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
-        # (see domain/fees.py) -- never scaled by contracts here.
-        fee = fee_for_leg(self.fee_model, role="short", opening=False)
+        # PNL-01/UND-02 (v1.86): closing a short (buy-to-close) --
+        # commission-free. Per-share (see domain/fees.py) -- never scaled by
+        # contracts here; priced by THIS entry's JOURNALED underlying.
+        fee = fee_for_leg(self.fee_model, role="short", opening=False,
+                          underlying=entry_underlying(self.events, entry_id))
         at = self.clock.now().isoformat() if self.clock is not None else None  # ORD-11 (v1.67)
         actual = await self._buyback_fill_price()
         fill_price = actual if actual is not None else self.decay_buyback_trigger

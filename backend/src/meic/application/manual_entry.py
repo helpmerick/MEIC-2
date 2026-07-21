@@ -97,7 +97,7 @@ class FirePreview:
 class ManualEntry:
     def __init__(self, comp, selector, market_gates, *,
                  risk=None, day=None, blocks=None, spot_provider=None,
-                 calendar_label=None) -> None:
+                 ensure_underlying=None, calendar_label=None) -> None:
         self._comp = comp
         self._selector = selector          # async (when, n, config) -> (Condor|None, skip|None)
         self._gates = market_gates         # async () -> GateSnapshot
@@ -111,6 +111,12 @@ class ManualEntry:
         # the check is skipped rather than refusing on a guess (the same
         # honesty stance as `_risk`/`_blocks` being optional above).
         self._spot = spot_provider
+        # FIX-10 (v1.86): async (underlying) -> None -- provisions the row's
+        # own underlying's chain stream just-in-time before an ad-hoc
+        # (ENT-11) fire selects (the ad-hoc analog of the scheduled ENT-08
+        # warm-up). None (paper / pre-v1.86 callers) => the check is skipped;
+        # idempotent no-op for any already-provisioned underlying.
+        self._ensure = ensure_underlying
         # CAL-06 (v1.71): (day) -> NO-TRADE label | None, from the calendar tag
         # store (fail-open per CAL-07). None (default, e.g. paper/pre-v1.71
         # callers) means "no calendar wired" -- never refuses, same polarity
@@ -133,6 +139,21 @@ class ManualEntry:
         """UI-22: ▶ is enabled only while all three trade-enabling states permit
         entries (ARMED ∧ Stop Trading OFF ∧ Confirm Live ON)."""
         return self._comp.state.entries_enabled()
+
+    def _row_spot(self, row):
+        """ENT-09b/UND-01 (v1.86, FIX-6): THIS ROW's own underlying's live
+        spot. `None` (no provider wired) means "spot unknowable" -> the
+        refuse-and-re-pick check is skipped rather than refusing on a guess.
+        The live provider is underlying-aware (server.py's per-underlying
+        registry); a legacy zero-arg fake is tolerated by retrying the call
+        with no argument on TypeError."""
+        if self._spot is None:
+            return None
+        underlying = getattr(row, "underlying", "SPX")
+        try:
+            return self._spot(underlying)
+        except TypeError:
+            return self._spot()   # legacy zero-arg provider (pre-v1.86 fakes)
 
     def today(self) -> str:
         """The day bucket a fire stamps onto its entry_id/events. ENT-11(3): the
@@ -255,11 +276,36 @@ class ManualEntry:
         # bounded only by RSK-04 (below, inside attempt()) and the RSK-08
         # order cap.
 
+        # 5. FIX-10 (v1.86): provision THIS ROW's own underlying's chain
+        # stream BEFORE the floor guard and selection run -- the ad-hoc
+        # (ENT-11) analog of the scheduled row's ENT-08 warm-up. An ad-hoc
+        # fire's row is transient (never in `entry_schedule`, no open entry
+        # yet), so the probe cadence never built its stream; without this an
+        # ad-hoc RUT fire would skip `no_chain_stream:RUT` while ad-hoc SPX
+        # rides the {SPX} fallback -- an inconsistency, not a safety feature.
+        # Idempotent no-op for an already-provisioned underlying (the schedule
+        # ▶ lane, whose row IS armed). Fail-closed and never raising (the
+        # provider swallows a provision failure into a stale stream), so a
+        # genuinely un-provisionable chain surfaces as the downstream
+        # `no_chain_stream` / stale skip, never an exception. No-op when no
+        # provider is wired (paper / pre-v1.86 callers).
+        if self._ensure is not None:
+            await self._ensure(getattr(row, "underlying", "SPX"))
+
         # 5b. ENT-09b v1.57 refuse-and-re-pick: if spot has crossed a selected
         # floor since the dialog opened, the fire is REFUSED outright — never
         # silently reinterpreted against a floor that no longer makes sense.
+        #
+        # UND-01/UND-04 (v1.86, FIX-6): the spot MUST be THIS ROW's own
+        # underlying's spot -- a RUT fire's floors (~2300) are meaningless
+        # against an SPX spot (~6300). Left zero-arg, `floor_inside_spot`
+        # would spuriously refuse every RUT CALL floor (feature dead) and,
+        # worse, silently DISARM the guard for every RUT PUT floor
+        # (fail-open: an at/in-the-money short slips through). The live
+        # provider (server.py) routes per underlying; a legacy zero-arg fake
+        # (pre-v1.86 tests) is tolerated via the TypeError fallback.
         if put_floor is not None or call_floor is not None:
-            spot = self._spot() if self._spot else None
+            spot = self._row_spot(row)
             if spot is not None and floor_inside_spot(spot, put_floor=put_floor,
                                                        call_floor=call_floor):
                 self._comp.events.append(

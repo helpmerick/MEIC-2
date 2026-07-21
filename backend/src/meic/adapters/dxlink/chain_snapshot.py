@@ -62,6 +62,22 @@ class ChainSnapshot:
     # older shape) stays valid: an empty map means "cannot translate" -> the
     # caller declines to subscribe and falls back to the snapshot marks.
     streamer_symbols: dict[Decimal, tuple[str, str]] = field(default_factory=dict)
+    # UND-01/UND-04 (v1.86, defense in depth): the PROFILE NAME ("SPX" | "RUT"
+    # | ...) of the underlying this snapshot was taken FROM, stamped at the
+    # source by `snapshot_chain` below. The selector
+    # (composition/live_selection.py `_attempt`) refuses to select when this
+    # does not match the row's own underlying (skip
+    # `chain_snapshot_underlying_mismatch`) -- so even if the per-underlying
+    # stream ROUTING ever drifts, a RUT row can never be priced off an SPX
+    # chain. Defaulted "SPX" so every pre-v1.86 constructor stays valid.
+    underlying: str = "SPX"
+    # UND-04 (v1.86, FIX-5): WHICH dxfeed event the spot came from --
+    # "quote_mid" (two-sided index Quote, SPX's normal case) or "trade_last"
+    # (the index's Trade last price -- RUT's case: its index Quote publishes
+    # NaN bid/ask, cert triage 2026-07-21). Display/debug truth, stamped by
+    # `snapshot_chain` via `_index_spot`; defaulted so every pre-FIX-5
+    # constructor stays valid.
+    spot_source: str = "quote_mid"
 
 
 def _valid_mark(bid, ask) -> Mark | None:
@@ -122,13 +138,105 @@ def occ_pair(strike) -> tuple[str, str]:
     return (strike.put, strike.call)
 
 
-async def _first_quote(streamer, quote_cls, symbol: str, timeout_s: float):
+# `_first_quote` (the Quote-ONLY index-spot reader) is REMOVED (FIX-5,
+# 2026-07-21): it assumed every index publishes a two-sided dxfeed Quote --
+# true for SPX, NOT for RUT (NaN bid/ask; the SDK parser skips the event, so
+# the listener never yields and the snapshot times out spotless). Its sole
+# caller now uses `_index_spot` below. Do not resurrect a Quote-only reader.
+
+
+async def _index_spot(
+    streamer,
+    symbol: str,
+    *,
+    quote_cls,
+    trade_cls,
+    timeout_s: float,
+    prefer: str = "quote",
+    grace_s: float = 1.0,
+) -> tuple[Decimal, str]:
+    """UND-01/UND-04 (v1.86, FIX-5 -- cert triage 2026-07-21): resolve the
+    INDEX spot from whichever dxfeed event the index actually publishes.
+
+    THE EVIDENCE THIS EXISTS FOR: the SPXW cert probe passes while the RUTW
+    one fails in the same session -- the "RUT" index's dxfeed Quote carries
+    NaN bid/ask (the tastytrade SDK's pydantic parser REJECTS the event and
+    skips it, so the Quote listener simply never yields), while SPX's index
+    Quote is two-sided. FTSE Russell index dissemination differs from Cboe's
+    SPX. So: subscribe BOTH Quote and Trade for the index; prefer the Quote
+    MID whenever a two-sided quote arrives; else fall back to the Trade's
+    last price. NEVER silently synthesize -- if neither yields a number
+    within `timeout_s` (or both streams end without one), this raises
+    `asyncio.TimeoutError` exactly like the old Quote-only path: the
+    snapshot fails closed, DAT-02 unchanged.
+
+    `prefer` is the profile's `spot_event_hint` (SPX "quote", RUT "trade")
+    -- it only ORDERS the preference (how long to grace-wait for a Quote
+    when a Trade already arrived); BOTH paths remain live for BOTH profiles
+    (defense in depth, same philosophy as the selector's snapshot-underlying
+    mismatch guard). Returns `(spot, source)` with source "quote_mid" |
+    "trade_last" -- stamped onto the ChainSnapshot as display/debug truth.
+
+    `quote_cls`/`trade_cls` are injected (the SDK's Quote/Trade in
+    production) so this is offline-unit-testable with a fake streamer and no
+    tastytrade import (tests/application/test_tc_und_01.py).
+    """
     await streamer.subscribe(quote_cls, [symbol])
-    async def _wait():
+    await streamer.subscribe(trade_cls, [symbol])
+
+    async def _quote_mid():
         async for q in streamer.listen(quote_cls):
             if q.event_symbol == symbol and q.bid_price and q.ask_price:
-                return q
-    return await asyncio.wait_for(_wait(), timeout=timeout_s)
+                return (Decimal(str(q.bid_price)) + Decimal(str(q.ask_price))) / 2
+
+    async def _trade_last():
+        async for t in streamer.listen(trade_cls):
+            if t.event_symbol == symbol and getattr(t, "price", None):
+                return Decimal(str(t.price))
+
+    quote_task = asyncio.ensure_future(_quote_mid())
+    trade_task = asyncio.ensure_future(_trade_last())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    try:
+        waiting = {quote_task, trade_task}
+        trade_result: Decimal | None = None
+        while waiting:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            done, waiting = await asyncio.wait(
+                waiting, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                break  # deadline hit with nothing new
+            if quote_task in done and quote_task.result() is not None:
+                return quote_task.result(), "quote_mid"   # Quote mid preferred whenever present
+            if trade_task in done and trade_task.result() is not None:
+                trade_result = trade_task.result()
+                if prefer != "quote" or quote_task.done():
+                    return trade_result, "trade_last"
+                # The hint says this index normally quotes: give the Quote a
+                # BOUNDED grace to arrive before settling for the trade --
+                # never the full timeout (that would starve a trade-only
+                # index), never zero (a racing SPX trade print must not
+                # flap the source).
+                grace = min(grace_s, max(0.0, deadline - loop.time()))
+                g_done, _ = await asyncio.wait({quote_task}, timeout=grace)
+                if quote_task in g_done and quote_task.result() is not None:
+                    return quote_task.result(), "quote_mid"
+                return trade_result, "trade_last"
+            # a listener ended with nothing usable -- keep waiting on the other
+        if trade_result is not None:
+            return trade_result, "trade_last"
+        # Fail closed, exactly the old Quote-only path's failure mode.
+        raise asyncio.TimeoutError(
+            f"no index spot for {symbol} within {timeout_s}s (no two-sided Quote, no Trade)")
+    finally:
+        for task in (quote_task, trade_task):
+            task.cancel()
+        # Let the cancellations settle and swallow the CancelledError (and any
+        # late listener error) so neither surfaces as a spurious warning.
+        await asyncio.gather(quote_task, trade_task, return_exceptions=True)
 
 
 async def snapshot_chain(
@@ -155,8 +263,20 @@ async def snapshot_chain(
     fresh spec ruling.
     """
     from tastytrade import DXLinkStreamer
-    from tastytrade.dxfeed import Quote
+    from tastytrade.dxfeed import Quote, Trade
     from tastytrade.instruments import NestedOptionChain
+
+    from meic.domain.underlying import profile_by_root
+
+    # UND-01/UND-04 (v1.86): resolve the profile ONCE, up front -- it names
+    # the snapshot's source-underlying stamp (defense in depth, see
+    # `ChainSnapshot.underlying`) AND orders the spot-event preference
+    # (`spot_event_hint`, FIX-5: RUT's index Quote is NaN-bid/ask on dxfeed,
+    # its spot comes from the Trade event -- cert triage 2026-07-21). An
+    # unknown root stamps the root itself and defaults the hint to "quote".
+    profile = profile_by_root(underlying)
+    source_underlying = profile.name if profile is not None else underlying
+    spot_hint = profile.spot_event_hint if profile is not None else "quote"
 
     chains = await NestedOptionChain.get(session, underlying)
     if not chains:
@@ -174,8 +294,12 @@ async def snapshot_chain(
         raise RuntimeError(f"no live {underlying} expiration")
 
     async with DXLinkStreamer(session) as streamer:
-        idx = await _first_quote(streamer, Quote, index_symbol, spot_timeout_s)
-        spot = (Decimal(str(idx.bid_price)) + Decimal(str(idx.ask_price))) / 2
+        # FIX-5 (UND-04, cert triage 2026-07-21): Quote-mid preferred,
+        # Trade-last fallback, profile hint ordering the preference; neither
+        # within the timeout -> asyncio.TimeoutError, fail-closed as before.
+        spot, spot_source = await _index_spot(
+            streamer, index_symbol, quote_cls=Quote, trade_cls=Trade,
+            timeout_s=spot_timeout_s, prefer=spot_hint)
 
         # Two mappings per strike: STREAMER symbols to collect quotes by
         # (DXLink), and OCC symbols for the returned `.symbols` (what
@@ -216,6 +340,9 @@ async def snapshot_chain(
         spot=spot, strike_symbols=strike_streamers, quotes=quotes,
         subscribe_span_pts=SUBSCRIBE_SPAN_PTS)
 
+    # UND-01/UND-04 (v1.86): the source-underlying stamp was resolved up
+    # front (`source_underlying`, with the FIX-5 spot hint) -- the selector's
+    # mismatch guard refuses a snapshot whose stamp disagrees with the row.
     return ChainSnapshot(
         spot=spot, expiration=expiration.expiration_date,
         put_side=put_side, call_side=call_side,
@@ -224,4 +351,6 @@ async def snapshot_chain(
         # NFR-04: the streamer map this function already built for its OWN
         # subscription above -- now published rather than discarded, so the live
         # quote-stream loop can subscribe in the same (only valid) namespace.
-        streamer_symbols=strike_streamers)
+        streamer_symbols=strike_streamers,
+        underlying=source_underlying,   # UND-04 (v1.86): defense-in-depth stamp
+        spot_source=spot_source)        # UND-04 (v1.86, FIX-5): quote_mid | trade_last

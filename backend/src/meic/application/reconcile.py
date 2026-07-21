@@ -25,6 +25,7 @@ from meic.domain.events import (
     StopReplaced,
 )
 from meic.domain.fees import fee_for_leg
+from meic.domain.projection import entry_underlying
 
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import protective_stop, right_of
@@ -155,10 +156,13 @@ class Reconcile:
         for entry_id, side, fill, slippage, _contracts in plan.synthesize_stopped:
             if (entry_id, side) in stopped:
                 continue  # a concurrent boot reconcile already synthesized it
-            # PNL-01: closing a short (buy-to-close) -- commission-free.
-            # Per-share (see domain/fees.py) -- never scaled by contracts here
-            # (`_contracts` -- STP-01's quantity-mismatch data, unrelated to fee).
-            fee = fee_for_leg(self._fee_model, role="short", opening=False)
+            # PNL-01/UND-02 (v1.86): closing a short (buy-to-close) --
+            # commission-free. Per-share (see domain/fees.py) -- never scaled
+            # by contracts here (`_contracts` -- STP-01's quantity-mismatch
+            # data, unrelated to fee); priced by THIS entry's JOURNALED
+            # underlying.
+            fee = fee_for_leg(self._fee_model, role="short", opening=False,
+                              underlying=entry_underlying(self._events, entry_id))
             self._events.append(ShortStopped(
                 entry_id=entry_id, side=side, fill=fill, slippage=slippage,
                 initiator="resting_stop", fee=fee, at=self._at()))

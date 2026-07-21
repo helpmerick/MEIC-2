@@ -29,6 +29,7 @@ from meic.domain.schedule import (
 )
 from meic.domain.stop_policy import StopBasis, effective_stop_pct, stop_trigger
 from meic.domain.ticks import TickRung, TickTable
+from meic.domain.underlying import PROFILES, profile_for
 
 # A composition-time PREVIEW-ONLY tick table (SPX's documented $0.05-below-$3.00
 # / $0.10-at-or-above structure, ticks.py's own fixture shape) -- used ONLY by
@@ -43,12 +44,19 @@ _PREVIEW_TICKS = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")),
 def worst_case_estimate(entry) -> Decimal:
     """UI-22 (v1.46): the row's worst case, ESTIMATED from row parameters.
 
-    `(wing_width - target_premium) x 100 x contracts`. It uses the TARGET premium
-    because the actual credit is unknown until the order fills — so this is an
-    upper-ish bound the operator can reason about, not the number RSK-04 will
-    later enforce. Always labelled ESTIMATE in the UI.
+    `(wing_width - target_premium) x multiplier x contracts`. It uses the
+    TARGET premium because the actual credit is unknown until the order
+    fills — so this is an upper-ish bound the operator can reason about, not
+    the number RSK-04 will later enforce. Always labelled ESTIMATE in the UI.
+
+    UND-02 (v1.86): `multiplier` is THIS ROW's own underlying profile
+    multiplier (`entry.underlying`, SPX/RUT ×100, /ES ×50) — an unknown
+    underlying (should never reach here; UND-01 validation refuses it at
+    Save) falls back to the SPX multiplier rather than raising mid-render.
     """
-    return max(Decimal("0"), entry.wing_width - entry.target_premium) * 100 * entry.contracts
+    profile = profile_for(getattr(entry, "underlying", "SPX"))
+    multiplier = profile.multiplier if profile is not None else Decimal("100")
+    return max(Decimal("0"), entry.wing_width - entry.target_premium) * multiplier * entry.contracts
 
 
 def effective_stop_pct_estimate(entry, ticks: TickTable | None = None) -> Decimal | None:
@@ -108,6 +116,7 @@ def pinned_row(entry, entry_id: int | None = None) -> dict[str, Any]:
         "probe_down_max": entry.probe_down_max,
         "strike_method": entry.strike_method,
         "short_delta_target": str(entry.short_delta_target),
+        "underlying": entry.underlying,   # UND-01 (v1.86)
         "id": entry_id,
     }
 
@@ -164,6 +173,22 @@ class ScheduleView:
             "risk_scope_note": ("max day risk caps BOT-PLACED risk only — foreign "
                                 "positions on this account are excluded (they "
                                 "constrain via the broker's buying-power gate)"),
+            # UND-02 (v1.86): each ENABLED underlying profile's liquidity
+            # PREFILL defaults, so the panel's Underlying dropdown can
+            # re-prefill a NEW (unsaved) row's cells when the operator
+            # switches it -- the backend, never the frontend, owns these
+            # numbers (UI-03). Saved rows are pin-at-Save (v1.47) and NEVER
+            # retro-change.
+            "prefills": {
+                name: {
+                    "target_premium": str(p.default_target_premium),
+                    "wing_width": str(p.default_wing_width),
+                    "min_short_premium": str(p.default_min_short_premium),
+                    "min_total_credit": str(p.default_min_total_credit),
+                    "probe_down_max": p.default_probe_down_max,
+                }
+                for name, p in PROFILES.items() if p.enabled
+            },
         }
 
 
@@ -221,6 +246,7 @@ def spec_from_row(row: dict[str, Any]) -> EntrySpec:
         probe_down_max=integer("probe_down_max"),
         strike_method=row.get("strike_method") or None,
         short_delta_target=dec("short_delta_target"),
+        underlying=row.get("underlying") or None,  # UND-01 (v1.86)
     )
 
 
@@ -258,12 +284,19 @@ class ScheduleService:
         # has no "id" key yet; it round-trips as None until the next Save.
         def _row_view(raw, r):
             eff = effective_stop_pct_estimate(r)
+            profile = profile_for(r.underlying)
+            multiplier = profile.multiplier if profile is not None else Decimal("100")
             return {**pinned_row(r, raw.get("id") if isinstance(raw, dict) else None),
                     "worst_case_estimate": str(worst_case_estimate(r)),
                     # STP-02b (v1.67): alongside the worst-case disclosure, not a
                     # second surface -- same ESTIMATE honesty stance (None -> no
                     # target premium yet to estimate from).
-                    "effective_stop_pct_estimate": None if eff is None else str(eff)}
+                    "effective_stop_pct_estimate": None if eff is None else str(eff),
+                    # UND-02 (v1.86): this row's OWN profile multiplier, so the
+                    # frontend (which decides NO trading logic itself, UI-03)
+                    # can scale its own UI-18 markup-worst-case display without
+                    # ever guessing a multiplier of its own.
+                    "multiplier": str(multiplier)}
 
         rows = [_row_view(raw, r) for raw, r in zip(raw_rows, resolved)]
         return ScheduleView(rows=rows, day_total_estimate=day_total_estimate(resolved),

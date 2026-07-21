@@ -133,6 +133,10 @@ class CondorProposed(Event):
     entry_id: str
     put_short: Decimal
     call_short: Decimal
+    # UND-01 (v1.86, additive): the row's traded underlying name ("SPX" |
+    # "RUT" | "/ES"). Default "SPX" replays every pre-v1.86 log entry
+    # byte-identical (same convention as every other additive field here).
+    underlying: str = "SPX"
 
 
 # `fee` on every fill-bearing event: the per-contract commissions/fees (PNL-01)
@@ -231,6 +235,14 @@ class CondorFilled(Event):
     # without inventing a second, drifting source. Never used to re-derive
     # selection or any P&L -- display only. None for every pre-v1.82 fill.
     target_premium: Decimal | None = None
+    # UND-01 (v1.86, additive): the row's traded underlying name ("SPX" |
+    # "RUT" | "/ES") -- journaled AT FILL TIME (`execute_entry.py`'s
+    # `_record_fill`, stamped from the Condor) so replay-correct reporting
+    # (multiplier P&L, per-underlying fee lookup) never has to guess an
+    # entry's underlying from anything other than what was actually filled.
+    # Default "SPX" replays every pre-v1.86 log entry byte-identical, same
+    # convention as every other additive field on this event.
+    underlying: str = "SPX"
 
 
 @dataclass(frozen=True)

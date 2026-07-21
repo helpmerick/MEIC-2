@@ -39,8 +39,27 @@ from meic.composition.paper import PaperComposition
 from meic.composition.runtime import PaperDemoRuntime
 from meic.domain.ticks import TickRung, TickTable
 
+# UND-01/UND-02 (v1.86): SPX and RUT share this IDENTICAL tick structure
+# (verified 2026-07-21, both Cboe cash-settled index options -- $0.05 below
+# $3.00, $0.10 at-or-above) -- see domain/underlying.py's PROFILES for the
+# per-underlying citation. This constant is CORRECT for both underlyings this
+# phase, so it stays a single shared table (no restructuring this phase, per
+# the ratified UND-01..06 build order). FLAG: the /ES phase MUST make this
+# per-profile once futures-option tick rules are verified -- do not silently
+# reuse this table for /ES when that phase lands.
 SPX = TickTable((TickRung(Decimal("3.00"), Decimal("0.05")), TickRung(None, Decimal("0.10"))))
 ROOT = Path(__file__).resolve().parents[5]
+
+# FIX-11 (v1.86): the snapshot prime's own worst-case fetch latency --
+# `snapshot_chain`'s spot_timeout_s (10) + quote_timeout_s (12). An ad-hoc
+# (ENT-11) provisioning pin (FIX-10/FIX-11) must outlast the ENTRY WINDOW the
+# selector may retry across (doc 06 `entry_window_seconds`) PLUS this prime
+# latency, so a concurrent ~60s health-tick `sync()` can never prune the
+# just-provisioned stream mid-fire before the ad-hoc entry either completes
+# selection or FILLS (entering the open-entry set and becoming naturally
+# wanted). The full TTL is `entry_window_seconds + this` (see
+# `_wire_live_day`'s `ad_hoc_pin_ttl_s`), never a bare literal.
+_SNAPSHOT_PRIME_WORST_CASE_S = 22.0   # snapshot_chain spot_timeout_s(10) + quote_timeout_s(12)
 
 # 2026-07-14 (server logging from boot): server logs were never written at
 # all until 2026-07-13 -- see adapters/logging_setup.py's module docstring
@@ -1082,6 +1101,39 @@ def _leg_mid(side_chain, strike: Decimal):
     return None if mark is None else mark.mid
 
 
+def _underlying_of_symbol(occ_symbol: str | None) -> str:
+    """UND-01/UND-04 (v1.86): the PROFILE NAME an OCC leg symbol belongs to,
+    resolved from its 6-char OCC root ("SPXW  ..." -> "SPX", "RUTW  ..." ->
+    "RUT"). "SPX" for anything unresolvable -- byte-identical to the
+    pre-v1.86 SPX-only assumption for every legacy symbol."""
+    from meic.domain.underlying import profile_by_root
+
+    if not occ_symbol:
+        return "SPX"
+    profile = profile_by_root(occ_symbol[:6].strip())
+    return profile.name if profile is not None else "SPX"
+
+
+def _snap_for(source, underlying: str):
+    """UND-01/UND-04 (v1.86): resolve the chain snapshot for `underlying`
+    from `source`, which may be (checked in this order):
+
+      * the per-underlying `_Snapshots` registry (has `.snapshot_for`) --
+        routed per underlying; None when no stream exists for it (an HONEST
+        absence -- never another underlying's chain: a RUT entry priced off
+        an SPX chain is the exact defect class this routing exists to kill);
+      * a legacy single-stream holder (has `.last`) -- every pre-v1.86 test
+        fake; returns its one snapshot regardless of underlying;
+      * a bare snapshot object, or None -- legacy call shape; returned as-is.
+    """
+    getter = getattr(source, "snapshot_for", None)
+    if getter is not None:
+        return getter(underlying)
+    if hasattr(source, "last"):
+        return source.last
+    return source
+
+
 def _streamer_symbol(snapshot, occ_symbol: str | None, side: str) -> str | None:
     """NFR-04 (2026-07-13, second pass): translate a journaled OCC leg symbol
     into the DXFEED STREAMER symbol DXLink actually speaks.
@@ -1134,7 +1186,13 @@ def _open_leg_symbols(events, snapshot) -> set[str]:
 
     A leg whose streamer symbol cannot be resolved (no snapshot yet, or a
     strike outside the subscribed span) is simply OMITTED — never guessed —
-    so it keeps resolving off the snapshot, exactly as today."""
+    so it keeps resolving off the snapshot, exactly as today.
+
+    UND-01/UND-04 (v1.86): each leg translates through ITS OWN underlying's
+    snapshot (`_snap_for` + the leg symbol's OCC root) — a RUT leg's streamer
+    symbol never resolves off an SPX chain's table. Legacy callers passing a
+    bare snapshot (every pre-v1.86 test) are byte-identical: `_snap_for`
+    returns that same object for every leg."""
     from meic.domain.projection import fold
 
     day = fold(events)
@@ -1143,7 +1201,8 @@ def _open_leg_symbols(events, snapshot) -> set[str]:
         if e.status in _TERMINAL_STATUSES or not e.legs:
             continue
         for leg in e.legs:
-            streamer = _streamer_symbol(snapshot, leg.symbol, leg.side)
+            snap_leg = _snap_for(snapshot, _underlying_of_symbol(leg.symbol))
+            streamer = _streamer_symbol(snap_leg, leg.symbol, leg.side)
             if streamer:
                 symbols.add(streamer)
     return symbols
@@ -1222,9 +1281,9 @@ def _live_pnl_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms: i
     """
     from meic.domain.projection import fold
     from meic.domain.tpf import entry_profit_amount
+    from meic.domain.underlying import profile_for
 
     def enrich(cards: list[dict]) -> list[dict]:
-        snap = getattr(snaps, "last", None)
         now = clock.now() if clock is not None else None
         day = fold(comp.events)
         for card in cards:
@@ -1232,10 +1291,15 @@ def _live_pnl_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms: i
             card["live_pnl_asof"] = None
             if card.get("status") in _TERMINAL_STATUSES:
                 continue
-            if snap is None or snap.stale:
-                continue
             e = day.entries.get(card["entry_id"])
             if e is None or not e.legs:
+                continue
+            # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot,
+            # routed via `_snap_for`. An entry whose underlying has no live
+            # stream yields the HONEST NULL (existing convention) -- never
+            # marks priced off another underlying's chain.
+            snap = _snap_for(snaps, getattr(e, "underlying", "SPX"))
+            if snap is None or snap.stale:
                 continue
             stamps: dict[str, tuple] = {}
             open_costs = _open_side_costs(e, snap, hub=hub, now=now,
@@ -1245,7 +1309,11 @@ def _live_pnl_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms: i
             contracts = next((leg.qty for leg in e.legs if leg.role == "short"), 1)
             profit = entry_profit_amount(net_credit=e.net_credit, fees=e.fees, stop_fills=e.stop_fills,
                                          recoveries=e.recoveries, open_side_costs=open_costs)
-            card["live_pnl"] = str(profit * 100 * contracts)
+            # UND-02 (v1.86): scaled by THIS entry's OWN profile multiplier
+            # (SPX/RUT ×100, /ES ×50), not a hardcoded ×100.
+            profile = profile_for(e.underlying)
+            multiplier = profile.multiplier if profile is not None else Decimal("100")
+            card["live_pnl"] = str(profit * multiplier * contracts)
             hub_stamps = [s for pair in stamps.values() for s in pair]
             if hub_stamps and all(s is not None for s in hub_stamps):
                 card["live_pnl_asof"] = max(hub_stamps).isoformat()  # every contributing mark LIVE
@@ -1268,11 +1336,14 @@ def _profit_pct_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms:
     from meic.domain.projection import fold
 
     def enrich(cards: list[dict]) -> list[dict]:
-        snap = getattr(snaps, "last", None)
         now = clock.now() if clock is not None else None
         day = fold(comp.events)
         for card in cards:
             e = day.entries.get(card["entry_id"])
+            # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
+            # (`_snap_for`); no stream for it -> the honest None, never
+            # another underlying's chain.
+            snap = None if e is None else _snap_for(snaps, getattr(e, "underlying", "SPX"))
             pct = None if e is None else _entry_profit_pct_now(
                 e, snap, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
             card["profit_pct"] = None if pct is None else str(pct)
@@ -1383,7 +1454,9 @@ def _profit_pct_provider(comp, snapshots, hub=None, *, clock=None, max_quote_age
         if e is None:
             return None
         now = clock.now() if clock is not None else None
-        return _entry_profit_pct_now(e, snapshots.last, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+        # UND-01/UND-04 (v1.86): routed per THIS entry's underlying.
+        snap = _snap_for(snapshots, getattr(e, "underlying", "SPX"))
+        return _entry_profit_pct_now(e, snap, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
 
     return provider
 
@@ -1405,7 +1478,6 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
     if not floors and not targets:
         return
     day = fold(comp.events)
-    stale = snapshot is None or snapshot.stale
     now = clock.now() if clock is not None else None
     for entry_id, e in day.entries.items():
         level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
@@ -1414,8 +1486,14 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
         if e.status in _TERMINAL_STATUSES:
             exit_monitor.forget(entry_id)
             continue
+        # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
+        # (`_snap_for` accepts the per-underlying registry, a legacy holder,
+        # or a bare snapshot -- every pre-v1.86 caller unchanged). No stream
+        # for the entry's underlying -> stale -> pause, never another chain.
+        snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
+        stale = snap_e is None or snap_e.stale
         profit_pct = None if stale else _entry_profit_pct_now(
-            e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+            e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         entry_stale = stale or profit_pct is None
 
         if level_floor is not None:
@@ -1450,7 +1528,7 @@ async def _recover_exits_once(comp, snapshot, commands, *,
     from meic.domain.tpf import breached
     from meic.domain.tpt import reached
 
-    if snapshot is None or snapshot.stale:
+    if snapshot is None:
         return
     floors, targets = comp.state.tpf_floors, comp.state.tp_targets
     if not floors and not targets:
@@ -1463,7 +1541,12 @@ async def _recover_exits_once(comp, snapshot, commands, *,
         level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
         if level_floor is None and level_target is None:
             continue
-        profit_pct = _entry_profit_pct_now(e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+        # UND-01/UND-04 (v1.86): routed per THIS entry's underlying (see
+        # `_evaluate_exits_once`); `_entry_profit_pct_now` itself None/stale-
+        # gates the resolved snapshot, so a missing/stale stream still means
+        # "skip this entry", exactly the pre-v1.86 top-level gate's effect.
+        snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
+        profit_pct = _entry_profit_pct_now(e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         if profit_pct is None:
             continue
         if level_floor is not None and breached(Decimal(level_floor), profit_pct):
@@ -1504,22 +1587,32 @@ def _sample_marks_once(comp, snapshot) -> None:
     from meic.domain.projection import fold
     from meic.reporting.folds import entry_day
 
-    if snapshot is None or snapshot.stale:
+    if snapshot is None:
         return
-    at = getattr(snapshot, "taken_at", None)
-    at_iso = at.isoformat() if at is not None else None
-    today_str = trading_day(at).isoformat() if at is not None else None
-    # Strictly GREATER than the close (never >=): a tick landing AT 16:00:00
-    # ET is the last one D8b must still capture -- RPT-17's Unmanaged
-    # counterfactual specifically wants "the recorded 16:00 spread value",
-    # and the health-tick cadence is not guaranteed to land on any OTHER
-    # exact second, so excluding the boundary tick itself could leave the
-    # counterfactual with no usable sample at all on an otherwise-normal day.
-    past_close = at is not None and at.astimezone(ET).time() > RTH_CLOSE
     day = fold(comp.events)
     for e in day.entries.values():
         if not e.legs:
             continue
+        # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
+        # (`_snap_for` -- registry, legacy holder, or bare snapshot all
+        # accepted; a bare snapshot reproduces the pre-v1.86 behaviour
+        # byte-identically, since `at`/`today_str`/`past_close` below then
+        # compute from the same one object for every entry). A missing or
+        # stale stream samples NOTHING for that entry -- D10's honest gap.
+        snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
+        if snap_e is None or snap_e.stale:
+            continue
+        at = getattr(snap_e, "taken_at", None)
+        at_iso = at.isoformat() if at is not None else None
+        today_str = trading_day(at).isoformat() if at is not None else None
+        # Strictly GREATER than the close (never >=): a tick landing AT
+        # 16:00:00 ET is the last one D8b must still capture -- RPT-17's
+        # Unmanaged counterfactual specifically wants "the recorded 16:00
+        # spread value", and the health-tick cadence is not guaranteed to
+        # land on any OTHER exact second, so excluding the boundary tick
+        # itself could leave the counterfactual with no usable sample at all
+        # on an otherwise-normal day.
+        past_close = at is not None and at.astimezone(ET).time() > RTH_CLOSE
         if e.status in _TERMINAL_STATUSES:
             # D8b: sample a closed entry only if it closed TODAY and the
             # 16:00 ET close hasn't passed yet -- see the docstring above.
@@ -1530,15 +1623,15 @@ def _sample_marks_once(comp, snapshot) -> None:
             by_side.setdefault(leg.side, {})[leg.role] = leg
         put_short, put_long = by_side["PUT"].get("short"), by_side["PUT"].get("long")
         call_short, call_long = by_side["CALL"].get("short"), by_side["CALL"].get("long")
-        put_short_mid = (_leg_mid(snapshot.put_side, Decimal(_strike_from_symbol(put_short.symbol)))
+        put_short_mid = (_leg_mid(snap_e.put_side, Decimal(_strike_from_symbol(put_short.symbol)))
                          if put_short else None)
-        put_long_mid = (_leg_mid(snapshot.put_side, Decimal(_strike_from_symbol(put_long.symbol)))
+        put_long_mid = (_leg_mid(snap_e.put_side, Decimal(_strike_from_symbol(put_long.symbol)))
                         if put_long else None)
-        call_short_mid = (_leg_mid(snapshot.call_side, Decimal(_strike_from_symbol(call_short.symbol)))
+        call_short_mid = (_leg_mid(snap_e.call_side, Decimal(_strike_from_symbol(call_short.symbol)))
                           if call_short else None)
-        call_long_mid = (_leg_mid(snapshot.call_side, Decimal(_strike_from_symbol(call_long.symbol)))
+        call_long_mid = (_leg_mid(snap_e.call_side, Decimal(_strike_from_symbol(call_long.symbol)))
                         if call_long else None)
-        spot = getattr(snapshot, "spot", None)
+        spot = getattr(snap_e, "spot", None)
         if spot is None and all(m is None for m in (put_short_mid, put_long_mid,
                                                      call_short_mid, call_long_mid)):
             continue  # nothing honest to record this tick — no fabricated all-None sample
@@ -1571,7 +1664,10 @@ async def _stream_open_entry_quotes(comp, hub, feed, snaps, *, idle_seconds: flo
     the subscribe/re-subscribe logic is unit-testable on its own with a fake
     feed.
     """
-    symbols = _open_leg_symbols(comp.events, getattr(snaps, "last", None))
+    # UND-01/UND-04 (v1.86): pass the holder itself -- `_open_leg_symbols`
+    # routes each leg through its own underlying's snapshot (`_snap_for`
+    # accepts the registry or a legacy `.last` holder identically).
+    symbols = _open_leg_symbols(comp.events, snaps)
     if not symbols:
         await asyncio.sleep(idle_seconds)
         return
@@ -1580,7 +1676,7 @@ async def _stream_open_entry_quotes(comp, hub, feed, snaps, *, idle_seconds: flo
         hub.apply_tick(q, generation=gen)
         # Recomputed against the CURRENT snapshot every tick: a refreshed
         # snapshot can change the strike->streamer map, not just the open book.
-        if _open_leg_symbols(comp.events, getattr(snaps, "last", None)) != symbols:
+        if _open_leg_symbols(comp.events, snaps) != symbols:
             return  # the subscribable set changed -- re-subscribe with the new one
 
 
@@ -1639,7 +1735,6 @@ async def _stop_watchdog_pass(comp, wd, hub, snaps, *, now, max_quote_age_ms: in
     as a stale chain-snapshot mark would (DAT-02)."""
     from meic.application.stop_fill_watch import _open_short_legs
 
-    snap = getattr(snaps, "last", None)
     seen: set[tuple[str, str]] = set()
     for entry_id, side, leg, spec in _open_short_legs(comp.events):
         key = (entry_id, side)
@@ -1651,6 +1746,12 @@ async def _stop_watchdog_pass(comp, wd, hub, snaps, *, now, max_quote_age_ms: in
         elapsed = now - last_ticked[key] if key in last_ticked else timedelta(0)
         last_ticked[key] = now
 
+        # UND-01/UND-04 (v1.86): translate through THIS leg's own underlying's
+        # snapshot (resolved from the OCC root -- "RUTW ..." -> RUT); a leg
+        # whose underlying has no live stream resolves no streamer symbol ->
+        # stale=True -> the breach clock pauses (DAT-02), never a mark off
+        # another underlying's chain.
+        snap = _snap_for(snaps, _underlying_of_symbol(leg.symbol))
         streamer = _streamer_symbol(snap, leg.symbol, side)
         quote = hub.mark(streamer) if streamer else None
         stale = quote is None or quote.is_stale(now, max_quote_age_ms)
@@ -1794,7 +1895,6 @@ async def _decay_watcher_pass(
         suspended["value"] = False
 
     now_et = now.astimezone(_ET) if now.tzinfo is not None else now
-    snap = getattr(snaps, "last", None)
     open_shorts = _open_short_legs(comp.events)   # ONE fold of the log this tick, not two
     open_now = {(entry_id, side) for entry_id, side, _leg, _spec in open_shorts}
 
@@ -1810,6 +1910,10 @@ async def _decay_watcher_pass(
 
     for entry_id, side, leg, spec in open_shorts:
         key = (entry_id, side)
+        # UND-01/UND-04 (v1.86): translate through THIS leg's own underlying's
+        # snapshot (same routing as `_stop_watchdog_pass` -- no stream means
+        # stale, never another underlying's chain).
+        snap = _snap_for(snaps, _underlying_of_symbol(leg.symbol))
         streamer = _streamer_symbol(snap, leg.symbol, side)
         quote = hub.mark(streamer) if streamer else None
         stale = quote is None or quote.is_stale(now, max_quote_age_ms)
@@ -2012,6 +2116,15 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     quote_hub = QuoteHub()
     max_quote_age_ms = _max_quote_age_ms(env)
 
+    # FIX-11 (v1.86): the ad-hoc (ENT-11) provisioning-pin TTL -- the entry
+    # window the selector may retry across (doc 06 `entry_window_seconds`)
+    # PLUS the snapshot prime's own worst-case fetch latency. Long enough that
+    # a just-`ensure()`d ad-hoc stream survives every concurrent ~60s
+    # health-tick `sync()` until the fire's selection completes (and, on fill,
+    # the entry becomes wanted via the open-entry set). Read from the SAME env
+    # dial the selector's own retry window uses -- never a second source.
+    ad_hoc_pin_ttl_s = float(_entry_window_seconds(env)) + _SNAPSHOT_PRIME_WORST_CASE_S
+
     # DAY-03 (v1.48): drift is measured against the BROKER's Date header on the
     # ~60 s session probe — no env var, no NTP. Starts unverified (infinite drift),
     # so entries are blocked until the first probe lands; a reading older than 300 s
@@ -2030,15 +2143,17 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     # application/calendar_store.py's module docstring).
     calendar_store = CalendarStore(comp.events, comp.clock)
 
-    class _Snapshots:
-        """Freshness of the most recent chain snapshot, so the DAT-02 gate — and
-        the UC-02 pre-flight — reflect the data the selector actually used.
-        Starts STALE: unknown freshness is never 'fresh'. Also holds the snapshot
-        ITSELF (`.last`) — FEATURE 3 (live P/L card) reads marks off it directly
-        rather than opening a second subscription; it refreshes on the same ~60s
-        health-loop cadence as everything else that reads `.stale`."""
-        stale = True
-        last = None
+    class _SnapshotStream:
+        """One underlying's chain-snapshot stream (UND-01/UND-04 v1.86).
+        Starts STALE: unknown freshness is never 'fresh'. Holds the snapshot
+        ITSELF (`.last`) — FEATURE 3 (live P/L card) reads marks off it
+        rather than opening a second subscription; it refreshes on the same
+        ~60s health-loop cadence as everything else that reads `.stale`."""
+
+        def __init__(self, profile) -> None:
+            self.profile = profile
+            self.stale = True
+            self.last = None
 
         async def take(self):
             from meic.adapters.dxlink.chain_snapshot import snapshot_chain
@@ -2047,10 +2162,258 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
             # `now` stamps the reading off the injected clock, never
             # datetime.now() (DAY-03). DAT-04a v1.80: no more piggybacked
             # trading-status Profile subscription here — the input is retired.
-            snap = await snapshot_chain(comp.broker._session, now=comp.clock.now)
+            # UND-04: the profile's OWN option root + index symbol — the exact
+            # call shape the RUT chain cert (tests/contract/
+            # test_rut_chain_cert.py) proves live.
+            snap = await snapshot_chain(comp.broker._session,
+                                        underlying=self.profile.option_root,
+                                        index_symbol=self.profile.index_symbol,
+                                        now=comp.clock.now)
             self.stale = snap.stale
             self.last = snap
             return snap
+
+    class _Snapshots:
+        """UND-01/UND-04 (v1.86): the PER-UNDERLYING chain-snapshot registry.
+
+        Streams exist for exactly the set {underlyings of the day's armed
+        schedule rows} ∪ {underlyings of currently-open entries} — resolved
+        from `comp.state.entry_schedule` + the event-log fold on every
+        `sync()`, so an armed-schedule edit or a newly-opened/terminal entry
+        adjusts the set on the next probe/lookup; an underlying with no armed
+        row and no open entry gets NO chain fetch. When that set is EMPTY
+        (nothing armed, nothing open — e.g. a disarmed boot), the SPX default
+        stream stands in so every legacy surface (the UC-02 pre-flight data
+        probe, the panel's spot readout, `.last`/`.stale` consumers) keeps
+        working exactly as before v1.86.
+
+        Legacy single-stream surface, kept deliberately: `.last`/`.stale`
+        read (and, for tests that stub them, WRITE) the SPX/default stream —
+        every pre-v1.86 consumer and test fixture is unchanged. New
+        consumers route per underlying via `snapshot_for`/`provider_for`
+        (`_snap_for` + the selector's `snapshot_router`).
+
+        FIX-7 (perf, 2026-07-21): `sync()` (which folds the whole event log
+        via `_wanted()`) runs ONLY inside `take()` — the health-tick/warm-up
+        probe cadence. Every LOOKUP (`snapshot_for`/`provider_for`/
+        `for_underlying`) is a plain dict read against the CURRENT stream
+        map, so the per-quote-tick / per-open-leg hot paths never fold the
+        (all-day-accreting) journal. A lookup that races ahead of the first
+        `take()` (a stream not built yet) returns None -> the caller
+        fail-closes (`no_chain_stream` skip / honest null), and the newly
+        wanted underlying gets its stream at the very next probe's take()."""
+
+        def __init__(self) -> None:
+            import time as _time
+
+            self._streams: dict[str, _SnapshotStream] = {}
+            # FIX-11 (v1.86): short-lived AD-HOC provisioning pins -- profile
+            # name -> monotonic EXPIRY. `_wanted()` unions the live pins so a
+            # concurrent health-tick `sync()` never prunes a stream `ensure()`
+            # is mid-priming (or just provisioned) for an ad-hoc fire that has
+            # not yet entered the open-entry set. ONE monotonic clock
+            # (`self._now`), injectable so the race/expiry tests advance it
+            # deterministically without real sleeps -- never mixed with any
+            # other time source.
+            self._pinned: dict[str, float] = {}
+            self._now = _time.monotonic
+            self._pin_ttl_s = ad_hoc_pin_ttl_s   # entry_window + snapshot-prime worst case
+
+        def _live_pins(self, now: float) -> set[str]:
+            """FIX-11: pinned underlyings whose pin has NOT yet expired."""
+            return {n for n, exp in self._pinned.items() if exp > now}
+
+        def _wanted(self) -> set[str]:
+            from meic.domain.projection import fold
+            from meic.domain.underlying import profile_for as _profile_for
+
+            names: set[str] = set()
+            for row in (comp.state.entry_schedule or []):
+                if isinstance(row, dict):
+                    names.add(str(row.get("underlying") or "SPX"))
+            for e in fold(comp.events).entries.values():
+                if e.legs and e.status not in _TERMINAL_STATUSES:
+                    names.add(getattr(e, "underlying", "SPX"))
+            # FIX-11: union the live ad-hoc pins so an in-flight/just-
+            # provisioned ad-hoc stream survives a concurrent sync().
+            names |= self._live_pins(self._now())
+            names = {n for n in names if _profile_for(n) is not None}
+            return names or {"SPX"}   # legacy-compat fallback (see class docstring)
+
+        def sync(self) -> None:
+            """Reconcile streams to the wanted set: build the missing, drop
+            the no-longer-wanted (an open entry keeps its underlying wanted
+            until terminal, so a mid-day stream never vanishes under a
+            position). FIX-7: called ONLY from `take()` (the probe cadence),
+            never from a lookup.
+
+            FIX-11: expired ad-hoc pins are dropped FIRST, so an unfilled
+            ad-hoc stream is pruned once its pin lapses (FIX-10's cleanup,
+            just deferred past the fire window); a still-live pin keeps its
+            stream via the `_wanted()` union."""
+            from meic.domain.underlying import PROFILES as _PROFILES
+
+            now = self._now()
+            for name in [n for n, exp in self._pinned.items() if exp <= now]:
+                del self._pinned[name]                       # FIX-11: expire lapsed pins
+
+            wanted = self._wanted()
+            for name in wanted - set(self._streams):
+                self._streams[name] = _SnapshotStream(_PROFILES[name])
+            for name in set(self._streams) - wanted:
+                del self._streams[name]
+
+        async def ensure(self, underlying: str) -> None:
+            """FIX-10 (v1.86, 2026-07-21): the AD-HOC (ENT-11) analog of the
+            scheduled row's ENT-08 warm-up. An ad-hoc fire's row is transient
+            (never persisted to `entry_schedule`, no open entry yet), so it is
+            NOT in `_wanted()` and its stream is not built by the probe
+            cadence -- selection would skip `no_chain_stream:<underlying>`,
+            making an ad-hoc RUT fire silently un-firable while ad-hoc SPX
+            rides the {SPX} fallback. This provisions the stream on demand,
+            just-in-time, so the immediately-following floor guard + selection
+            can read the row's own chain.
+
+            Idempotent: a stream already present (built by the probe, or a
+            prior ensure this same fire) is a NO-OP -- never torn down or
+            disturbed. Unknown/disabled profile -> no-op (the downstream
+            mismatch / no_chain_stream skip still fail-closes). The prime is
+            wrapped in the SAME per-stream try/except as `take()` (FIX-8): a
+            provision failure marks THAT stream stale and warns, and NEVER
+            raises into the fire path (it fail-closes to a named skip).
+
+            FIX-11: a short-lived PIN (`self._pinned[name]`, `_pin_ttl_s`
+            ahead) is set BEFORE the stream is created/primed, and `_wanted()`
+            unions the live pins -- so a concurrent ~60s health-tick `sync()`
+            during the (1-20s network) prime can never prune this stream
+            mid-flight. The pin lapses after the fire window; an unfilled
+            ad-hoc stream is then pruned normally, while a FILLED one is
+            already wanted via the open-entry set (its survival no longer
+            depends on the pin). An ad-hoc stream that never fills is pruned
+            once its pin expires; one whose entry FILLS becomes wanted via the
+            open-entry set and survives."""
+            from meic.domain.underlying import PROFILES as _PROFILES
+            from meic.domain.underlying import profile_for as _profile_for
+
+            profile = _profile_for(underlying)
+            if profile is None or not profile.enabled:
+                return  # unknown/disabled: downstream fail-closes, nothing to pin/provision
+            name = profile.name
+            # FIX-11: pin BEFORE creating/priming (and refresh on re-ensure),
+            # so a sync() racing the prime keeps the stream via the union.
+            self._pinned[name] = self._now() + self._pin_ttl_s
+            if name in self._streams:
+                return  # idempotent -- never disturb an existing (e.g. SPX) stream
+            stream = _SnapshotStream(_PROFILES[name])
+            self._streams[name] = stream
+            try:
+                await stream.take()
+            except Exception as exc:  # noqa: BLE001 -- FIX-8 shape: never raise into the fire path
+                # DROP the just-created transient stream (do NOT keep a stale
+                # one) AND clear the pin we just set (FIX-11: never leave a pin
+                # pointing at a dropped stream). Rationale: the selector
+                # re-invokes `stream.take()` at fire time via `provider_for` --
+                # a kept-but-failing stream would re-raise `snapshot_chain`'s
+                # error straight into the fire path (the selector does not
+                # catch snapshot-acquisition errors). Dropping makes
+                # `provider_for` return None instead, so the fire fail-closes
+                # to the clean `no_chain_stream:<u>` skip -- "never raises into
+                # the fire path". Unlike FIX-8's `take()` (which marks a WANTED
+                # stream stale and keeps it), this stream is TRANSIENT/unwanted,
+                # so dropping is the honest fail-close, not a regression of the
+                # aggregate .stale gate.
+                self._streams.pop(name, None)
+                self._pinned.pop(name, None)
+                comp.alerts.alert(
+                    "warning",
+                    f"ad-hoc chain provision failed for {name} "
+                    f"(fire will fail-close to no_chain_stream:{name}): {exc!r}")
+
+        def for_underlying(self, name: str) -> "_SnapshotStream | None":
+            """FIX-7: a PLAIN dict lookup against the current stream map --
+            never a sync/fold. None when this underlying's stream isn't built
+            yet (raced ahead of the first probe): the caller fail-closes."""
+            return self._streams.get(name)
+
+        def snapshot_for(self, name: str):
+            """The `_snap_for` seam: this underlying's held snapshot, or None
+            (honest absence — never another underlying's chain). FIX-7: plain
+            lookup, no fold."""
+            stream = self._streams.get(name)
+            return None if stream is None else stream.last
+
+        def provider_for(self, name: str):
+            """The selector's `snapshot_router` (UND-01): a zero-arg awaitable
+            taking a FRESH snapshot for `name`'s stream, or None when no
+            stream exists — the selector then skips `no_chain_stream:<name>`,
+            never falling back to another underlying's chain. FIX-7: plain
+            lookup, no fold."""
+            stream = self._streams.get(name)
+            return None if stream is None else stream.take
+
+        async def take(self):
+            """The health-tick/pre-flight data probe: reconcile the stream set
+            (FIX-7: the ONE sync per probe) then refresh EVERY wanted stream.
+            Returns the default (SPX, else sole) stream's snapshot so legacy
+            callers keep their single-snapshot return shape.
+
+            FIX-8 (cross-underlying outage isolation, 2026-07-21): each
+            stream's refresh is wrapped independently -- a transient RUTW
+            snapshot failure marks ONLY the RUT stream stale and alerts
+            (RSK-06 warning, naming the underlying), then the loop continues
+            so SPX still refreshes. A RUT-only data problem must never take
+            SPX down (which, via the conservative any-stream-stale aggregate,
+            would DAT-02-block every entry)."""
+            self.sync()
+            result = None
+            for name, stream in list(self._streams.items()):
+                try:
+                    snap = await stream.take()
+                except Exception as exc:  # noqa: BLE001 -- one stream's failure never aborts the rest
+                    stream.stale = True   # fail-closed for THIS underlying only (DAT-02)
+                    comp.alerts.alert(
+                        "warning",
+                        f"chain snapshot refresh failed for {name} "
+                        f"(underlying isolated -- other underlyings unaffected): {exc!r}")
+                    continue
+                if name == "SPX" or result is None:
+                    result = snap
+            return result
+
+        def _default_stream(self) -> "_SnapshotStream":
+            from meic.domain.underlying import PROFILES as _PROFILES
+
+            existing = self._streams.get("SPX")
+            if existing is not None:
+                return existing
+            if self._streams:
+                return next(iter(self._streams.values()))
+            return self._streams.setdefault("SPX", _SnapshotStream(_PROFILES["SPX"]))
+
+        # Legacy surface — the DAT-02 gate reads `.stale` (any wanted stream
+        # stale = not fresh: pause, never guess); FEATURE 3 and the wiring
+        # tests read/STUB `.last`. Setters write through to the default
+        # stream so `snaps.last = fake` / `snaps.stale = False` (the existing
+        # test idiom) keeps working unchanged.
+        @property
+        def stale(self) -> bool:
+            streams = list(self._streams.values())
+            if not streams:
+                return True
+            return any(s.stale for s in streams)
+
+        @stale.setter
+        def stale(self, value: bool) -> None:
+            self._default_stream().stale = bool(value)
+
+        @property
+        def last(self):
+            stream = self._streams.get("SPX") or next(iter(self._streams.values()), None)
+            return None if stream is None else stream.last
+
+        @last.setter
+        def last(self, snap) -> None:
+            self._default_stream().last = snap
 
     snaps = _Snapshots()
 
@@ -2069,10 +2432,20 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
 
     selector = LiveCondorSelector(
         snapshot_provider=snaps.take,
+        # UND-01/UND-04 (v1.86): per-underlying routing -- each attempt
+        # resolves the ROW's own underlying's stream; no stream => skip
+        # `no_chain_stream:<underlying>`, never another underlying's chain.
+        snapshot_router=snaps.provider_for,
         # STK-10: the chain-scoped completeness dial (doc 06, 50-100, default 90),
         # previously hardcoded at 90 inside SelectionConfig.
         config=SelectionConfig(completeness_pct=_chain_completeness_pct(env),
                                min_validated_strikes=_min_validated_strikes(env)),
+        # UND-02 (v1.86) PRECEDENCE: the env dial, when SET, is the operator
+        # override for ALL underlyings (baked into `config` above, flag off);
+        # UNSET, the gate resolves each ROW's underlying-profile default
+        # (identical numbers for SPX/RUT this phase -- byte-identical today).
+        completeness_from_profile="MEIC_CHAIN_COMPLETENESS_PCT" not in env,
+        min_validated_from_profile="MEIC_MIN_VALIDATED_STRIKES" not in env,
         # STK-10 v1.51 retry: comp.clock drives the retry gaps (never time.sleep —
         # this is the SAME clock LiveRuntime schedules entries against), bounded
         # by the entry window from `when` (doc 06 entry_window_seconds/
@@ -2154,7 +2527,13 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
                 await snaps.take()
             except Exception as exc:  # noqa: BLE001
                 comp.alerts.alert("warning", f"ENT-08 warm-up chain probe failed: {exc!r}")
-            selector.warm_baseline(snaps.last, config, when=when, entry_number=entry_number)
+            # UND-01/UND-04 (v1.86): lock the baseline from THIS ROW's own
+            # underlying's snapshot (take() above refreshed every wanted
+            # stream, this row's included) -- never another underlying's
+            # chain. Default SPX matches every pre-v1.86 config.
+            warm_underlying = getattr(config, "underlying", "SPX") if config is not None else "SPX"
+            selector.warm_baseline(snaps.snapshot_for(warm_underlying), config,
+                                   when=when, entry_number=entry_number)
 
         cap_seconds = max(0.0, lead_seconds - ALERT_AT_SECONDS)
         completed, _ = await run_warmup(_prime(), cap_seconds=cap_seconds)
@@ -2191,7 +2570,18 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         day=lambda: trading_day_str(comp.clock.now()),
         # ENT-09b v1.57 refuse-and-re-pick: the live spot off the SAME cached
         # snapshot FEATURE 3 already holds -- no new subscription.
-        spot_provider=lambda: getattr(snaps.last, "spot", None))
+        # UND-01 (v1.86): accepts an optional underlying name so a caller
+        # that knows its row's underlying gets THAT spot; the zero-arg call
+        # (every pre-v1.86 caller inside build_manual_entry) stays the SPX
+        # default, byte-identical.
+        spot_provider=lambda underlying="SPX": getattr(
+            snaps.snapshot_for(underlying), "spot", None),
+        # FIX-10 (v1.86): provision the row's own underlying's chain stream
+        # just-in-time before an ad-hoc (ENT-11) fire selects -- the ad-hoc
+        # analog of the scheduled row's ENT-08 warm-up. Idempotent no-op for
+        # a stream the probe already built (every armed/open underlying,
+        # incl. the schedule ▶ lane). Fail-closed, never raises into fire().
+        ensure_underlying=snaps.ensure)
 
     # TPF/TPT (v1.58): ONE ExitMonitor for the whole live day, held here (not
     # per-tick) so its per-entry confirmation counters survive across health
@@ -2223,7 +2613,11 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         from meic.application.stop_fill_watch import NoBidFloor, StaleQuote
         from meic.domain.ladder import intrinsic_call, intrinsic_put
 
-        snap = snaps.last
+        # UND-01/UND-04 (v1.86): THIS long's own underlying's snapshot,
+        # resolved from its OCC root -- a RUTW long is never priced (or
+        # intrinsic-floored) off the SPX chain/spot; no stream => defer
+        # honestly, exactly like "no snapshot yet".
+        snap = snaps.snapshot_for(_underlying_of_symbol(long_symbol))
         if snap is None:
             return None
         # Decimal, NOT the raw string `_strike_from_symbol` returns:
@@ -2288,7 +2682,10 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
         `composition.live_selection.floor_candidates`; this closure only
         supplies the live snapshot and the row's own SelectionConfig."""
         cfg = SelectionConfig.for_entry(row) if row is not None else selector.config
-        return floor_candidates_fn(snaps.last, cfg)
+        # UND-01/UND-04 (v1.86): the dialog populates from THE ROW's own
+        # underlying's snapshot; no stream for it -> `floor_candidates`'s own
+        # None path (empty candidates) -- never another underlying's strikes.
+        return floor_candidates_fn(snaps.snapshot_for(getattr(cfg, "underlying", "SPX")), cfg)
 
     return {
         "runtime": runtime,
@@ -2443,10 +2840,12 @@ def live_app():
         remaining = _remaining_rows(rows, now, comp.events, today.isoformat())
         entry_soon = bool(remaining) and (min(r.when for r in remaining) - now) <= _td(seconds=600)
 
-        snap = live["snapshots"].last
         shorts: list[OpenShortMark] = []
         for _entry_id, side, leg, spec in _open_short_legs(comp.events):
             mark = None
+            # UND-01/UND-04 (v1.86): each short marks off ITS OWN underlying's
+            # snapshot (routed by OCC root); no stream -> honest None.
+            snap = _snap_for(live["snapshots"], _underlying_of_symbol(leg.symbol))
             if snap is not None and not snap.stale:
                 side_chain = snap.put_side if side == "PUT" else snap.call_side
                 mark = _leg_mid(side_chain, Decimal(_strike_from_symbol(leg.symbol)))
@@ -2613,7 +3012,9 @@ def live_app():
             # RPT-12/D8: sample marks off the snapshot just refreshed above,
             # same cadence, independent of either probe's success (the
             # sampler itself degrades to a no-op on a missing/stale snapshot).
-            _sample_marks_once(comp, live["snapshots"].last)
+            # UND-01/UND-04 (v1.86): the HOLDER itself, so each entry samples
+            # off its OWN underlying's stream (`_snap_for` inside).
+            _sample_marks_once(comp, live["snapshots"])
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
             logger.warning("health tick: mark sampling failed: %r", exc)
@@ -2621,7 +3022,8 @@ def live_app():
             # TPF-03/TPT-04: the bot-side profit monitor, same cadence as the
             # marks sample above (same snapshot, no new subscription). NFR-04:
             # `hub` lets the evaluator prefer a live mark per leg.
-            await _evaluate_exits_once(comp, live["snapshots"].last,
+            # UND-01/UND-04 (v1.86): the holder, routed per entry inside.
+            await _evaluate_exits_once(comp, live["snapshots"],
                                        live["exit_monitor"], commands,
                                        hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001
@@ -2694,7 +3096,8 @@ def live_app():
             # stop event has already disarmed any TPT-05 target) and after the
             # probe above (so a fresh snapshot exists to mark against). NFR-04:
             # same hub-aware resolution as the health tick above.
-            await _recover_exits_once(comp, live["snapshots"].last, commands,
+            # UND-01/UND-04 (v1.86): the holder, routed per entry inside.
+            await _recover_exits_once(comp, live["snapshots"], commands,
                                       hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001 — surfaced, never fatal
             app.state.broker_error = repr(exc)
@@ -2971,7 +3374,8 @@ def live_app():
             await _boot_reconcile()
             await _probe_once()   # DAY-03: verify the clock on reconnect too
             # TPF-08/TPT-07, NFR-04: same hub-aware resolution as the health tick.
-            await _recover_exits_once(comp, live["snapshots"].last, commands,
+            # UND-01/UND-04 (v1.86): the holder, routed per entry inside.
+            await _recover_exits_once(comp, live["snapshots"], commands,
                                       hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
         except Exception as exc:  # noqa: BLE001
             app.state.broker_connected = False

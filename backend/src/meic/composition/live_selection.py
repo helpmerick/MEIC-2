@@ -30,6 +30,7 @@ from meic.application.market_calendar import trading_day
 from meic.domain.chain import ChainSide, completeness_ok, reachable_strikes, validated_universe
 from meic.domain.collision import Abort, Resolved, resolve_collisions
 from meic.domain.gates import GatesFailed, check_credit_gates
+from meic.domain.underlying import profile_for
 from meic.domain.walk import Selected, Skip, WingUnmarked, select_side
 
 Occupancy = Mapping[Decimal, frozenset]
@@ -52,6 +53,7 @@ class SelectionConfig:
     # row) -- `_attempt` always reads it off `self.config`, never a per-row `c`.
     min_validated_strikes: int = 10
     contracts: int = 1                        # ENT-04 (v1.44): this row's own size
+    underlying: str = "SPX"                   # UND-01 (v1.86): this row's own traded underlying
 
     @classmethod
     def for_entry(cls, entry, *, completeness_pct: Decimal = Decimal("90")) -> "SelectionConfig":
@@ -65,7 +67,8 @@ class SelectionConfig:
         return cls(target_premium=entry.target_premium, wing_width=entry.wing_width,
                    min_short_premium=entry.min_short_premium,
                    min_total_credit=entry.min_total_credit,
-                   completeness_pct=completeness_pct, contracts=entry.contracts)
+                   completeness_pct=completeness_pct, contracts=entry.contracts,
+                   underlying=entry.underlying)  # UND-01 (v1.86)
 
 
 def floor_candidates(snap: Any, config: SelectionConfig) -> dict:
@@ -119,6 +122,27 @@ class LiveCondorSelector:
     snapshot_provider: Callable[[], Awaitable]        # () -> ChainSnapshot
     config: SelectionConfig = SelectionConfig()
     occupancy_provider: Callable[[], Occupancy] = dict
+    # UND-01/UND-04 (v1.86): per-underlying snapshot routing. When set, each
+    # attempt resolves its snapshot for the ROW's own underlying
+    # (`c.underlying`): `snapshot_router(name)` returns a zero-arg awaitable
+    # provider for that underlying's chain stream, or None when NO stream
+    # exists for it -- which is a skip (`no_chain_stream:<underlying>`),
+    # NEVER a fallback onto another underlying's chain. None (the default,
+    # and every pre-v1.86 caller/test) keeps the single legacy
+    # `snapshot_provider` path byte-identical.
+    snapshot_router: Callable[[str], Any] | None = None
+    # UND-02 (v1.86) per-profile chain-gate defaults -- PRECEDENCE: the env
+    # dial (doc 06 `chain_completeness_pct` / `min_validated_strikes`), when
+    # SET by the operator, is the override for ALL underlyings: the live
+    # wiring bakes it into `config` and leaves these flags False. Only when
+    # the env dial is UNSET does the wiring set the flag True, making the
+    # gate resolve the ROW's underlying-profile default
+    # (`UnderlyingProfile.default_chain_completeness_pct` /
+    # `.default_min_validated_strikes`) instead of the selector-level config.
+    # False (the default, every pre-v1.86 caller/test) is byte-identical to
+    # the old selector-config-only behaviour.
+    completeness_from_profile: bool = False
+    min_validated_from_profile: bool = False
     # STK-10 v1.51 retry (doc 06 chain_retry_seconds/entry window, ENT-02). A
     # `None` clock (the default) means "no retry" — every pre-v1.51 unit test
     # that doesn't pass a clock keeps its single-attempt behavior unchanged.
@@ -147,6 +171,40 @@ class LiveCondorSelector:
     alert: Callable[[str, str], None] | None = None
     _baseline_key: tuple | None = field(default=None, repr=False, compare=False)
     _baseline: "_Baseline | None" = field(default=None, repr=False, compare=False)
+
+    def _gate_completeness_pct(self, c: SelectionConfig) -> Decimal:
+        """UND-02 (v1.86): the STK-10 completeness threshold in force for THIS
+        row. Profile-default only when the wiring said the env dial is unset
+        (`completeness_from_profile`); else the selector config (which either
+        carries the operator's env override or the plain default). See the
+        field comment above for the full precedence."""
+        if self.completeness_from_profile:
+            profile = profile_for(c.underlying)
+            if profile is not None:
+                return profile.default_chain_completeness_pct
+        return self.config.completeness_pct
+
+    def _gate_min_validated(self, c: SelectionConfig) -> int:
+        """UND-02 (v1.86): the STK-10 v1.55 baseline viability floor in force
+        for THIS row -- same precedence as `_gate_completeness_pct` above."""
+        if self.min_validated_from_profile:
+            profile = profile_for(c.underlying)
+            if profile is not None:
+                return profile.default_min_validated_strikes
+        return self.config.min_validated_strikes
+
+    async def _take_snapshot(self, c: SelectionConfig):
+        """UND-01/UND-04 (v1.86): resolve THIS row's chain snapshot. Routed
+        per underlying when a router is wired; the legacy single provider
+        otherwise (byte-identical for every pre-v1.86 caller). A router with
+        NO stream for the row's underlying is a named skip -- never a
+        fallback onto another underlying's chain."""
+        if self.snapshot_router is not None:
+            provider = self.snapshot_router(c.underlying)
+            if provider is None:
+                return None, f"no_chain_stream:{c.underlying}"
+            return await provider(), None
+        return await self.snapshot_provider(), None
 
     def _side(self, chain: ChainSide, direction: Decimal, c: SelectionConfig,
               *, validated: frozenset[Decimal] | None = None,
@@ -227,7 +285,9 @@ class LiveCondorSelector:
         put_validated = validated_universe(snap.put_side, put_reachable)
         call_validated = validated_universe(snap.call_side, call_reachable)
 
-        floor = self.config.min_validated_strikes  # CHAIN-scoped, like completeness_pct
+        # UND-02 (v1.86): per-profile default when the env dial is unset --
+        # see `_gate_min_validated`'s precedence comment.
+        floor = self._gate_min_validated(c)
         if len(put_validated) < floor or len(call_validated) < floor:
             if self.alert is not None:
                 self.alert("warning",
@@ -261,10 +321,23 @@ class LiveCondorSelector:
                        entry_number: int, put_floor: Decimal | None = None,
                        call_floor: Decimal | None = None) -> tuple[Condor | None, str | None]:
         """One selection pass against a FRESH snapshot — no retrying here."""
-        snap = await self.snapshot_provider()
+        snap, route_reason = await self._take_snapshot(c)  # UND-01/UND-04 (v1.86)
+        if snap is None:
+            return None, route_reason                      # no_chain_stream:<underlying>
 
         if snap.stale:                                    # DAT-02: never trade stale data
             return None, "data_unavailable"
+
+        # UND-04 (v1.86, defense in depth): even when routing SAID it matched,
+        # refuse a snapshot whose own source stamp disagrees with the row's
+        # underlying -- a RUT row must never be priced off an SPX chain, no
+        # matter what future wiring drift produced the mismatch. Snapshots
+        # without a stamp (every pre-v1.86 test fixture/fake) skip the check;
+        # the real ChainSnapshot is always stamped at the source
+        # (adapters/dxlink/chain_snapshot.py).
+        snap_underlying = getattr(snap, "underlying", None)
+        if snap_underlying is not None and snap_underlying != c.underlying:
+            return None, "chain_snapshot_underlying_mismatch"
 
         put_validated: frozenset[Decimal] | None = None
         call_validated: frozenset[Decimal] | None = None
@@ -276,9 +349,11 @@ class LiveCondorSelector:
             put_validated, call_validated = baseline.put, baseline.call
             # STK-10 v1.55: fire-time completeness is measured against the LOCKED
             # baseline still fresh -- never a freshly recomputed reachable set.
+            # UND-02 (v1.86): threshold via `_gate_completeness_pct` (per-profile
+            # default only when the env dial is unset -- see its precedence note).
             for chain, validated in ((snap.put_side, put_validated), (snap.call_side, call_validated)):
                 if not completeness_ok(chain, reachable=validated,
-                                       completeness_pct=self.config.completeness_pct):
+                                       completeness_pct=self._gate_completeness_pct(c)):
                     return None, "incomplete_chain"
         else:
             # STK-10 v1.51 (pre-baseline): the entry's own TRADE-RELATIVE
@@ -294,8 +369,10 @@ class LiveCondorSelector:
                 reachable = reachable_strikes(
                     chain, target_premium=c.target_premium, wing_width=c.wing_width,
                     otm_direction=direction, min_short_premium=c.min_short_premium)
+                # UND-02 (v1.86): threshold via `_gate_completeness_pct` --
+                # per-profile default only when the env dial is unset.
                 if not completeness_ok(chain, reachable=reachable,
-                                       completeness_pct=self.config.completeness_pct):
+                                       completeness_pct=self._gate_completeness_pct(c)):
                     return None, "incomplete_chain"
 
         put = self._side(snap.put_side, Decimal(-1), c, validated=put_validated, short_floor=put_floor)
@@ -351,4 +428,5 @@ class LiveCondorSelector:
             # with the ET date by luck of always firing inside market hours).
             contracts=c.contracts,   # ENT-04 (v1.44): the ROW's size, not a global knob
             target_premium=c.target_premium,  # RPT-17 (v1.82): audit-only passthrough
+            underlying=c.underlying,  # UND-01 (v1.86): the ROW's own traded underlying
         ), None

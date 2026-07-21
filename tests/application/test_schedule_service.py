@@ -46,7 +46,7 @@ def test_worst_case_estimate_uses_target_premium_not_a_real_credit():
                         wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
                         stop_rebate_markup=D("0"), min_short_premium=D("1"),
                         min_total_credit=D("2"), probe_down_max=25,
-                        strike_method="premium", short_delta_target=D("0.10"))
+                        strike_method="premium", short_delta_target=D("0.10"), underlying="SPX")
     assert worst_case_estimate(row) == D("9400")     # (50 - 3) x 100 x 2
 
 
@@ -62,7 +62,7 @@ def test_effective_stop_pct_estimate_uses_target_premium_as_the_credit_proxy():
                         wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
                         stop_rebate_markup=D("0.30"), min_short_premium=D("1"),
                         min_total_credit=D("2"), probe_down_max=25,
-                        strike_method="premium", short_delta_target=D("0.10"))
+                        strike_method="premium", short_delta_target=D("0.10"), underlying="SPX")
     # raw 0.95*2.80+0.30 = 2.96 floors to 2.95 -> 2.95/2.80 = 105.4% (TC-STP-21 vector)
     assert effective_stop_pct_estimate(row) == D("105.4")
 
@@ -73,7 +73,7 @@ def test_effective_stop_pct_estimate_is_none_without_a_target_premium():
                         wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
                         stop_rebate_markup=D("0"), min_short_premium=D("1"),
                         min_total_credit=D("2"), probe_down_max=25,
-                        strike_method="premium", short_delta_target=D("0.10"))
+                        strike_method="premium", short_delta_target=D("0.10"), underlying="SPX")
     assert effective_stop_pct_estimate(row) is None
 
 
@@ -96,7 +96,7 @@ def test_the_estimate_never_goes_negative():
                         wing_width=D("50"), stop_loss_pct=95, stop_basis="total_credit",
                         stop_rebate_markup=D("0"), min_short_premium=D("1"),
                         min_total_credit=D("2"), probe_down_max=25,
-                        strike_method="premium", short_delta_target=D("0.10"))
+                        strike_method="premium", short_delta_target=D("0.10"), underlying="SPX")
     assert worst_case_estimate(row) == D("0")
 
 
@@ -335,7 +335,7 @@ def test_the_saved_row_stores_concrete_values_for_every_parameter():
     assert set(stored) == {
         "time", "contracts", "target_premium", "wing_width", "stop_loss_pct",
         "stop_basis", "stop_rebate_markup", "min_short_premium", "min_total_credit",
-        "probe_down_max", "strike_method", "short_delta_target", "id"}
+        "probe_down_max", "strike_method", "short_delta_target", "underlying", "id"}
     # every field concrete EXCEPT "id" is intentionally exempt from that check here:
     # it is a durable identity (ENT-10(4), v1.53), not an inherited parameter, and
     # this schedule's single fresh row legitimately gets id == 1.

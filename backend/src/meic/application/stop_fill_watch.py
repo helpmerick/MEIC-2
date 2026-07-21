@@ -78,7 +78,7 @@ from meic.domain.events import (
     StopPlaced,
 )
 from meic.domain.fees import fee_for_leg
-from meic.domain.projection import fold
+from meic.domain.projection import entry_underlying, fold
 
 from .execute_entry import _fill_matches
 from .reconcile import Reconcile, TrackedShort
@@ -803,10 +803,13 @@ async def detect_and_recover_stop_fills(comp, alerts, quote_provider, *,
     # synchronously (no await between the R3-F2 re-check and these appends).
     fee_model = getattr(comp, "fee_model", None) or FeeModel()  # PNL-01
     for entry_id, side, fill_price, _contracts in decay_closed:
-        # PNL-01: closing a short (buy-to-close) -- commission-free. Per-share
-        # (see domain/fees.py) -- never scaled by contracts here (`_contracts`
-        # is carried in the tuple for other classification uses only).
-        fee = fee_for_leg(fee_model, role="short", opening=False)
+        # PNL-01/UND-02 (v1.86): closing a short (buy-to-close) --
+        # commission-free. Per-share (see domain/fees.py) -- never scaled by
+        # contracts here (`_contracts` is carried in the tuple for other
+        # classification uses only); priced by THIS entry's JOURNALED
+        # underlying.
+        fee = fee_for_leg(fee_model, role="short", opening=False,
+                          underlying=entry_underlying(events, entry_id))
         events.append(ShortStopped(entry_id=entry_id, side=side, fill=fill_price,
                                    slippage=Decimal("0"), initiator="decay", fee=fee,
                                    at=_clock_at(comp)))

@@ -101,6 +101,20 @@ def validate_event_warning_lead_days(days) -> None:
         raise ConfigRejected("event_warning_lead_days", "out_of_range")
 
 
+def validate_underlying(name) -> None:
+    """UND-01 (v1.86, doc 06 §37/§11): the GLOBAL `underlying` default --
+    profile-driven, unverified value refused. Per-row overrides are
+    validated identically by `domain/schedule.py::validate_entry`; this is
+    the SAME reject-never-guess check applied to the global config key."""
+    from meic.domain.underlying import profile_for
+
+    profile = profile_for(str(name))
+    if profile is None:
+        raise ConfigRejected("underlying", "unknown_or_unverified_underlying")
+    if not profile.enabled:
+        raise ConfigRejected("underlying", profile.disabled_reason or "unknown_or_unverified_underlying")
+
+
 def validate_bind(bind_host: str, api_token: str | None) -> None:
     """NFR-06: config validation refuses a non-localhost bind unless a token is
     set — the panel cannot be exposed unauthenticated, structurally."""
@@ -136,6 +150,8 @@ def validate_config(cfg: dict) -> None:
         validate_cal_auto_refresh(cfg["cal_auto_refresh"])  # CAL-09
     if "event_warning_lead_days" in cfg:
         validate_event_warning_lead_days(cfg["event_warning_lead_days"])  # CAL-11
+    if "underlying" in cfg:
+        validate_underlying(cfg["underlying"])  # UND-01
     if "bind_host" in cfg:
         validate_bind(str(cfg["bind_host"]), cfg.get("api_token"))
     if "fee_model" in cfg:

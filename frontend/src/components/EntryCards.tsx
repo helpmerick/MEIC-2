@@ -149,6 +149,12 @@ function Card({ e, onClose, onSetFloor, onClearFloor, onSetTarget, onClearTarget
     <div className={`entry-card ${meta.cls}`}>
       <div className="ec-top">
         <span className="ec-id">{e.entry_id}</span>
+        {/* UND-01 (v1.86): a small tag when this entry's underlying is not
+            the default SPX -- the backend supplies the name, this only
+            renders it (UI-03: no trading logic here). */}
+        {e.underlying && e.underlying !== "SPX" && (
+          <span className="tag underlying">{e.underlying}</span>
+        )}
         <span className={`ec-badge ${meta.cls}`}>{meta.icon} {meta.label}</span>
       </div>
       <div className="ec-pnl">
