@@ -670,3 +670,141 @@ def test_tc_und_01_fix11_pin_keeps_an_in_flight_stream_alive_across_a_concurrent
         assert snaps.snapshot_for("RUT") is not None   # primed and readable
 
     asyncio.run(_drive())
+
+
+# --- UND-05 (v1.86 loosening, operator ruling 2026-07-21): the OUTER ENT-03 ----
+# data_fresh gate now resolves PER THE ATTEMPT'S OWN underlying, never the
+# aggregate `any(stream.stale for stream in streams)`. The selector's own
+# `_attempt` (live_selection.py) already fail-closes per-underlying (a routed
+# snapshot that is None/stale skips `data_unavailable`/`no_chain_stream`); this
+# closes the LAST aggregate surface -- the outer gate that used to block
+# EVERY entry (including a healthy SPX) whenever ANY wanted stream (e.g. a
+# RUT-only outage) went stale. DAT-02 stays fail-closed throughout: an
+# absent/unbuilt stream reads NOT fresh, never guessed fresh.
+
+def test_tc_und_05_missing_or_unbuilt_stream_reads_not_fresh(monkeypatch, tmp_path):
+    """UND-05/DAT-02: an underlying with no armed row, no open entry, and no
+    `ensure()` provisioning has NO stream at all -- `fresh_for` must read
+    False (fail-closed), never True for an absent stream."""
+    app = _und10_app(monkeypatch, tmp_path, chain_by_root=_und10_rut_snap)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+
+    comp.state.entry_schedule = []          # nothing armed -> {SPX} legacy fallback only
+    asyncio.run(snaps.take())               # builds/refreshes only the SPX stream
+
+    assert snaps.snapshot_for("RUT") is None            # never built
+    assert snaps.fresh_for("RUT") is False              # fail-closed, not a guess
+    assert snaps.fresh_for("SPX") is True                # SPX WAS built and is fresh
+
+
+def test_tc_und_05_stale_rut_stream_does_not_block_a_fresh_spx_entry(monkeypatch, tmp_path):
+    """UND-05 -- THE ruling's exact scenario: SPX fresh, RUT stale. The
+    real, live-wired `data_fresh`/`LiveMarketGates` gate reads True for an
+    SPX attempt (fires) and False for a RUT attempt (blocked) off the SAME
+    provider -- a RUT-only data outage must never take SPX down with it."""
+    app = _und10_app(monkeypatch, tmp_path, chain_by_root=_und10_rut_snap)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+    gates = app.state.runtime.market_gates   # the REAL LiveMarketGates instance
+
+    # Arm both underlyings so the probe cadence builds BOTH streams.
+    comp.state.entry_schedule = [{"time": "10:00", "underlying": "SPX"},
+                                 {"time": "10:05", "underlying": "RUT"}]
+    asyncio.run(snaps.take())
+
+    assert snaps.snapshot_for("SPX") is not None and snaps.snapshot_for("RUT") is not None
+    assert snaps.fresh_for("SPX") is True and snaps.fresh_for("RUT") is True
+
+    # A transient RUTW-only outage: mark ONLY the RUT stream stale.
+    snaps._streams["RUT"].stale = True
+
+    assert snaps.fresh_for("SPX") is True     # unaffected by RUT's outage
+    assert snaps.fresh_for("RUT") is False    # fail-closed for RUT alone
+
+    spx_gate = asyncio.run(gates("SPX"))
+    rut_gate = asyncio.run(gates("RUT"))
+    assert spx_gate.data_fresh is True         # SPX entries still fire
+    assert rut_gate.data_fresh is False        # RUT entries blocked
+    # every OTHER gate input reads the SAME (real broker/session probe) way
+    # regardless of which underlying was named -- only data_fresh varies.
+    assert spx_gate.session_valid == rut_gate.session_valid
+    assert spx_gate.buying_power_ok == rut_gate.buying_power_ok
+
+
+def test_tc_und_05_a_single_underlying_spx_run_gates_byte_identically_to_before(
+        monkeypatch, tmp_path):
+    """UND-05: the aggregate/paper/single-underlying path is UNCHANGED. With
+    only SPX ever wanted (the legacy `{"SPX"}` fallback, no RUT anywhere),
+    `snaps.stale` (the pre-v1.86 aggregate DAT-02 gate every other consumer
+    still reads) and `snaps.fresh_for("SPX")`/the bare `await gates()` call
+    (default underlying) always agree -- there is only ever one stream to
+    disagree about."""
+    app = _und10_app(monkeypatch, tmp_path, chain_by_root=_und10_rut_snap)
+    comp = app.state.composition
+    snaps = app.state.chain_snapshots
+    gates = app.state.runtime.market_gates
+
+    comp.state.entry_schedule = []          # nothing armed -> {SPX} only
+    asyncio.run(snaps.take())
+
+    assert snaps.stale is False
+    assert snaps.fresh_for("SPX") is True
+    assert asyncio.run(gates()).data_fresh is True    # bare call -> SPX default
+
+    snaps.stale = True                       # the legacy aggregate setter (writes SPX)
+    assert snaps.fresh_for("SPX") is False
+    assert asyncio.run(gates()).data_fresh is False   # bare call still tracks it
+
+
+def test_tc_und_05_live_market_gates_defaults_to_spx_and_tolerates_legacy_zero_arg_data_fresh():
+    """UND-05 at the `LiveMarketGates` unit level (no live_app needed): a
+    bare `await gates()` resolves "SPX", and a LEGACY zero-arg `data_fresh`
+    provider (pre-v1.86 paper/tests, no `underlying` parameter at all) is
+    tolerated via the `TypeError` fallback -- the identical dual-arity idiom
+    `manual_entry._row_spot`'s own `spot_provider` fallback already uses.
+    Every OTHER gate input (session_valid/buying_power_ok/flatten_in_progress)
+    is untouched -- only `data_fresh` is ever offered the underlying."""
+    from datetime import datetime, timezone
+
+    from meic.composition.live_gates import LiveMarketGates
+
+    async def legacy_data_fresh():           # zero-arg: no `underlying` param at all
+        return True
+
+    async def ok():
+        return True
+
+    class _Clock:
+        def now(self):
+            return datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
+
+    gates = LiveMarketGates(clock=_Clock(), data_fresh=legacy_data_fresh,
+                            session_valid=ok, buying_power_ok=ok)
+
+    bare_snap = asyncio.run(gates())          # no args at all -- pre-v1.86 call shape
+    assert bare_snap.data_fresh is True
+
+    named_snap = asyncio.run(gates("RUT"))    # a real caller naming RUT still works
+    assert named_snap.data_fresh is True       # legacy provider ignores the name, always True
+
+
+def test_tc_und_05_nfr07_data_fresh_live_check_still_proves_stale_to_false(
+        monkeypatch, tmp_path):
+    """NFR-07 (composition/wiring_registry.py's `_data_fresh_live_check`)
+    must still prove the bound `data_fresh` gate input is a REAL,
+    live-flippable signal, not a constant -- UND-05 changed data_fresh's
+    SHAPE (it now takes an optional underlying) but not this guarantee: the
+    live-check's bare `provider()` call resolves the "SPX" default, and
+    `snaps.stale`'s setter writes through to that same default stream."""
+    from meic.composition.wiring_registry import SAFETY_GATE_REGISTRY
+
+    app = _und10_app(monkeypatch, tmp_path, chain_by_root=_und10_rut_snap)
+    comp = app.state.composition
+    comp.state.entry_schedule = []          # nothing armed -> {SPX} only, matches pre-v1.86
+
+    entry = next(e for e in SAFETY_GATE_REGISTRY if e.gate_input == "data_fresh")
+    assert "DAT-02" in entry.rule_ids and "ENT-03" in entry.rule_ids
+
+    result = entry.live_check(app.state)
+    assert result.live is True, result.detail

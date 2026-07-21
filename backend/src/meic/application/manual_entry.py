@@ -57,6 +57,24 @@ async def _maybe_await(provider):
     return await value if inspect.isawaitable(value) else value
 
 
+async def _gates_for(gates_provider, underlying: str):
+    """UND-05 (v1.86 loosening, operator ruling 2026-07-21): call the
+    `market_gates` provider with THIS fire's own underlying so the ENT-03
+    data_fresh input (DAT-02) resolves per-underlying -- a stale/absent RUT
+    stream must block only a RUT manual fire, never an SPX one. A legacy
+    zero-arg provider (paper, pre-v1.86 tests) is tolerated via the
+    `TypeError` fallback -- same dual-arity idiom as `_row_spot`/
+    `spot_provider` below and `LiveRuntime._market_gates_for`."""
+    # call-only scoping (matches LiveMarketGates._safe): the await is
+    # OUTSIDE the try so a TypeError raised INSIDE the gates coroutine
+    # is never masked into a double-invoke.
+    try:
+        coro = gates_provider(underlying)
+    except TypeError:
+        coro = gates_provider()
+    return await coro
+
+
 @dataclass(frozen=True)
 class FirePreview:
     """What the UI-22 dialog shows before the operator presses OK."""
@@ -335,7 +353,8 @@ class ManualEntry:
         # it is never GC'd while it finishes in the background.
         async def _attempt_and_protect():
             outcome = await self._comp.execute.attempt(
-                day=day, scheduled=when, condor=condor, gates=await self._gates(),
+                day=day, scheduled=when, condor=condor,
+                gates=await _gates_for(self._gates, getattr(condor, "underlying", "SPX")),
                 risk=await _maybe_await(self._risk),   # sync (paper) OR async (live)
                 bypass_window=True, stop=_stop(row), initiator=MANUAL,
                 put_floor=put_floor, call_floor=call_floor,   # ENT-09b v1.57 audit

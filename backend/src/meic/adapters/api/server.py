@@ -2390,6 +2390,19 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
                 return next(iter(self._streams.values()))
             return self._streams.setdefault("SPX", _SnapshotStream(_PROFILES["SPX"]))
 
+        def fresh_for(self, underlying: str) -> bool:
+            """UND-05 (v1.86 loosening, operator ruling 2026-07-21): PER-
+            UNDERLYING freshness for the OUTER ENT-03 data_fresh gate -- a
+            RUT-only data outage must not block SPX entries (the selector's
+            own `_attempt` already fail-closes per-underlying; this closes
+            the last aggregate surface). Fail-closed: a stream that does not
+            exist yet (not built by the probe cadence, or an unknown/
+            disabled underlying) reads NOT fresh, exactly like a stale one
+            -- never True for an absent stream. FIX-7: plain dict lookup, no
+            fold/sync."""
+            stream = self._streams.get(underlying)
+            return stream is not None and not stream.stale
+
         # Legacy surface — the DAT-02 gate reads `.stale` (any wanted stream
         # stale = not fresh: pause, never guess); FEATURE 3 and the wiring
         # tests read/STUB `.last`. Setters write through to the default
@@ -2417,8 +2430,16 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
 
     snaps = _Snapshots()
 
-    async def _data_fresh() -> bool:
-        return not snaps.stale
+    async def _data_fresh(underlying: str = "SPX") -> bool:
+        """DAT-02/UND-05 (v1.86 loosening, operator ruling 2026-07-21): the
+        ENT-03 data_fresh gate now resolves PER the attempt's own
+        underlying -- a stale/absent RUT stream blocks only RUT entries,
+        never SPX's. `underlying` defaults to "SPX" so every bare/legacy
+        caller (paper, pre-v1.86 tests, `LiveMarketGates.__call__`'s own
+        default, the UC-02 preflight's separate `not snaps.stale` binding
+        just below) reads byte-identical to the old aggregate check in the
+        single-underlying case."""
+        return snaps.fresh_for(underlying)
 
     async def _session_valid() -> bool:
         # The ~60 s session probe (NFR-02) doubles as the DAY-03 clock reading:

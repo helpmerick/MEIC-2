@@ -74,18 +74,42 @@ class LiveMarketGates:
                 "at boot (nyse_holidays.half_days_near).")
         return cls(**kw)
 
-    async def _safe(self, provider, *, default: bool) -> bool:
+    async def _safe(self, provider, *, default: bool, underlying: str | None = None) -> bool:
         """A provider that is absent or raises yields the SAFE answer — never the
-        permissive one. A gate we cannot evaluate is a gate that blocks."""
+        permissive one. A gate we cannot evaluate is a gate that blocks.
+
+        UND-05 (v1.86 loosening, operator ruling 2026-07-21): `underlying`,
+        when given, is offered to the provider so a PER-UNDERLYING input
+        (`data_fresh`) can resolve for THIS attempt's own underlying. A
+        provider that does not accept it — every OTHER gate input here, and
+        any legacy/bare zero-arg `data_fresh` (paper, pre-v1.86 tests) — is
+        retried bare on `TypeError`, the identical dual-arity idiom
+        `application.manual_entry._row_spot`/`spot_provider` already use for
+        the same reason. The retry is scoped to the CALL step only (never
+        wrapping the awaited result), so an unrelated `TypeError` raised
+        while the provider actually runs still blocks the gate via the
+        outer `except Exception` below, rather than silently re-invoking
+        the provider a second time."""
         if provider is None:
             return default
         try:
-            result = provider()
-            return bool(await result if hasattr(result, "__await__") else result)
+            if underlying is not None:
+                try:
+                    call = provider(underlying)
+                except TypeError:
+                    call = provider()
+            else:
+                call = provider()
+            result = await call if hasattr(call, "__await__") else call
+            return bool(result)
         except Exception:  # noqa: BLE001 — an unevaluable gate must block
             return default
 
-    async def __call__(self) -> GateSnapshot:
+    async def __call__(self, underlying: str = "SPX") -> GateSnapshot:
+        """UND-05 (v1.86 loosening): `underlying` defaults to "SPX" so a
+        bare `await gates()` (paper, tests, any pre-v1.86 caller) reads
+        byte-identical to before this change -- only `data_fresh` (below)
+        ever consults it; every other gate input is underlying-agnostic."""
         # The production clock ticks in UTC; the exchange calendar is ET (DAY-03).
         now: datetime = self.clock.now()
         if now.tzinfo is None:
@@ -105,7 +129,9 @@ class LiveMarketGates:
             # the field stays, fixed False; halt protection lives entirely
             # in the freshness gates now (DAT-02/STK-04/STK-10).
             market_halted=False,
-            data_fresh=await self._safe(self.data_fresh, default=False),      # stale => block
+            # UND-05: PER-UNDERLYING -- a stale/absent RUT stream must not
+            # block an SPX entry (DAT-02 stays fail-closed per underlying).
+            data_fresh=await self._safe(self.data_fresh, default=False, underlying=underlying),
             session_valid=await self._safe(self.session_valid, default=False),  # invalid => block
             buying_power_ok=await self._safe(self.buying_power_ok, default=False),  # unknown => block
         )

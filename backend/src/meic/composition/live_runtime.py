@@ -49,6 +49,13 @@ async def _maybe_await(provider):
 
 # (condor, skip_reason) — exactly one is non-None
 Selector = Callable[..., Awaitable[tuple[Condor | None, str | None]]]
+# UND-05 (v1.86 loosening, operator ruling 2026-07-21): the REAL live provider
+# (LiveMarketGates.__call__) now accepts an optional `underlying` positional
+# arg so the ENT-03 data_fresh input can resolve per THIS attempt's own
+# underlying (see `_market_gates_for` below). The type stays the bare
+# zero-arg shape here because every legacy/paper/test provider is still a
+# plain `Callable[[], Awaitable[GateSnapshot]]` — `_market_gates_for` is the
+# ONE call site that offers the extra arg, tolerating either shape.
 GatesProvider = Callable[[], Awaitable[GateSnapshot]]
 # ENT-08 (operator ruling 2026-07-11): widened to carry the upcoming entry's
 # number and its own SelectionConfig (row.selection) alongside `when` -- the
@@ -133,6 +140,26 @@ class LiveRuntime:
             buying_power=await _maybe_await(self.buying_power),
         )
 
+    async def _market_gates_for(self, underlying: str) -> GateSnapshot:
+        """UND-05 (v1.86 loosening, operator ruling 2026-07-21): call
+        `market_gates` with THIS attempt's own underlying so a per-
+        underlying `data_fresh` input (DAT-02) can resolve for it -- a
+        stale/absent RUT stream must block only RUT entries, never SPX's.
+
+        A legacy/bare zero-arg `market_gates` (paper, tests, any pre-v1.86
+        wiring) is tolerated via the `TypeError` fallback -- the identical
+        dual-arity idiom `LiveMarketGates._safe`/`manual_entry._row_spot`
+        already use, and it reads byte-identical to the old aggregate call
+        for every such caller."""
+        # call-only scoping (matches LiveMarketGates._safe): the await is
+        # OUTSIDE the try so a TypeError raised INSIDE the gates coroutine
+        # is never masked into a double-invoke.
+        try:
+            coro = self.market_gates(underlying)
+        except TypeError:
+            coro = self.market_gates()
+        return await coro
+
     def _blocked_reason(self) -> str | None:
         """Blocks evaluated before the ENT-03 chain, in precedence order.
 
@@ -189,7 +216,11 @@ class LiveRuntime:
                 self._skip(day, n, skip or "selection_unavailable")
                 continue
 
-            gates = await self.market_gates()
+            # UND-05: THIS condor's own underlying, never the aggregate.
+            # `getattr` (not `condor.underlying`): a test/fake condor stand-in
+            # need not carry the field at all -- absent means SPX, byte-
+            # identical to the pre-v1.86 default (Condor.underlying="SPX").
+            gates = await self._market_gates_for(getattr(condor, "underlying", "SPX"))
 
             # ENT-10(3): disarm/stop cancels stop FUTURE entries instantly (the
             # waits are cancellable) but an IN-FLIGHT attempt is atomic — it runs

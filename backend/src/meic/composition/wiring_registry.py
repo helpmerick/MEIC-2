@@ -292,7 +292,19 @@ def _data_fresh_live_check(state) -> LiveCheckResult:
     """BEHAVIORAL, sound: flips the REAL `_Snapshots.stale` flag (exposed as
     `app.state.chain_snapshots`, DAT-02) and asserts the bound gate input
     tracks it. A constant `lambda: True`/`lambda: False` fails this either
-    way -- it cannot track both flips."""
+    way -- it cannot track both flips.
+
+    UND-05 (v1.86 loosening, operator ruling 2026-07-21): `data_fresh` is
+    now PER-UNDERLYING (`_Snapshots.fresh_for`) -- the OUTER ENT-03 gate no
+    longer over-blocks a fresh underlying just because another one's stream
+    is stale (the selector's own `_attempt` already fail-closed per
+    underlying; this closed the last aggregate surface). This audit still
+    proves the SAME real, live-flippable signal it always did: the bare
+    `provider()` call below resolves `data_fresh`'s default ("SPX")
+    argument, and `snaps.stale`'s SETTER writes through to that same
+    default stream (`_Snapshots.stale`'s own docstring) -- so flipping
+    `.stale` still flips what this check observes, byte-identical to
+    before the loosening."""
     runtime = getattr(state, "runtime", None)
     gates = getattr(runtime, "market_gates", None)
     snaps = getattr(state, "chain_snapshots", None)
@@ -417,7 +429,10 @@ SAFETY_GATE_REGISTRY: tuple[SafetyGateInput, ...] = (
         rule_ids=("DAT-02", "ENT-03"),
         gate_input="data_fresh",
         proof="app.state.runtime.market_gates.data_fresh, flipped against the real "
-              "app.state.chain_snapshots.stale.",
+              "app.state.chain_snapshots.stale (UND-05 v1.86: data_fresh now resolves "
+              "PER-UNDERLYING; this proves the SPX-default resolution path, which "
+              "shares the same real, live-flippable stream every other underlying's "
+              "fresh_for(name) reads).",
         live_check=_data_fresh_live_check,
     ),
     SafetyGateInput(
