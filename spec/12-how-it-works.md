@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.84 (operator-commissioned 2026-07-15; current through spec v1.84).** A complete, non-technical
+**v1.85 (operator-commissioned 2026-07-15; current through spec v1.85).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.84 — describes spec v1.84; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.85 — describes spec v1.85; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -639,6 +639,13 @@ instead (OWN-09, OWN-10, OWN-11).
 
 ## 8. When things go wrong
 
+If a **Close** ever can't finish, the panel tells you *exactly* what state
+the trade is in rather than a blank error: "close failed — nothing was sent,
+the position is unchanged," or, the one that matters, "close PARTIALLY
+done — these sides closed, these remain," marked critical so you act. A
+half-closed trade is never dressed up as an untouched one; clicking Close
+again simply finishes the remaining side (CLS-06).
+
 An **UNPROTECTED** alert means exactly one thing: a short position exists
 without a confirmed, working stop resting at the broker, and the bot has
 tried and failed, within a bounded number of retries, to place one. It is
@@ -814,7 +821,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.84 — describes spec v1.84 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.85 — describes spec v1.85 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 

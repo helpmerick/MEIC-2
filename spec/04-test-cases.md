@@ -1745,6 +1745,31 @@ Scenario: Provisional stays provisional
   Then its realized P&L renders the EOD-01 PROVISIONAL label, never fake finality
 ```
 
+**TC-CLS-06** — CLS-06 close-boundary taxonomy & partial-truth invariant (v1.85, from the 2026-07-20 incident; Appendix-B harness ported)
+```gherkin
+Scenario: A pre-action failure reports close_failed, position untouched
+  Given the close path's working_orders() call raises before any order is sent
+  Then the response is 200 {"result":"close_failed","stage":"pre_submit","reason":...}
+  And no per-side event is journaled and the position is unchanged
+  And no raw 500 ever reaches the frontend
+
+Scenario: A mid-sequence failure reports close_partial, naming the sides
+  Given some sides already closed-and-journaled and the long-leg submit then raises
+  Then the response is 200 {"result":"close_partial","stage":"in_flight", sides_closed, sides_remaining}
+  And the journal holds the per-side events for the closed sides and NO EntryClosed
+  And an RSK-06 critical alert fired
+  And the result is never presented as a generic failure
+
+Scenario: The remainder closes idempotently on a second click
+  Given a prior close_partial left one side open
+  When Close is clicked again against a healthy broker
+  Then only the remaining side closes, via the same canonical path, journaling exactly one EntryClosed
+
+Scenario: Baseline and existing results are byte-identical
+  Then a healthy close still returns 200 {"result":"closed"}
+  And already_closed, unknown_entry, and the CLS-03 cancel path are unchanged
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1765,7 +1790,7 @@ Scenario: Provisional stays provisional
 | STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
-| CLS-01→05 | TC-CLS-01→04, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
+| CLS-01→06 | TC-CLS-01→04, TC-CLS-06, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
 | ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |
 | ORD-09 (fill credit) | TC-ORD-08 | | STP-02 (actual fill) | TC-STP-19 |
