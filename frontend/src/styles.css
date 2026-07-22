@@ -368,7 +368,15 @@ body {
    of `.feed`'s own scrollbox as newer rows scroll past it. `top`/`z-index`
    are ALSO set inline in ActivityFeed.tsx (redundant in a real browser,
    deliberate for jsdom: vitest.config.ts runs with `css: false`, so a test
-   asserting sticky positioning reads the inline style, not this rule). */
+   asserting sticky positioning reads the inline style, not this rule).
+   OPAQUE BACKDROP (operator report 2026-07-22, "headings collecting and
+   stacking at the top" when scrolling): a sticky header must fully occlude
+   whatever it's stacked over -- the previous day's separator and the scrolled
+   activity rows beneath it -- or both bleed through and it reads as piling up
+   instead of cleanly swapping out. `--warn-dim` alone is only ~12-14% opaque
+   (it's a decorative tint meant for non-stacking uses like .pill.warn); layer
+   it over the opaque `--card-solid` token so the amber wash looks identical
+   but the painted result is solid. */
 .feed-day-separator {
   padding: 7px 6px 5px;
   font-size: 11px;
@@ -376,7 +384,7 @@ body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--warn);
-  background: var(--warn-dim);
+  background: linear-gradient(var(--warn-dim), var(--warn-dim)), var(--card-solid);
   border-bottom: 1px solid var(--warn);
   border-radius: 5px 5px 0 0;
   position: sticky;
