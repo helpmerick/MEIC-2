@@ -227,8 +227,17 @@ class TastytradeAdapter:
         # STP-03 (v1.67 tombstone): stop_limit is not a member of
         # OrderIntent.ORDER_TYPES, so `intent.order_type` can never be
         # "stop_limit" here -- no OrderType.STOP_LIMIT entry exists to build one.
+        # LEX-05/STP-08a/CLS-01: a "marketable_limit" intent is OUR-priced --
+        # the application computes the bounded marketable price from the quote
+        # ("marketable limit at the current bid ... never a raw market order",
+        # LEX-05). The broker's native "Marketable Limit" wire type REFUSES a
+        # client price (PROD dry-run 2026-07-24: `order_must_omit_price`), so
+        # the spec-true translation is a plain LIMIT at the intent's price --
+        # wire-type choice is the ACL's job (doc 05 s121). Never map to
+        # OrderType.MARKET: a raw market order is spec-forbidden (LEX-05) and
+        # unbounded.
         type_map = {"stop_market": OrderType.STOP,
-                    "limit": OrderType.LIMIT, "marketable_limit": OrderType.MARKETABLE_LIMIT}
+                    "limit": OrderType.LIMIT, "marketable_limit": OrderType.LIMIT}
         action_map = {a.value.lower().replace(" ", "_"): a for a in OrderAction}
         tif_map = {"Day": OrderTimeInForce.DAY, "GTC": OrderTimeInForce.GTC}
 
@@ -264,7 +273,24 @@ class TastytradeAdapter:
         if intent.stop_trigger is not None:
             kwargs["stop_trigger"] = D(str(intent.stop_trigger))
         if intent.price is not None:
-            kwargs["price"] = D(str(intent.price))
+            # Tastytrade's price dialect is SIGNED net effect: credit(+) /
+            # debit(-) (PROD dry-run 2026-07-24: a single-leg BUY at +0.05
+            # rejects `cant_buy_for_credit`; at -0.05 it is accepted). The
+            # application layer prices in unsigned option premium; the sign is
+            # broker dialect, so it belongs HERE (doc 05 s121). All-buy orders
+            # (CLS-01 marketable closes, STP-03b escalation, DCY-02 buyback)
+            # are net debits -> negative; all-sell orders (LEX ladder/LEX-05
+            # fallback) are net credits -> positive; a mixed-leg order (the
+            # ORD-01 entry condor, net credit) passes through as the caller
+            # priced it -- that shape is live-proven and its net sign is the
+            # caller's semantic, not derivable per-leg here.
+            price = D(str(intent.price))
+            actions = {leg.action for leg in intent.legs}
+            if actions <= {"buy_to_open", "buy_to_close"}:
+                price = -abs(price)
+            elif actions <= {"sell_to_open", "sell_to_close"}:
+                price = abs(price)
+            kwargs["price"] = price
         # ORD-04 / EC-API-03 (2026-07-17 security review finding A, ROOT FIX):
         # stamp the intent's client-generated idempotency key onto the order's
         # server-side `external_identifier`. The installed SDK's `NewOrder`
