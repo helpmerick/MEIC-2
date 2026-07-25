@@ -263,6 +263,21 @@ class PanelCommands:
             # `sides_closed` even though its short genuinely closed. The
             # ShortStopped events appended during THIS call identify exactly
             # those raced sides.
+            # INVARIANT (CLS-06, reviewed 2026-07-25): every statement from here
+            # to this handler's `return` must be non-raising. These are pure
+            # in-memory operations over already-materialised domain objects
+            # (`leg.role`/`leg.side` are frozen dataclass fields; the journal
+            # slice was already iterated above), and the two I/O-ish steps that
+            # follow -- the CloseIncomplete append and the alert -- each carry
+            # their own try/except. This matters because a raise HERE would
+            # escape to `close_as`'s backstop and be labelled
+            # `pre_submit`/"position untouched" AFTER the broker submit already
+            # ran -- the exact partial-truth lie CLS-06 exists to prevent. A
+            # guard was deliberately NOT added (no constructible trigger; a
+            # wrong fallback would corrupt the very partial-truth report it
+            # would be protecting). If you add a statement to this block, keep
+            # it non-raising -- `test_tc_cls_06_partial_classifier_is_non_raising`
+            # pins this.
             raced_sides = {ev.side for ev in list(self._comp.events)[events_before:]
                            if isinstance(ev, ShortStopped) and ev.entry_id == entry_id}
             cls_legs = [leg for leg in legs
@@ -376,7 +391,15 @@ class PanelCommands:
         registry.request_cancel(entry_id)
         res = await self._cancel_service().cancel_working(entry_id, order_id)
         # cancel_working cleared the TPF floor; TPT targets are panel-side.
-        self._clear_tpt(entry_id)
+        # CLS-06: the broker cancel has ALREADY gone out by this point, so a
+        # raise here must NOT be reported as `pre_submit`/"position untouched"
+        # by the caller's pre-action handler -- that is the partial-truth
+        # mislabel CLS-06 exists to prevent. Bookkeeping only: best-effort and
+        # logged, never fatal to an otherwise-completed cancel.
+        try:
+            self._clear_tpt(entry_id)
+        except Exception:
+            logger.exception("CLS-06: TPT cleanup failed after cancelling working entry %s", entry_id)
         return {"result": res.result, "initiator": res.initiator, "entry_id": entry_id}
 
     async def switch_mode(self, target: str, confirmation: str = "") -> dict:
@@ -437,6 +460,19 @@ class PanelCommands:
             for entry_id, e in day.entries.items():
                 if not e.close_initiator and _open_sides(e):
                     res = await self.close(entry_id)
+                    # RSK-01a/CLS-03 (reviewed 2026-07-25): DELIBERATELY narrow.
+                    # A cleanly-cancelled WORKING entry ("cancelled") is NOT
+                    # counted flat, even though that means Flatten All warns
+                    # "still open" for an entry that usually has no exposure.
+                    # Reason: `_cancel_working_entry` snapshots the working order
+                    # id, but the ladder may be mid-`replace()` (execute_entry.py
+                    # :438) and re-register a NEW id, so `cancel_working` can
+                    # cancel + fills-check a SUPERSEDED id and return "cancelled"
+                    # while a new order is live. The ladder's stand-down block
+                    # (execute_entry.py:475-496) converges the durable state, but
+                    # at toast time "cancelled" is not proof of flatness -- and a
+                    # green all-clear is what tells the operator to walk away.
+                    # Fail closed until that CLS-03 race is resolved.
                     if res.get("result") in ("closed", "already_closed"):
                         closed.append(entry_id)
                     else:

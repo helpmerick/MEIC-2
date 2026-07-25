@@ -404,3 +404,92 @@ def test_tc_cls_06_flatten_surfaces_per_entry_incomplete_not_as_flattened():
     assert inc["result"] == "close_failed"
     assert inc["stage"] == "pre_submit"
     assert cmd.flatten_in_progress is False
+
+
+def test_tc_cls_06_flatten_fails_closed_on_unproven_flatness(monkeypatch):
+    """RSK-01a/CLS-03 (reviewed 2026-07-25, DELIBERATELY conservative): Flatten
+    All's flat-set stays narrowed to exactly ("closed", "already_closed") --
+    every other close/cancel result, INCLUDING a clean "cancelled", must land
+    in `incomplete` and never be counted flat.
+
+    Reason "cancelled" is excluded even though it looks safe:
+    `_cancel_working_entry` snapshots the working order id, but the ladder may
+    be mid-`replace()` (execute_entry.py:438) and re-register a NEW id after
+    the panel already read the old one. `cancel_working` then honestly cancels
+    and fills-checks the SUPERSEDED id and returns "cancelled" while a new
+    order can be live at the broker. The ladder's stand-down block
+    (execute_entry.py:475-496) eventually converges the durable state, but at
+    the instant Flatten All renders its toast, "cancelled" is not proof the
+    book is flat -- and a green all-clear is exactly what tells the operator
+    to walk away from the emergency button. "no_working_order" and
+    "already_done" are the same non-proof (absence of information, not
+    evidence of none), and "race_detected" is an outright live/unprotected
+    fill. This is a deliberate conservative choice (accepting some false "still
+    open" warnings) and should be revisited if/when the CLS-03 stale-order-id
+    race above is closed."""
+    comp = _seed_protected_entry()
+    cmd = PanelCommands(comp)
+
+    for unproven_result in ("cancelled", "no_working_order", "already_done", "race_detected"):
+        async def _fake_close(entry_id, _result=unproven_result):
+            return {"result": _result, "initiator": "cancel_entry", "entry_id": entry_id}
+        monkeypatch.setattr(cmd, "close", _fake_close)
+
+        result = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+
+        assert result["result"] == "flattened"
+        assert result["entries"] == [], f"{unproven_result!r} must not be counted flat"
+        assert len(result["incomplete"]) == 1
+        assert result["incomplete"][0]["entry_id"] == ENTRY_ID
+        assert result["incomplete"][0]["result"] == unproven_result
+
+
+def test_tc_cls_06_cancel_working_entry_tpt_cleanup_failure_is_not_fatal(monkeypatch):
+    """CLS-06 (the #4 fix): `_clear_tpt` runs AFTER `cancel_working` has
+    already sent the broker cancel -- a raise there is pure panel-side
+    bookkeeping and must NOT escape `_cancel_working_entry`. If it did, the
+    caller (`_close_as_inner`'s cancel-path try/except) would report
+    `close_failed`/`pre_submit` ("position untouched") even though the cancel
+    already went out -- the exact partial-truth mislabel CLS-06 exists to
+    prevent."""
+    comp = _seed_protected_entry()
+    cmd = PanelCommands(comp)
+    comp.working_entries.record("e-working", "entry-ord-working")
+
+    class _StubResult:
+        result = "cancelled"
+        initiator = "cancel_entry"
+
+    class _StubCancelService:
+        async def cancel_working(self, entry_id, order_id):
+            return _StubResult()
+    monkeypatch.setattr(cmd, "_cancel_service", lambda: _StubCancelService())
+
+    def _boom_clear_tpt(entry_id):
+        raise RuntimeError("tpt cleanup blew up")
+    monkeypatch.setattr(cmd, "_clear_tpt", _boom_clear_tpt)
+
+    result = asyncio.run(cmd._cancel_working_entry("e-working"))
+
+    assert result == {"result": "cancelled", "initiator": "cancel_entry", "entry_id": "e-working"}
+
+
+def test_tc_cls_06_partial_classifier_is_non_raising():
+    """Regression pin for the CLS-06 invariant comment above `raced_sides` in
+    `_close_as_inner`: the mid-sequence classifier block (raced_sides/
+    cls_legs/by_side/remaining/sides_closed/sides_remaining) must run to
+    completion and report `close_partial`/`in_flight` -- it must NOT escape to
+    `close_as`'s backstop and be mislabelled `close_failed`/`pre_submit`
+    ("position untouched") after the broker submit already ran. Reuses the
+    scenario-2 mid-sequence failure setup."""
+    comp = _seed_protected_entry()
+    wrapped = _BrokerRaisesOnCallLongSell(comp.broker)
+    comp.broker = wrapped
+    comp.close._broker = wrapped
+
+    resp = _http_close(comp)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result"] == "close_partial"
+    assert body["stage"] == "in_flight"
