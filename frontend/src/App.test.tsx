@@ -44,14 +44,30 @@ describe("App — Close / Flatten (UI-16 / TC-FLT-01)", () => {
     await waitFor(() => expect(screen.getByText(/closed e1/i)).toBeInTheDocument());
   });
 
-  it("a cancelled working entry toasts as a cancel, not a close (CLS-03)", async () => {
+  it("a cancelled working entry toasts as an unproven cancel, never green (CLS-03/v1.87(iii))", async () => {
     const spy = vi.spyOn(api, "closeEntry").mockResolvedValue({ result: "cancelled" });
     render(<App />);
 
     await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
 
     expect(spy).toHaveBeenCalledWith("e1");
-    await waitFor(() => expect(screen.getByText(/cancelled entry e1/i)).toBeInTheDocument());
+    const toast = await waitFor(() => screen.getByText(/cancel sent for e1.*verify the book is flat/i));
+    // v1.87(iii): a cancel is not proof of flatness, so never "ok" (green) --
+    // but it is also not an alarm, so it gets its own neutral "warn" tone,
+    // distinct from a genuine failure like race_detected/close_failed.
+    expect(toast.closest(".toast")?.className).toContain("warn");
+    expect(toast.closest(".toast")?.className).not.toContain("ok");
+  });
+
+  it("cancel_superseded toasts as unconfirmed, never a clean cancel (CLS-03(b)/v1.87)", async () => {
+    vi.spyOn(api, "closeEntry").mockResolvedValue({ result: "cancel_superseded" });
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    const toast = await waitFor(() => screen.getByText(/could not be confirmed/i));
+    expect(toast.closest(".toast")?.className).toContain("warn");
+    expect(toast.closest(".toast")?.className).not.toContain("ok");
   });
 
   it("race_detected surfaces as an error toast, never a clean cancel (CLS-03 race guard)", async () => {

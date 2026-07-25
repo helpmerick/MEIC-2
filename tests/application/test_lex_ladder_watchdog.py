@@ -204,6 +204,55 @@ def test_entry_closed_by_operator_suppresses_alert_even_with_no_ladder():
     assert alerts.calls == []
 
 
+# --- spec v1.87 ripple: a stale "cancelled" terminal must not blind LEX -----
+
+def test_stale_cancelled_terminal_does_not_suppress_a_genuine_stop_out():
+    """Spec v1.87 ripple / late-fill anomaly: `ManualClose.cancel_working`
+    now also writes `EntryClosed(initiator="cancelled")` (CLS-03(a)), and a
+    fill can surface AFTER that terminal was journaled (the cancel's
+    fills-feed check missed it before it propagated) -- `projection.apply`
+    clears the stale `close_initiator` and a `ReconciliationMismatch` fires,
+    but this watchdog reads the RAW journal, not the projection. Before this
+    fix, ANY `EntryClosed` -- including a stale "cancelled" one sitting
+    alongside a GENUINE stop-out on the very same entry -- silently
+    suppressed the pending-ladder check, blinding the R3-F1 orphaned-long
+    backstop against exactly the class of incident it exists to catch
+    (2026-07-10). A `cancelled` terminal must never suppress a real
+    ShortStopped."""
+    events = [_condor(), EntryClosed(entry_id=ENTRY, initiator="cancelled"),
+              ShortStopped(entry_id=ENTRY, side="CALL", fill=D("3.80"),
+                           slippage=D("0"), initiator="resting_stop")]
+    alerts = _Alerts()
+    wd = LexLadderWatchdog(alerts=alerts, grace_seconds=D("60"))
+
+    wd.observe(events, now=NOW)
+    assert alerts.calls == []  # inside the grace window -- not yet
+
+    wd.observe(events, now=NOW + timedelta(seconds=60))
+    assert len(alerts.calls) == 1
+    level, message, ctx = alerts.calls[0]
+    assert level == "critical"
+    assert ctx["entry_id"] == ENTRY
+    assert ctx["side"] == "CALL"
+
+
+def test_genuine_close_still_suppresses_alert_alongside_a_cancelled_terminal():
+    """Negative pin: only "cancelled" is special-cased. A genuine close
+    (e.g. "manual") on the entry must still suppress the alert exactly as
+    before, even if a "cancelled" terminal also happens to be in the log."""
+    events = [_condor(), EntryClosed(entry_id=ENTRY, initiator="cancelled"),
+              ShortStopped(entry_id=ENTRY, side="CALL", fill=D("3.80"),
+                           slippage=D("0"), initiator="resting_stop"),
+              EntryClosed(entry_id=ENTRY, initiator="manual")]
+    alerts = _Alerts()
+    wd = LexLadderWatchdog(alerts=alerts, grace_seconds=D("60"))
+
+    for tick in (0, 60, 600):
+        wd.observe(events, now=NOW + timedelta(seconds=tick))
+
+    assert alerts.calls == []
+
+
 # --- pure fold sanity (no watchdog/alerts involved) -------------------------
 
 def test_pending_ladder_starts_pure_fold_matches_expectations():

@@ -415,6 +415,7 @@ body {
   animation: toast-in .22s ease;
 }
 .toast.ok { border-color: rgba(52,211,153,0.4); color: var(--good); }
+.toast.warn { border-color: rgba(251,191,36,0.45); color: var(--warn); }
 .toast.err { border-color: rgba(248,113,113,0.45); color: var(--bad); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 

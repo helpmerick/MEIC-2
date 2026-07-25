@@ -181,7 +181,18 @@ def apply(state: DayState, event: Event) -> DayState:
             put_floor=event.put_floor, call_floor=event.call_floor,
             blackout_overridden=event.blackout_overridden,
             underlying=event.underlying,
-            eod_close_time=getattr(event, "eod_close_time", None))))
+            eod_close_time=getattr(event, "eod_close_time", None),
+            # REC-01/CLS-03(a) v1.87: broker truth is authoritative. A
+            # CondorFilled arriving AFTER a terminal "cancelled" proves the
+            # cancel's fills-feed check missed a fill that had not yet
+            # propagated -- the entry HOLDS A POSITION. Clearing the stale
+            # terminal is what keeps it visible to the STP stop-fill
+            # watcher, LEX long recovery, the UND-03 EOD force-close,
+            # Flatten All and the operator's Close button. ONLY the
+            # "cancelled" initiator is cleared this way -- a genuine CLS
+            # close (manual/take_profit/eod/decay/...) is never reopened by
+            # a late fill.
+            close_initiator=None if e.close_initiator == "cancelled" else e.close_initiator)))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(

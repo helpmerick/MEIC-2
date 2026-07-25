@@ -31,11 +31,11 @@ export function App() {
   // read model (UI-03/DAY-03 — the frontend never computes an ET trading day
   // itself) and threaded to both ▶ manual-fire surfaces below.
   const todayBlackoutLabel = state?.today_blackout_label ?? null;
-  const [toast, setToast] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
+  const [toast, setToast] = useState<{ text: string; kind: "ok" | "warn" | "err" } | null>(null);
   const [drill, setDrill] = useState<OutageDrill | null>(null);
   const [drilling, setDrilling] = useState(false);
 
-  const flash = useCallback((text: string, kind: "ok" | "err") => {
+  const flash = useCallback((text: string, kind: "ok" | "warn" | "err") => {
     setToast({ text, kind });
     window.setTimeout(() => setToast(null), 3000);
   }, []);
@@ -52,7 +52,19 @@ export function App() {
       if (r.result === "race_detected") {
         flash(`${id}: cancel raced a fill — position may be live, check alerts`, "err");
       } else if (r.result === "cancelled") {
-        flash(`Cancelled entry ${id}`, "ok");
+        // CLS-03(b)(iii)/v1.87: a clean cancel is NOT proof the book is
+        // flat (the ladder could still hold a superseded id mid-replace) --
+        // never flash green here. `warn` (not `err`): v1.87(iii) forbids
+        // green because a cancel is not proven flatness, but a routine
+        // cancel must not read as an alarm on the same tone as a genuine
+        // failure (race_detected, close_failed, close_partial).
+        flash(`Cancel sent for ${id} — verify the book is flat`, "warn");
+      } else if (r.result === "cancel_superseded") {
+        // CLS-03(b) v1.87: the ladder minted a newer working order id mid-
+        // replace before the cancel could land cleanly on it -- never a
+        // proven cancel, never green. Same `warn` reasoning as `cancelled`
+        // above: not an alarm, just not provably flat either.
+        flash(`${id}: cancel could not be confirmed (a newer order superseded it) — check the book`, "warn");
       } else if (r.result === "close_failed") {
         // CLS-06/UI-16: a pre-action failure -- nothing was sent to the
         // broker, the position is unchanged. Never a raw 500 (the
@@ -76,7 +88,12 @@ export function App() {
             + `click Close again (${r.reason})`, "err");
         }
       } else {
-        flash(r.result === "closed" ? `Closed ${id}` : `${id}: ${r.result}`, "ok");
+        // v1.87(iii): green is the operator's signal to walk away, so it is
+        // conditional on a KNOWN-FLAT allowlist, never the default for any
+        // unrecognised result string -- an unrecognised result is not proof
+        // of flatness.
+        const provenFlat = r.result === "closed" || r.result === "already_closed";
+        flash(provenFlat ? `Closed ${id}` : `${id}: ${r.result}`, provenFlat ? "ok" : "err");
       }
       refresh();
     } catch (e) {

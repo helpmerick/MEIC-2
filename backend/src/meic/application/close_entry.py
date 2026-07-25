@@ -75,6 +75,10 @@ VALID_INITIATORS = frozenset({
     # operator ratification, kept because STP-04 demands the flatten and this is
     # the honest, distinct label for why it happened.
     "unprotected",
+    # CLS-03(a)/spec v1.87: the terminal initiator for a pre-fill (WORKING)
+    # entry cancelled with nothing filled — ManualClose.cancel_working's
+    # ratified clean-cancel path (never used for a post-fill CLS close).
+    "cancelled",
 })
 
 _SIDE_ORDER = {"PUT": 0, "CALL": 1}  # deterministic order (TC-CLS-01 scenario 1)

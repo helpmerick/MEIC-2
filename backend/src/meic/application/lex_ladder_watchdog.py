@@ -47,9 +47,26 @@ def _pending_ladder_starts(events: list[Event]) -> set[tuple[str, str]]:
     """LEX-07: every (entry_id, side) whose short was stopped by a genuine
     STOP-OUT and has NOT yet started a LEX ladder (`LongSaleStarted`), nor
     reached a terminal LEX/close state (`LongSold`/`SideClosed`), nor been
-    closed at the entry level by any other path (`EntryClosed` -- CLS or
-    otherwise; see `close_entry.py`, the only writer of that event, which
-    fully disposes of an entry's positions outside the ladder).
+    closed at the entry level by any other NON-CANCELLED path (`EntryClosed`
+    with `initiator != "cancelled"`).
+
+    `close_entry.py` used to be the ONLY writer of `EntryClosed` -- that
+    stopped being true at spec v1.87: `ManualClose.cancel_working` also
+    writes `EntryClosed(initiator="cancelled")` for a CLS-03(a) pre-fill
+    cancel, which disposes of NOTHING (a genuinely-nothing-filled entry has
+    no legs, so it can never appear in `stop_initiator` below anyway -- this
+    is a no-op in the normal case). But a fill can surface AFTER that
+    terminal was journaled (the cancel's fills-feed check missed it before
+    it propagated) -- the LATE-FILL ANOMALY: `projection.apply` clears the
+    now-stale `close_initiator` and a `ReconciliationMismatch` + critical
+    alert fire (REC-01/CLS-03(a) v1.87), but the entry genuinely holds a
+    position and can genuinely stop out. Honouring a `cancelled` terminal
+    here -- treating it the same as a real CLS close -- would BLIND this
+    backstop against exactly the orphaned-long class it exists to catch
+    (the 2026-07-10 incident this whole module was written for). A
+    `cancelled` terminal is therefore never counted as "this entry was
+    disposed of" by this watchdog; only a genuine close is (`getattr` for
+    replay-safety against any legacy event lacking the field).
 
     Pure fold, no timestamps involved -- presence/absence only. Ordering
     within the log is not re-verified here: the caller (the watchdog's own
@@ -67,7 +84,7 @@ def _pending_ladder_starts(events: list[Event]) -> set[tuple[str, str]]:
             started.add((e.entry_id, e.side))
         elif isinstance(e, (LongSold, SideClosed)):
             terminal.add((e.entry_id, e.side))
-        elif isinstance(e, EntryClosed):
+        elif isinstance(e, EntryClosed) and getattr(e, "initiator", None) != "cancelled":
             closed_entries.add(e.entry_id)
 
     pending: set[tuple[str, str]] = set()

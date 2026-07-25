@@ -407,10 +407,13 @@ def test_tc_cls_06_flatten_surfaces_per_entry_incomplete_not_as_flattened():
 
 
 def test_tc_cls_06_flatten_fails_closed_on_unproven_flatness(monkeypatch):
-    """RSK-01a/CLS-03 (reviewed 2026-07-25, DELIBERATELY conservative): Flatten
-    All's flat-set stays narrowed to exactly ("closed", "already_closed") --
-    every other close/cancel result, INCLUDING a clean "cancelled", must land
-    in `incomplete` and never be counted flat.
+    """RSK-01a/CLS-03(b)(iii) v1.87 (now RATIFIED, not just a conservative
+    guess): Flatten All's flat-set stays narrowed to exactly ("closed",
+    "already_closed") -- every other close/cancel result, INCLUDING a clean
+    "cancelled", must land in `incomplete` and never be counted flat.
+    "cancelled" alone is not proof of flatness -- an all-clear requires
+    PROVEN flatness from broker truth (CLS-03(b)(iii), TC-CLS-07 scenario 4),
+    and "cancel_superseded" (CLS-03(b)) is exactly as unproven.
 
     Reason "cancelled" is excluded even though it looks safe:
     `_cancel_working_entry` snapshots the working order id, but the ladder may
@@ -430,7 +433,8 @@ def test_tc_cls_06_flatten_fails_closed_on_unproven_flatness(monkeypatch):
     comp = _seed_protected_entry()
     cmd = PanelCommands(comp)
 
-    for unproven_result in ("cancelled", "no_working_order", "already_done", "race_detected"):
+    for unproven_result in ("cancelled", "no_working_order", "already_done", "race_detected",
+                            "cancel_superseded"):
         async def _fake_close(entry_id, _result=unproven_result):
             return {"result": _result, "initiator": "cancel_entry", "entry_id": entry_id}
         monkeypatch.setattr(cmd, "close", _fake_close)
@@ -461,7 +465,7 @@ def test_tc_cls_06_cancel_working_entry_tpt_cleanup_failure_is_not_fatal(monkeyp
         initiator = "cancel_entry"
 
     class _StubCancelService:
-        async def cancel_working(self, entry_id, order_id):
+        async def cancel_working(self, entry_id, order_id, *, current_id=None):
             return _StubResult()
     monkeypatch.setattr(cmd, "_cancel_service", lambda: _StubCancelService())
 

@@ -372,7 +372,8 @@ class PanelCommands:
         if self._manual_close is None:
             comp = self._comp
             self._manual_close = ManualClose(comp.close, comp.broker, comp.state,
-                                             alerts=comp.alerts, events=comp.events)
+                                             alerts=comp.alerts, events=comp.events,
+                                             clock=getattr(comp, "clock", None))  # ORD-11
         return self._manual_close
 
     async def _cancel_working_entry(self, entry_id: str) -> dict:
@@ -384,12 +385,22 @@ class PanelCommands:
         click→cancel window) alerts critically and journals a
         ReconciliationMismatch inside `cancel_working` itself; it is returned
         distinctly so the UI never renders it as a clean cancel."""
+        # CLS-03(b)(i) v1.87: raise the stand-down flag FIRST, THEN resolve the
+        # CURRENT working id — never a pre-await snapshot taken before the
+        # ladder is told to stop repricing. Resolving after the flag closes
+        # the window where a reprice could mint a new id between our read and
+        # our flag-raise.
         registry = getattr(self._comp, "working_entries", None)
+        if registry is not None:
+            registry.request_cancel(entry_id)
         order_id = registry.get(entry_id) if registry is not None else None
         if order_id is None:
             return {"result": "no_working_order", "entry_id": entry_id}
-        registry.request_cancel(entry_id)
-        res = await self._cancel_service().cancel_working(entry_id, order_id)
+        # CLS-03(b)(i): pass the LIVE resolver, not a snapshot — `cancel_working`
+        # re-reads it after every cancel attempt to detect a mid-replace
+        # supersession (CLS-03(b)).
+        current_id = (lambda: registry.get(entry_id)) if registry is not None else None
+        res = await self._cancel_service().cancel_working(entry_id, order_id, current_id=current_id)
         # cancel_working cleared the TPF floor; TPT targets are panel-side.
         # CLS-06: the broker cancel has ALREADY gone out by this point, so a
         # raise here must NOT be reported as `pre_submit`/"position untouched"
@@ -460,19 +471,15 @@ class PanelCommands:
             for entry_id, e in day.entries.items():
                 if not e.close_initiator and _open_sides(e):
                     res = await self.close(entry_id)
-                    # RSK-01a/CLS-03 (reviewed 2026-07-25): DELIBERATELY narrow.
-                    # A cleanly-cancelled WORKING entry ("cancelled") is NOT
-                    # counted flat, even though that means Flatten All warns
-                    # "still open" for an entry that usually has no exposure.
-                    # Reason: `_cancel_working_entry` snapshots the working order
-                    # id, but the ladder may be mid-`replace()` (execute_entry.py
-                    # :438) and re-register a NEW id, so `cancel_working` can
-                    # cancel + fills-check a SUPERSEDED id and return "cancelled"
-                    # while a new order is live. The ladder's stand-down block
-                    # (execute_entry.py:475-496) converges the durable state, but
-                    # at toast time "cancelled" is not proof of flatness -- and a
-                    # green all-clear is what tells the operator to walk away.
-                    # Fail closed until that CLS-03 race is resolved.
+                    # RSK-01a/CLS-03(b)(iii) v1.87 (SPEC LAW, ratified — not
+                    # agent judgement): "cancelled" MUST NOT be treated as flat
+                    # ANYWHERE, including here. An all-clear requires PROVEN
+                    # flatness from broker truth, never a snapshot-id cancel
+                    # result. `_cancel_working_entry` now resolves the CURRENT
+                    # working id live and `cancel_working` re-resolves it on
+                    # every retry (CLS-03(b)(i)), but even a "cancelled" result
+                    # is not itself broker-truth proof of flatness — the flat
+                    # set stays narrowed to exactly ("closed", "already_closed").
                     if res.get("result") in ("closed", "already_closed"):
                         closed.append(entry_id)
                     else:

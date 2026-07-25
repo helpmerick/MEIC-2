@@ -23,7 +23,10 @@ from decimal import Decimal
 
 from meic.application.market_calendar import trading_day
 from meic.config.fee_model import FeeModel
-from meic.domain.events import CondorFilled, CondorProposed, EntrySkipped, EntryWindowOpened
+from meic.domain.events import (
+    CondorFilled, CondorProposed, EntryClosed, EntrySkipped, EntryWindowOpened,
+    ReconciliationMismatch,
+)
 from meic.domain.fees import fee_for_legs
 from meic.domain.ladder import RepriceLadder
 from meic.domain.stop_policy import StopBasis, effective_cap_check, feasible
@@ -564,6 +567,27 @@ class ExecuteEntryAttempt:
             target_premium=condor.target_premium,   # RPT-17 (v1.82) audit
             underlying=condor.underlying,            # UND-01 (v1.86) audit/replay
             eod_close_time=condor.eod_close_time))   # UND-03/F3 (v1.86) pinned close time
+        # REC-01/CLS-03(a) v1.87: this fill can land AFTER a cancel was
+        # already journaled terminal (`EntryClosed(initiator="cancelled")`)
+        # -- ManualClose.cancel_working's own fills-feed check is documented
+        # unreliable (see the REPRICE-RACE SWEEP comment above, and its own
+        # docstring) and can miss a fill that had not yet propagated. That
+        # makes the "cancelled" terminal STALE — `projection.apply`'s
+        # CondorFilled branch clears it so the entry stays visible to every
+        # downstream consumer, but the anomaly itself must be LOUD, not a
+        # silent self-heal: journal it, and alert critically when an alert
+        # sink is wired (it is, here — `self._alerts`, used elsewhere in
+        # this class).
+        if any(isinstance(ev, EntryClosed) and ev.entry_id == entry_id
+               and ev.initiator == "cancelled" for ev in self._events):
+            detail = (f"REC-01/CLS-03(a): entry {entry_id} filled (order {working_id}) "
+                     "AFTER a terminal cancel was already journaled -- the cancel's "
+                     "fills-feed check missed this fill before it propagated, so the "
+                     "'cancelled' terminal was stale and has been superseded by "
+                     "broker truth (the entry holds a real position)")
+            self._events.append(ReconciliationMismatch(detail=detail))
+            if self._alerts is not None:
+                self._alerts.alert("critical", detail, entry_id=entry_id, order_id=str(working_id))
         return EntryOutcome("FILLED", fill_credit=actual)
 
     async def _fill_legs(self, order_id, condor: Condor, expiration: date) -> tuple:
