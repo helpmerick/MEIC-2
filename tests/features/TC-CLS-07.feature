@@ -23,6 +23,17 @@ Feature: TC-CLS-07
     And a click landing before the first submit returns journals NOTHING until that submit's outcome is known
     And no phantom entry remains open in the projection, Flatten's targets, or the day-trades table
 
+  Scenario: An unfilled terminal is never asserted without a disproof path (v1.89)
+    Given a terminal journaled as "unfilled" on a path where the broker-truth guard is unreachable
+    Then either a later fill on that order id raises a reconcile mismatch and blocks trading (RSK-03)
+    Or the terminal is broker-confirmed before it is asserted
+    And where neither holds, the entry stays VISIBLE rather than asserting unfilled
+
+  Scenario: A never-filled entry never renders as "Closed" (v1.89, UI-35)
+    Given an entry that was priced out at the floor
+    Then its card and the day-trades table read "Unfilled", matching its drilldown
+    And no terminal state renders wording that asserts a position was closed
+
   Scenario: The day report never calls a cancel EXTERNAL (v1.88, Finding D)
     Given a cancelled entry and an unfilled entry
     Then they classify CANCELLED and UNFILLED respectively
