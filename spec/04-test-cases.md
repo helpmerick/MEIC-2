@@ -1867,6 +1867,35 @@ Scenario: Broker-primitive parity is enforced
   Then every fake answers each broker primitive identically to the live adapter
   And a divergence (e.g. a leg predicate that ignores fill status) fails CI
 
+Scenario: The resolver answers PER LEG (v1.91 scope correction)
+  Given a still-open entry with one leg already flat
+  When a close is attempted on that flat leg
+  Then the resolver answers for THAT LEG, returns TERMINAL_NO_POSITION, and no order reaches the wire
+  And a resolver that discards the caller's leg symbol fails this test
+
+Scenario: Protective stop placement is NOT an exit (v1.91, ORD-12 scope)
+  Given stop placement on a filled entry while positions() lags
+  Then ORD-12's predicate does not apply to kind="stop"
+  And stop placement is never refused as an exit
+  And no path can reach "unhedged condor with no stops, journaled as closed"
+
+Scenario: Refusals raise, never return a sentinel (v1.91)
+  Given any refusal, no-op id, or UNKNOWN on an order path
+  Then it propagates as an exception callers cannot ignore
+  And no sentinel is ever journaled as a real order id
+  And SideClosed/EntryClosed are never appended after a refused submit
+
+Scenario: Quantity is filled, not ordered (v1.91)
+  Given a 2-lot condor that filled 1
+  Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
+  And a cancelled-after-partial order still reports its filled legs
+
+Scenario: Parity is observation-based and catches the Routed divergence (v1.91)
+  Given the recorded observation of a resting stop at status "Routed"
+  Then the live working_orders filter reports it as working
+  And stop confirmation counts it, so a protected position is never auto-flattened as UNPROTECTED
+  And a stub-vs-stub parity check that misses this divergence fails
+
 Scenario: A close can never open a position (ORD-12)
   Given a leg the resolver reports TERMINAL_NO_POSITION
   Then no exit order is submitted for it — the close is a no-op
