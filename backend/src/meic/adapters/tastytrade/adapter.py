@@ -19,6 +19,7 @@ the BrokerGateway port.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator
@@ -154,6 +155,89 @@ def _is_adoptable_status(status: str) -> bool:
     """
     s = status.lower().split(".")[-1].strip().replace("_", " ")
     return s not in _TERMINAL_DEAD_STATUSES
+
+
+_logger = logging.getLogger(__name__)
+
+
+# STP-04a (v1.91, live defect, priority fix) / NFR-09 (v1.92, generalised —
+# operator-ratified) -- "is this working order still live?" MUST be a
+# DENY-list of known-DEAD statuses plus an explicit UNKNOWN/unrecognised
+# branch, never an ALLOW-list of known-live ones.
+#
+# THE DEFECT this replaces: `working_orders()` used to filter with
+# `status in ("live", "received")` -- an allow-list. The pinned vector,
+# tests/contract/observations/03-resting-stop-placed.json, is a REAL resting
+# stop recorded at status "Routed": the allow-list excluded it (along with
+# Contingent, In Flight, Cancel Requested, Replace Requested, Partially
+# Removed -- every other genuinely-working status). `ProtectPosition.
+# _confirmed_qty` scans `working_orders()` to confirm a just-placed stop; with
+# the stop invisible there, a PROTECTED position read as UNPROTECTED and
+# STP-04 auto-flattened it -- the worst thing an allow-list can do, because an
+# allow-list fails toward ABSENT and absent is precisely what triggers that
+# destructive action.
+#
+# THE FIX: invert the direction. A status is WORKING unless it is provably
+# DEAD; a status this filter has never seen is far likelier to be a
+# new/renamed transient broker state than silent proof the order is gone, so
+# it counts as WORKING (never "absent") and is logged loudly at ERROR (see
+# `working_orders()` below) -- a new broker status must be a loud event, not a
+# silent behaviour change.
+#
+# RATIFIED CLASSIFICATION (spec text, v1.92):
+#   WORKING = received, live, routed, contingent, in flight, cancel requested,
+#             replace requested, partially removed, PLUS anything unrecognised.
+#   DEAD    = cancelled, rejected, expired, removed, filled.
+# Cancel Requested / Replace Requested count as WORKING -- deliberately -- an
+# order pending cancel/replace can still FILL before that cancel/replace
+# lands at the broker; treating "we asked it to stop" as "it already stopped"
+# would be the same absent-fails-toward-destructive-action defect one status
+# later.
+#
+# THIS IS A SEPARATE, DERIVED CONSTANT from `_TERMINAL_DEAD_STATUSES` above --
+# deliberately NOT an edit to that constant in place. `_TERMINAL_DEAD_STATUSES`
+# answers a different question for `_is_adoptable_status`: may a
+# `get_live_orders()` row carrying OUR external id be adopted as our own
+# lost-ack order? The two questions disagree on exactly one status each
+# direction: "partially removed" is terminal for ADOPTION (nothing left to
+# adopt) but a partially-removed stop can still carry a live remaining
+# quantity worth protecting, so it is NOT dead for the *working-orders*
+# question; "filled" is adoptable (our order landed) but a filled order is by
+# definition no longer *resting*, so it IS dead for the working-orders
+# question even though `_is_adoptable_status` doesn't special-case it either
+# way. Editing `_TERMINAL_DEAD_STATUSES` itself would silently change
+# `_is_adoptable_status`'s unrelated stale-order semantics.
+_WORKING_ORDER_DEAD_STATUSES = (_TERMINAL_DEAD_STATUSES - {"partially removed"}) | {"filled"}
+
+# The full recognised broker status vocabulary (verified against the
+# installed SDK's `OrderStatus` enum and real recorded observations). Used
+# ONLY to decide whether an incoming status is "known" (and therefore silent)
+# or "unrecognised" (and therefore logged loudly) -- the WORKING/DEAD decision
+# itself is made by `_WORKING_ORDER_DEAD_STATUSES` alone, per NFR-09.
+_KNOWN_ORDER_STATUS_TOKENS = frozenset({
+    "received", "live", "routed", "contingent", "in flight",
+    "cancel requested", "replace requested", "partially removed",
+    "cancelled", "rejected", "expired", "removed", "filled",
+})
+
+
+def _normalize_status_token(raw) -> str:
+    """Fold every wire/enum shape of a broker order status onto one comparable
+    token, e.g. `OrderStatus.IN_FLIGHT`, `"In Flight"`, `"in_flight"` all ->
+    `"in flight"`. Mirrors the inline normalisation `_is_adoptable_status`
+    already performs above, factored out here so NFR-09's deny-list and its
+    tests share one definition rather than two normalizers drifting apart."""
+    return str(raw or "").strip().lower().split(".")[-1].strip().replace("_", " ")
+
+
+def _is_working_order_status(raw) -> bool:
+    """NFR-09 deny-list membership test against `_WORKING_ORDER_DEAD_STATUSES`
+    (NOT the shared `_TERMINAL_DEAD_STATUSES` constant -- see the rationale
+    above). A status is WORKING unless its normalised token is provably DEAD;
+    an unrecognised token is therefore WORKING by construction (loud logging
+    of the unrecognised case lives in `working_orders()`, which has the order
+    id to name alongside the status)."""
+    return _normalize_status_token(raw) not in _WORKING_ORDER_DEAD_STATUSES
 
 
 class TastytradeAdapter:
@@ -469,8 +553,24 @@ class TastytradeAdapter:
             f"({cancel_result!r}) — ORD-08 transient, original stop presumed resting")
 
     async def working_orders(self) -> list[Any]:
+        """STP-04a (v1.91) / NFR-09 (v1.92): deny-list, never allow-list -- see
+        `_WORKING_ORDER_DEAD_STATUSES` above for the full rationale and the
+        pinned `Routed` vector this replaces. An order is kept unless its
+        status is provably DEAD; an unrecognised status is kept (WORKING) and
+        logged at ERROR naming the status and order id, so a new/renamed
+        broker status is a loud event -- never a silent flatten trigger."""
         live = await self._account.get_live_orders(self._session)
-        return [o for o in live if str(o.status).lower().split(".")[-1] in ("live", "received")]
+        working: list[Any] = []
+        for o in live:
+            raw_status = getattr(o, "status", "")
+            if _normalize_status_token(raw_status) not in _KNOWN_ORDER_STATUS_TOKENS:
+                _logger.error(
+                    "unrecognised broker order status %r on order id=%r -- treating as "
+                    "WORKING per NFR-09 deny-list (STP-04a: unrecognised must fail toward "
+                    "present, never absent)", raw_status, getattr(o, "id", None))
+            if _is_working_order_status(raw_status):
+                working.append(o)
+        return working
 
     async def server_time(self) -> "datetime | None":
         """The broker's clock, from the `Date` header of a light authenticated call

@@ -1,6 +1,10 @@
 """ProtectPosition — STP-01/02/04/06 placement, verification, escalation."""
 import asyncio
+import base64
+import json
 from decimal import Decimal as D
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +28,19 @@ from tests.harness.fake_clock import ET, FakeClock
 from datetime import datetime
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
+
+ROUTED_OBSERVATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "tests" / "contract" / "observations" / "03-resting-stop-placed.json"
+)
+
+
+def _cert_jwt(iss: str) -> str:
+    seg = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+    return f"{seg({'alg': 'EdDSA'})}.{seg({'iss': iss})}.sig"
+
+
+CERT_TOKEN = _cert_jwt("https://api.sandbox.tastyworks.com")
 
 
 class RecordingAlerts:
@@ -262,3 +279,70 @@ def test_auto_flatten_callback_survives_an_empty_leg_book_without_crashing():
     assert result.outcome == "UNPROTECTED_FLATTENED"     # did not crash
     assert any("no legs recorded" in msg for _, msg, _ in alerts.calls)
     assert not [e for e in events if isinstance(e, EntryClosed)]  # nothing closed
+
+
+# --- STP-04a (v1.91) / NFR-09 (v1.92) end-to-end harm test ---------------------
+
+def test_routed_resting_stop_confirms_protected_not_auto_flattened():
+    """THE live defect this fixes: `working_orders()` used to be an ALLOW-list
+    (`status in ("live", "received")`). The pinned vector,
+    tests/contract/observations/03-resting-stop-placed.json, is a REAL resting
+    stop recorded at status "Routed" -- excluded by the old allow-list, so
+    `_confirmed_qty` read the just-placed stop as absent, the position was
+    classified UNPROTECTED, and STP-04 AUTO-FLATTENED a position that was
+    actually protected. This drives the REAL `TastytradeAdapter` (stubbed
+    session/account only, no network) through `ProtectPosition.protect()` with
+    the exact recorded "Routed" payload and asserts PROTECTED, never
+    UNPROTECTED_FLATTENED. Before the NFR-09 deny-list fix this test fails
+    with `result.outcome == "UNPROTECTED_FLATTENED"`."""
+    from meic.adapters.tastytrade.adapter import TastytradeAdapter
+
+    obs = json.loads(ROUTED_OBSERVATION_PATH.read_text())["observation"]
+    assert obs["status"] == "Routed"  # the pinned vector, unchanged
+    routed_leg = obs["legs"][0]
+
+    routed_order = SimpleNamespace(
+        status=obs["status"], id=obs["id"],
+        legs=[SimpleNamespace(quantity=routed_leg["quantity"])],
+    )
+
+    class _StubAccount:
+        async def place_order(self, session, new_order, dry_run=False):
+            return SimpleNamespace(order=SimpleNamespace(id=routed_order.id))
+
+        async def get_live_orders(self, session):
+            return [routed_order]
+
+    class _FakeOption:
+        """Builds a REAL SDK Leg so NewOrder validates, without a session."""
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def build_leg(self, qty, action):
+            from tastytrade.instruments import InstrumentType
+            from tastytrade.order import Leg
+            return Leg(instrument_type=InstrumentType.EQUITY_OPTION, symbol=self.symbol,
+                      quantity=qty, action=action)
+
+    async def _resolved(v):
+        return v
+
+    adapter = TastytradeAdapter("secret", CERT_TOKEN, is_test=True)
+    adapter._account = _StubAccount()
+    adapter._option_for = lambda symbol, **kw: _resolved(_FakeOption(symbol))
+
+    events, alerts = [], RecordingAlerts()
+    flattened = []
+
+    async def close_cb(entry_id, initiator):
+        flattened.append((entry_id, initiator))
+
+    p = _protect(adapter, events, alerts, close_entry=close_cb)
+    shorts = [ShortLeg("PUT", D("3.00"), D("0.50"), symbol=routed_leg["symbol"])]
+    result = asyncio.run(p.protect(entry_id="e-routed", basis=StopBasis.TOTAL_CREDIT,
+                                   shorts=shorts, pct=D("95"), total_net_credit=D("4.00")))
+
+    assert result.outcome == "PROTECTED"
+    assert not flattened, "STP-04a regression: a Routed resting stop was auto-flattened"
+    assert any(isinstance(e, StopConfirmed) for e in events)
+    assert not any(isinstance(e, SideUnprotected) for e in events)
