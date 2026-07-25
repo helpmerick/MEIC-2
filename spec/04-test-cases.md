@@ -1799,6 +1799,30 @@ Scenario: Cash underlyings are unchanged
   Then it cash-settles per EOD-01 with no assignment handling and the never-more-than-premium contract holds
 ```
 
+**TC-CLS-07** — CLS-03(a)(b) cancelled-entry terminality & the stale-id race (v1.87, Findings A/B)
+```gherkin
+Scenario: A cancelled pre-fill entry leaves the open set
+  Given a WORKING entry with nothing filled
+  When Cancel entry confirms the broker cancel
+  Then a terminal EntryClosed with initiator "cancelled" is journaled
+  And the entry no longer appears open in the projection
+  And Flatten All does not target it and does not warn about it again
+
+Scenario: A partial fill is never journalled as a plain cancel
+  Given a cancel that discovers a filled balanced condor
+  Then EC-ENT-06 applies (the fill is kept and protected) and no cancelled-terminal event is journaled
+
+Scenario: A superseded cancel is never reported as a clean cancel
+  Given the ladder mints a new working order id mid-replace while the panel holds an older snapshot
+  When the cancel targets the superseded id
+  Then the result is "cancel_superseded", the current id is re-resolved, and the attempt retries within its bound
+  And no report states "cancelled" for that press
+
+Scenario: cancelled is never treated as flat
+  Then no close or flatten path may show green on "cancelled" alone
+  And flatness must be proven from broker truth before any all-clear renders
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1819,7 +1843,7 @@ Scenario: Cash underlyings are unchanged
 | STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
 | TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
-| CLS-01→06 | TC-CLS-01→04, TC-CLS-06, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
+| CLS-01→06 | TC-CLS-01→04, TC-CLS-06, TC-CLS-07, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
 | ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |
 | ORD-09 (fill credit) | TC-ORD-08 | | STP-02 (actual fill) | TC-STP-19 |
