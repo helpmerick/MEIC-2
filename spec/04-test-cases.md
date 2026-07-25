@@ -1847,6 +1847,38 @@ Scenario: cancelled is never treated as flat
   And flatness must be proven from broker truth before any all-clear renders
 ```
 
+**TC-ENT-11** — the entry-terminal-state resolver + close-never-opens (v1.90)
+```gherkin
+Scenario: One resolver, no inference
+  Then every path that decides an entry is finished calls the single resolver
+  And no path infers terminality from a result string, an absence, a cursor feed, a raw journal scan, or a leg list
+  And only the resolver journals a terminal
+
+Scenario: UNKNOWN is first-class and never collapsed
+  Given evidence insufficient to decide
+  Then the resolver returns UNKNOWN
+  And no terminal is journaled, nothing renders green, and the entry stays visible
+
+Scenario: Evidence is ranked and positive
+  Then broker positions decide and order/fill feeds are advisory
+  And the absence of a record is never treated as proof of no position
+
+Scenario: Broker-primitive parity is enforced
+  Then every fake answers each broker primitive identically to the live adapter
+  And a divergence (e.g. a leg predicate that ignores fill status) fails CI
+
+Scenario: A close can never open a position (ORD-12)
+  Given a leg the resolver reports TERMINAL_NO_POSITION
+  Then no exit order is submitted for it — the close is a no-op
+  And every submitted exit order carries an explicit close designation
+  And a replayed or restart-revived close never reaches the broker (ORD-04)
+  And UNKNOWN authorizes re-resolution and an alert, never a close order
+
+Scenario: Alert sinks are wired and thrown evaluations are heard (NFR-08)
+  Then no live or paper composition constructs an alert-raising component with a None sink
+  And an exception inside a monitor's evaluation raises an alert rather than silently no-opping
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1879,7 +1911,7 @@ Scenario: cancelled is never treated as flat
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
 | UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
-| ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
+| ENT-11 / CLS-08 / ORD-12 / OWN-03a / NFR-08 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
