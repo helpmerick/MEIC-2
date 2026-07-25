@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.87 (operator-commissioned 2026-07-15; current through spec v1.87).** A complete, non-technical
+**v1.88 (operator-commissioned 2026-07-15; current through spec v1.88).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.87 — describes spec v1.87; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.88 — describes spec v1.88; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -827,7 +827,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.87 — describes spec v1.87 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.88 — describes spec v1.88 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 

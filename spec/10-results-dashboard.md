@@ -35,7 +35,12 @@ operator ("no drift between the dashboard and tastytrade/broker truth").
 - **RPT-03 Outcome taxonomy & contract conformance.** Every closed entry
   classifies exactly once: FULL_EXPIRY, ONE_SIDE_STOPPED, BOTH_SIDES_STOPPED,
   TPF_CLOSE, TPT_CLOSE (v1.58), DECAY_CLOSE, MANUAL_CLOSE, MANUAL_FLATTEN, EOD_CLOSE,
-  INFEASIBLE_STOP, EXTERNAL (operator acted at broker — in cash totals, out of
+  INFEASIBLE_STOP, **CANCELLED and UNFILLED (v1.88 — Finding D: a cancelled or
+  priced-out entry was being reported EXTERNAL, whose documented meaning is "the
+  operator acted at the broker" — false for a bot-button cancel, and it inflated a
+  bucket deliberately excluded from strategy-quality metrics; these two outcomes
+  are their own, excluded from quality metrics like EXTERNAL but never asserting
+  an operator broker action)**, EXTERNAL (operator acted at broker — in cash totals, out of
   strategy-quality metrics, D5). Outcome distribution per period PLUS the
   standing **contract audit** (v1.38, before slippage): ONE_SIDE_STOPPED must
   realize ≥ (1−pct)×credit − recorded slippage; BOTH_SIDES_STOPPED ≥
