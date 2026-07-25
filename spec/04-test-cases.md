@@ -1890,6 +1890,13 @@ Scenario: Quantity is filled, not ordered (v1.91)
   Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
   And a cancelled-after-partial order still reports its filled legs
 
+Scenario: Liveness predicates fail toward present, never absent (v1.92, NFR-09)
+  Given a broker order status the predicate does not recognise
+  Then it resolves UNKNOWN and is logged loudly, never treated as gone
+  And the working classification includes received, live, routed, contingent, in flight, cancel requested, replace requested, partially removed
+  And the dead classification is exactly cancelled, rejected, expired, removed, filled
+  And no allow-list of known-live states may gate a destructive action
+
 Scenario: Parity is observation-based and catches the Routed divergence (v1.91)
   Given the recorded observation of a resting stop at status "Routed"
   Then the live working_orders filter reports it as working
@@ -1940,7 +1947,7 @@ Scenario: Alert sinks are wired and thrown evaluations are heard (NFR-08)
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
 | UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
-| ENT-11 / CLS-08 / ORD-12 / OWN-03a / NFR-08 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
+| ENT-11 / CLS-08 / ORD-12 / OWN-03a / NFR-08/09 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |

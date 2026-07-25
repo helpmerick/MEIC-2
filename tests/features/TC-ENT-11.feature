@@ -40,6 +40,13 @@ Feature: TC-ENT-11
     Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
     And a cancelled-after-partial order still reports its filled legs
 
+  Scenario: Liveness predicates fail toward present, never absent (v1.92, NFR-09)
+    Given a broker order status the predicate does not recognise
+    Then it resolves UNKNOWN and is logged loudly, never treated as gone
+    And the working classification includes received, live, routed, contingent, in flight, cancel requested, replace requested, partially removed
+    And the dead classification is exactly cancelled, rejected, expired, removed, filled
+    And no allow-list of known-live states may gate a destructive action
+
   Scenario: Parity is observation-based and catches the Routed divergence (v1.91)
     Given the recorded observation of a resting stop at status "Routed"
     Then the live working_orders filter reports it as working
