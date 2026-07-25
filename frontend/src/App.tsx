@@ -65,6 +65,12 @@ export function App() {
         // proven cancel, never green. Same `warn` reasoning as `cancelled`
         // above: not an alarm, just not provably flat either.
         flash(`${id}: cancel could not be confirmed (a newer order superseded it) — check the book`, "warn");
+      } else if (r.result === "already_terminal") {
+        // Fix 2 (v1.88, 2026-07-25 Opus DO-NOT-SHIP finding): this press did
+        // nothing -- the entry already carries a terminal from the ladder
+        // (possibly a truthful "unfilled"), and flatness is NOT proven from
+        // broker truth on this path (v1.87(iii)) -- never green.
+        flash(`${id}: already finalised by the entry ladder — verify the book is flat`, "warn");
       } else if (r.result === "close_failed") {
         // CLS-06/UI-16: a pre-action failure -- nothing was sent to the
         // broker, the position is unchanged. Never a raw 500 (the

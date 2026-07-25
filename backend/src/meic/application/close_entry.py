@@ -79,6 +79,22 @@ VALID_INITIATORS = frozenset({
     # entry cancelled with nothing filled — ManualClose.cancel_working's
     # ratified clean-cancel path (never used for a post-fill CLS close).
     "cancelled",
+    # CLS-03(a2) v1.88 (Fix 3, 2026-07-25 Opus DO-NOT-SHIP finding): "unfilled"
+    # and "cancelled_by_operator" are DELIBERATELY NOT valid initiators here.
+    # Both are journaled DIRECTLY by execute_entry.py's `_skip` as pre-fill
+    # terminals for a proposed-but-never-filled entry -- they never route
+    # through `CloseEntry.close()` at all (`_skip` appends `EntryClosed`
+    # itself). Both are also members of `STALE_TERMINAL_INITIATORS`
+    # (domain/projection.py): a `CondorFilled` arriving after either one is
+    # treated as broker truth superseding a STALE terminal and REOPENS the
+    # entry (projection.apply's CondorFilled branch). Accepting either one
+    # here would make it LEGAL to run a full `CloseEntry.close()` -- real
+    # buy-to-close broker orders -- under an initiator the projection design
+    # explicitly promises can be reopened by a later duplicate/late fill.
+    # That must never happen to a genuine close: a real close run under a
+    # stale-able initiator could be silently undone by a late fill,
+    # something projection.py's design promises can never happen for a real
+    # CLS close.
 })
 
 _SIDE_ORDER = {"PUT": 0, "CALL": 1}  # deterministic order (TC-CLS-01 scenario 1)

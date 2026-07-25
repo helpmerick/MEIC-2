@@ -9,13 +9,13 @@ from decimal import Decimal as D
 
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.application.close_entry import CloseEntry
-from meic.application.execute_entry import Condor, ExecuteEntryAttempt
+from meic.application.execute_entry import Condor, ExecuteEntryAttempt, _TERMINAL_SKIP_INITIATOR
 from meic.application.manual_close import FLATTEN_CONFIRMATION, ManualClose
 from meic.application.persistent_state import PersistentState
 from meic.application.working_entries import WorkingEntryOrders
 from meic.composition.panel_commands import PanelCommands
 from meic.domain.events import CondorFilled, CondorProposed, EntryClosed, ReconciliationMismatch
-from meic.domain.projection import fold
+from meic.domain.projection import STALE_TERMINAL_INITIATORS, fold
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
 
@@ -179,6 +179,127 @@ def test_tc_cls_07_genuine_close_survives_a_later_fill():
     assert entry.close_initiator == "manual"
 
 
+def test_tc_cls_07_late_fill_after_unfilled_terminal_reopens_the_entry():
+    """CLS-03(a2) v1.88 extension of Fix 1: the ladder's own "unfilled"
+    terminal (`unfilled_at_floor` skip, _TERMINAL_SKIP_INITIATOR) is just as
+    stale-able as ManualClose's "cancelled" -- a late-propagating fill after
+    it means the entry genuinely holds a position and must reopen exactly
+    like the "cancelled" case above."""
+    events: list = [
+        EntryClosed(entry_id=ENTRY_ID, initiator="unfilled"),
+        CondorFilled(entry_id=ENTRY_ID, net_credit=D("3.60"),
+                     legs=(), put_floor=None, call_floor=None),
+    ]
+
+    entry = fold(events).entries[ENTRY_ID]
+
+    assert entry.close_initiator is None
+    assert entry.net_credit == D("3.60")
+
+
+def test_tc_cls_07_late_fill_after_cancelled_by_operator_terminal_reopens_the_entry():
+    """CLS-03(a2) v1.88 extension of Fix 1: same staleness story for the
+    ladder's "cancelled_by_operator" terminal (the operator cancelled a
+    WORKING entry from the panel and the ladder's own stand-down path
+    journaled it, as opposed to ManualClose's "cancelled")."""
+    events: list = [
+        EntryClosed(entry_id=ENTRY_ID, initiator="cancelled_by_operator"),
+        CondorFilled(entry_id=ENTRY_ID, net_credit=D("3.60"),
+                     legs=(), put_floor=None, call_floor=None),
+    ]
+
+    entry = fold(events).entries[ENTRY_ID]
+
+    assert entry.close_initiator is None
+    assert entry.net_credit == D("3.60")
+
+
+def test_tc_cls_07_cancel_working_never_journals_a_second_terminal():
+    """Never-two-terminals guard (mirrors execute_entry.py's `_skip`): a
+    prior EntryClosed already sits in the log for this entry_id (e.g. the
+    ladder's own v1.88 "unfilled" terminal landed first). `cancel_working`
+    must report the honest outcome "already_terminal" (Fix 2, v1.88: this
+    press did not cancel anything -- the entry was already terminal, and
+    flatness is NOT proven from broker truth on this path, so it must never
+    read as flat -- "already_closed" would wrongly land in Flatten's flat
+    set), NOT "cancelled", and must NOT append a second EntryClosed for the
+    same entry_id."""
+    comp = _comp()
+    entry_id = "e-already-terminal"
+    comp.events.append(EntryClosed(entry_id=entry_id, initiator="unfilled"))
+    svc = ManualClose(comp.close, comp.broker, comp.state, alerts=comp.alerts,
+                       events=comp.events, clock=comp.clock)
+
+    before = sum(1 for e in comp.events if isinstance(e, EntryClosed) and e.entry_id == entry_id)
+    assert before == 1
+
+    result = asyncio.run(svc.cancel_working(entry_id, order_id="entry-ord-already-terminal"))
+
+    after = sum(1 for e in comp.events if isinstance(e, EntryClosed) and e.entry_id == entry_id)
+    assert after == 1
+    assert result.result == "already_terminal"
+    assert result.result != "cancelled"
+    assert result.initiator == "cancel_entry"
+
+
+def test_tc_cls_07_cancel_working_never_claims_cancelled_for_a_different_prior_terminal():
+    """Extension: the prior terminal's initiator is truthfully "unfilled"
+    (the market never paid) -- a later cancel press must NOT relabel that
+    as "cancelled" (the convenient-label failure v1.88 exists to prevent).
+    It must report "already_terminal" (Fix 2) and leave exactly ONE
+    EntryClosed for this entry_id, both before and after the call."""
+    comp = _comp()
+    entry_id = "e-already-terminal-unfilled"
+    comp.events.append(EntryClosed(entry_id=entry_id, initiator="unfilled"))
+    svc = ManualClose(comp.close, comp.broker, comp.state, alerts=comp.alerts,
+                       events=comp.events, clock=comp.clock)
+
+    def _count():
+        return sum(1 for e in comp.events if isinstance(e, EntryClosed) and e.entry_id == entry_id)
+
+    assert _count() == 1
+
+    result = asyncio.run(svc.cancel_working(entry_id, order_id="entry-ord-already-terminal-unfilled"))
+
+    assert result.result == "already_terminal"
+    assert result.result != "cancelled"
+    assert _count() == 1
+
+
+def test_tc_cls_07_already_terminal_is_never_treated_as_flat():
+    """Fix 2 (2026-07-25 Opus DO-NOT-SHIP finding): a flatten operation whose
+    per-entry close returns "already_terminal" must land that entry in
+    `incomplete`, never in `entries` -- mirrors
+    `test_tc_cls_07_cancelled_is_never_treated_as_flat` above. Unlike
+    "already_closed" (which IS in panel_commands.py's flat tuple, and only
+    ever surfaces when the projection already shows the entry closed --
+    `flatten`'s own open-entries scan would never call `close()` for it at
+    all), "already_terminal" is reached the SAME way `cancel_working` itself
+    reaches it: a terminal races in DURING `close()`'s own broker round trip,
+    after `flatten`'s open-entries scan already decided to act on this
+    entry_id. `PanelCommands.close` is monkeypatched here to return that
+    outcome directly -- exercising `flatten`'s own classification of the
+    result string, independent of driving the underlying race a second time
+    (already covered by
+    test_tc_cls_07_cancel_working_races_ladder_skip_yields_exactly_one_terminal)."""
+    comp = _comp()
+    entry_id = "e-already-terminal-flatten"
+    comp.events.append(CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100")))
+    comp.working_entries.record(entry_id, "entry-ord-already-terminal-flatten")
+    cmd = PanelCommands(comp)
+
+    async def _fake_close(eid):
+        return {"result": "already_terminal", "initiator": "cancel_entry", "entry_id": eid}
+
+    cmd.close = _fake_close  # type: ignore[method-assign]
+
+    flat = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+
+    assert entry_id not in flat["entries"]
+    assert any(i["entry_id"] == entry_id and i["result"] == "already_terminal"
+               for i in flat["incomplete"])
+
+
 class _FillLegsBroker:
     async def fill_legs(self, order_id):
         return ()
@@ -204,6 +325,45 @@ def test_tc_cls_07_late_fill_after_cancel_journals_reconciliation_mismatch():
     silently -- it appends a `ReconciliationMismatch` naming the entry, and
     fires a critical alert through the wired alerts sink."""
     events: list = [EntryClosed(entry_id=ENTRY_ID, initiator="cancelled")]
+    alerts = _RecordingAlerts()
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
+
+    asyncio.run(attempt._record_fill(
+        ENTRY_ID, "working-1", _condor(), date(2026, 7, 25), D("3.60"), "schedule"))
+
+    mismatches = [e for e in events if isinstance(e, ReconciliationMismatch)]
+    assert len(mismatches) == 1
+    assert ENTRY_ID in mismatches[0].detail
+    assert any(level == "critical" for level, _msg, _ctx in alerts.calls)
+
+
+def test_tc_cls_07_late_fill_after_unfilled_terminal_journals_reconciliation_mismatch():
+    """v1.88 extension of Fix 1(b): a fill landing (`_record_fill`) after a
+    v1.88 "unfilled" terminal was already journaled for the SAME entry must
+    not self-heal silently either -- same ReconciliationMismatch + critical
+    alert as the pre-existing "cancelled" case."""
+    events: list = [EntryClosed(entry_id=ENTRY_ID, initiator="unfilled")]
+    alerts = _RecordingAlerts()
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
+
+    asyncio.run(attempt._record_fill(
+        ENTRY_ID, "working-1", _condor(), date(2026, 7, 25), D("3.60"), "schedule"))
+
+    mismatches = [e for e in events if isinstance(e, ReconciliationMismatch)]
+    assert len(mismatches) == 1
+    assert ENTRY_ID in mismatches[0].detail
+    assert any(level == "critical" for level, _msg, _ctx in alerts.calls)
+
+
+def test_tc_cls_07_late_fill_after_cancelled_by_operator_terminal_journals_reconciliation_mismatch():
+    """v1.88 extension of Fix 1(b): a fill landing (`_record_fill`) after a
+    v1.88 "cancelled_by_operator" terminal was already journaled for the
+    SAME entry must not self-heal silently either -- same
+    ReconciliationMismatch + critical alert as the pre-existing "cancelled"
+    case."""
+    events: list = [EntryClosed(entry_id=ENTRY_ID, initiator="cancelled_by_operator")]
     alerts = _RecordingAlerts()
     clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
     attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
@@ -298,6 +458,124 @@ def test_tc_cls_07_concurrent_double_click_yields_exactly_one_cancel():
     results = {first.result, second.result}
     assert results == {"cancelled", "already_done"}
     assert comp.broker.cancels == ["entry-ord-11"]  # the broker was contacted exactly once
+
+
+def test_tc_cls_07_cancel_working_races_ladder_skip_yields_exactly_one_terminal():
+    """Fix 3(b): races the panel's real cancel path (`cancel_working`)
+    against the entry ladder's real `_skip`-driven v1.88 terminal (via
+    `ExecuteEntryAttempt`) for the SAME entry_id, using `asyncio.gather` --
+    same suspending-broker technique as
+    test_tc_cls_07_concurrent_double_click_yields_exactly_one_cancel.
+
+    CORRECTED (2026-07-25, Opus DO-NOT-SHIP finding 5): this docstring used
+    to claim the ordering "is genuinely arbitrated by asyncio.gather, not
+    hard-sequenced by this test" -- that was FALSE. `_skip_after_entered`
+    only starts its own work after `await entered.wait()`, and `entered` is
+    only set from INSIDE `_SuspendingBroker.cancel()` -- i.e. after
+    `cancel_working` has already reached its check-then-append point and
+    suspended waiting on `proceed`. That makes this a DETERMINISTIC
+    interleaving, not a genuine race: `_skip` is forced to complete first,
+    every single run, because `cancel_working` cannot resume until
+    `proceed.set()` -- which only happens AFTER `_skip` has already run.
+    `_skip` itself has no `await` inside its check-then-append (the
+    INVARIANT the comments above both blocks in manual_close.py and
+    execute_entry.py pin), so once it starts it always completes atomically
+    before yielding control back. The test still earns its keep: it proves
+    `cancel_working`, having suspended INSIDE `broker.cancel()` before its
+    own check-then-append runs, correctly observes the ladder's terminal
+    that landed while it was down and reports the honest outcome instead of
+    a stale "cancelled" -- see the MIRROR test directly below for the
+    opposite ordering (cancel_working's own terminal landing first)."""
+    day = "2026-07-25"
+    n = 1
+    entry_id = f"{day}#{n}"
+    events: list = [CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100"))]
+
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    class _SuspendingBroker(_CancelBroker):
+        async def cancel(self, order_id):
+            # Suspend INSIDE cancel() so the ladder's `_skip` genuinely gets
+            # a chance to run while `cancel_working` is still awaiting --
+            # the real race the INVARIANT comments protect against.
+            entered.set()
+            await proceed.wait()
+            return await super().cancel(order_id)
+
+    broker = _SuspendingBroker()
+    state = _state()
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    alerts = _NoOpAlerts()
+    svc = ManualClose(CloseEntry(broker, events, alerts=alerts, clock=clock),
+                       broker, state, alerts=alerts, events=events, clock=clock)
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
+
+    async def _cancel():
+        return await svc.cancel_working(entry_id, order_id="ladder-order-1")
+
+    async def _skip_after_entered():
+        await entered.wait()  # cancel_working is now suspended inside broker.cancel()
+        result = attempt._skip(day, n, "unfilled_at_floor")
+        proceed.set()          # release cancel_working to complete
+        return result
+
+    async def _drive():
+        return await asyncio.gather(_cancel(), _skip_after_entered())
+
+    cancel_result, skip_result = asyncio.run(_drive())
+
+    terminals = [e for e in events if isinstance(e, EntryClosed) and e.entry_id == entry_id]
+    assert len(terminals) == 1
+    # `_skip` has no await point of its own, so once the loop schedules it
+    # (always after `cancel_working` has already suspended, per the wiring
+    # above) it always wins and journals the honest "unfilled" terminal --
+    # `cancel_working` must then see the entry as already terminal and
+    # report that honestly, never claim "cancelled".
+    assert terminals[0].initiator == "unfilled"
+    assert cancel_result.result == "already_terminal"
+
+
+def test_tc_cls_07_ladder_skip_races_cancel_working_journalling_first_yields_exactly_one_terminal():
+    """Fix 5 (mirror ordering, 2026-07-25 Opus DO-NOT-SHIP finding): the
+    test directly above only ever exercises `_skip` completing FIRST (see
+    its corrected docstring) -- the opposite ordering, `cancel_working`
+    journalling its own "cancelled" terminal FIRST and `_skip` then having
+    to observe THAT and append nothing, was previously covered only by
+    non-concurrent/static tests, never by this module's own
+    asyncio.gather/suspending-broker race structure. This test flips which
+    side is allowed to complete first. `_skip` has no I/O of its own to
+    suspend a broker inside, so there is nothing to gate it on except plain
+    sequencing: `cancel_working` is given a broker that resolves
+    IMMEDIATELY (no suspension) and is run to completion -- including its
+    own EntryClosed append -- before `_skip` is ever invoked. `_skip` must
+    then observe the entry as already terminal and append NOTHING: exactly
+    one EntryClosed remains for the entry_id, and its initiator is
+    "cancelled" (cancel_working won this ordering)."""
+    day = "2026-07-25"
+    n = 2
+    entry_id = f"{day}#{n}"
+    events: list = [CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100"))]
+
+    broker = _CancelBroker()  # resolves cancel()/fills_since() immediately, no suspension
+    state = _state()
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    alerts = _NoOpAlerts()
+    svc = ManualClose(CloseEntry(broker, events, alerts=alerts, clock=clock),
+                       broker, state, alerts=alerts, events=events, clock=clock)
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
+
+    cancel_result = asyncio.run(svc.cancel_working(entry_id, order_id="ladder-order-2"))
+    # cancel_working has now fully completed and journalled its own terminal
+    # -- `_skip` runs strictly AFTER, exactly mirroring the "cancel journals
+    # first" ordering the finding calls out as previously uncovered here.
+    skip_result = attempt._skip(day, n, "unfilled_at_floor")
+
+    terminals = [e for e in events if isinstance(e, EntryClosed) and e.entry_id == entry_id]
+    assert len(terminals) == 1
+    assert terminals[0].initiator == "cancelled"
+    assert cancel_result.result == "cancelled"
+    assert skip_result.status == "SKIPPED"
 
 
 def test_tc_cls_07_exception_from_broker_cancel_releases_the_latch():
@@ -397,3 +675,225 @@ def test_tc_cls_07_cancelled_is_never_treated_as_flat():
     assert len(result["incomplete"]) == 1
     assert result["incomplete"][0]["entry_id"] == ENTRY_ID
     assert result["incomplete"][0]["result"] == "cancelled"
+
+
+# --- CLS-03(a2) v1.88: terminal-journaling skip reasons ---------------------
+
+
+def test_tc_cls_07_unfilled_at_floor_journals_unfilled_terminal():
+    """Scenario 4: the ladder priced out at the floor unfilled -- `_skip`
+    journals a terminal EntryClosed(initiator="unfilled"), never "cancelled"
+    (nobody cancelled anything; the market didn't pay)."""
+    day, n = "2026-07-25", 1
+    entry_id = f"{day}#{n}"
+    events: list = [CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100"))]
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=_RecordingAlerts())
+
+    attempt._skip(day, n, "unfilled_at_floor")
+
+    closed = [e for e in events if isinstance(e, EntryClosed) and e.entry_id == entry_id]
+    assert len(closed) == 1
+    assert closed[0].initiator == "unfilled"
+
+    entry = fold(events).entries[entry_id]
+    assert entry.close_initiator == "unfilled"
+
+    comp = _comp()
+    comp.events.extend(events)
+    cmd = PanelCommands(comp)
+    flat = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+    assert entry_id not in flat["entries"]
+    assert all(i["entry_id"] != entry_id for i in flat["incomplete"])
+
+
+def test_tc_cls_07_operator_cancel_ladder_skip_journals_cancelled_by_operator():
+    """Scenario 5: the operator cancelled a WORKING entry from the schedule/
+    ladder path -- `_skip` journals a terminal
+    EntryClosed(initiator="cancelled_by_operator")."""
+    day, n = "2026-07-25", 2
+    entry_id = f"{day}#{n}"
+    events: list = [CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100"))]
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=_RecordingAlerts())
+
+    attempt._skip(day, n, "cancelled_by_operator")
+
+    closed = [e for e in events if isinstance(e, EntryClosed) and e.entry_id == entry_id]
+    assert len(closed) == 1
+    assert closed[0].initiator == "cancelled_by_operator"
+
+    entry = fold(events).entries[entry_id]
+    assert entry.close_initiator == "cancelled_by_operator"
+
+    comp = _comp()
+    comp.events.extend(events)
+    cmd = PanelCommands(comp)
+    flat = asyncio.run(cmd.flatten(FLATTEN_CONFIRMATION))
+    assert entry_id not in flat["entries"]
+    assert all(i["entry_id"] != entry_id for i in flat["incomplete"])
+
+
+def test_tc_cls_07_submit_indeterminate_journals_no_terminal():
+    """(iii) fail-closed: `submit_indeterminate` is deliberately absent from
+    the terminal-skip map -- the submit's outcome is UNKNOWN, so no terminal
+    may be journaled."""
+    day, n = "2026-07-25", 3
+    entry_id = f"{day}#{n}"
+    events: list = [CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100"))]
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=_RecordingAlerts())
+
+    attempt._skip(day, n, "submit_indeterminate")
+
+    assert not any(isinstance(e, EntryClosed) and e.entry_id == entry_id for e in events)
+
+
+def test_tc_cls_07_pre_proposal_gate_skip_journals_no_terminal():
+    """A pre-proposal gate skip (no CondorProposed journaled for this entry
+    yet) must never create a phantom terminal -- covers both a reason absent
+    from the terminal-skip map (`missed_window`) and, defensively, one that
+    IS in the map but fires before any CondorProposed exists."""
+    day, n = "2026-07-25", 4
+    entry_id = f"{day}#{n}"
+    events: list = []  # no CondorProposed at all
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=_RecordingAlerts())
+
+    attempt._skip(day, n, "missed_window")
+    assert not any(isinstance(e, EntryClosed) and e.entry_id == entry_id for e in events)
+
+    attempt._skip(day, n, "unfilled_at_floor")  # in the map, but still no CondorProposed
+    assert not any(isinstance(e, EntryClosed) and e.entry_id == entry_id for e in events)
+
+
+def test_tc_cls_07_broker_truth_wins_over_a_stale_skip():
+    """Broker truth wins: a CondorFilled is already journaled for this entry
+    when a stale skip arrives -- no new EntryClosed terminal, but a loud
+    ReconciliationMismatch (and critical alert) naming the entry."""
+    day, n = "2026-07-25", 5
+    entry_id = f"{day}#{n}"
+    events: list = [
+        CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100")),
+        CondorFilled(entry_id=entry_id, net_credit=D("3.60")),
+    ]
+    alerts = _RecordingAlerts()
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=alerts)
+
+    attempt._skip(day, n, "unfilled_at_floor")
+
+    assert not any(isinstance(e, EntryClosed) and e.entry_id == entry_id for e in events)
+    mismatches = [e for e in events if isinstance(e, ReconciliationMismatch)]
+    assert len(mismatches) == 1
+    assert entry_id in mismatches[0].detail
+    assert any(level == "critical" for level, _msg, _ctx in alerts.calls)
+
+
+def test_tc_cls_07_terminal_skip_is_idempotent():
+    """A second terminal skip for an already-closed entry must never
+    duplicate the terminal EntryClosed."""
+    day, n = "2026-07-25", 6
+    entry_id = f"{day}#{n}"
+    events: list = [
+        CondorProposed(entry_id=entry_id, put_short=D("5000"), call_short=D("5100")),
+        EntryClosed(entry_id=entry_id, initiator="unfilled"),
+    ]
+    clock = FakeClock(datetime(2026, 7, 25, 10, 0, tzinfo=ET))
+    attempt = ExecuteEntryAttempt(_FillLegsBroker(), clock, events, SPX, alerts=_RecordingAlerts())
+
+    attempt._skip(day, n, "unfilled_at_floor")
+
+    closed = [e for e in events if isinstance(e, EntryClosed) and e.entry_id == entry_id]
+    assert len(closed) == 1
+
+
+def test_tc_cls_07_rpt03_cancelled_and_unfilled_outcomes():
+    """RPT-03 v1.88: `classify()` maps "cancelled"/"cancelled_by_operator" to
+    CANCELLED, "unfilled" to UNFILLED, and an unrecognised initiator still
+    falls through to EXTERNAL (negative pin)."""
+    from meic.reporting.taxonomy import CANCELLED, EXTERNAL, UNFILLED, classify
+
+    for initiator, expected in (
+        ("cancelled", CANCELLED),
+        ("cancelled_by_operator", CANCELLED),
+        ("unfilled", UNFILLED),
+        ("something_else", EXTERNAL),
+    ):
+        events: list = [
+            CondorFilled(entry_id=ENTRY_ID, net_credit=D("3.60")),
+            EntryClosed(entry_id=ENTRY_ID, initiator=initiator),
+        ]
+        entry = fold(events).entries[ENTRY_ID]
+        assert classify(entry) == expected, f"{initiator!r} should classify as {expected!r}"
+
+
+def test_tc_cls_07_stale_terminal_initiator_set_matches_the_skip_initiators():
+    """Drift guard (CLS-03(a)/(a2)): if a new pre-fill terminal initiator is
+    ever added to `_TERMINAL_SKIP_INITIATOR` (execute_entry.py) without also
+    adding it to `STALE_TERMINAL_INITIATORS` (projection.py), the projection
+    will NOT reopen an entry whose terminal is invalidated by a late fill --
+    leaving a REAL position invisible to the stop-fill watcher, LEX, the EOD
+    force-close, Flatten All and the operator's Close button (the v1.87
+    regression class this whole rule exists to prevent). This used to be a
+    module-level `assert` in execute_entry.py, which is wrong in production
+    code: it is stripped under `python -O`, and if it ever fired it would be
+    an AssertionError at IMPORT time, taking the whole panel down with a poor
+    diagnostic. A proper test surfaces the same drift, loudly, in CI."""
+    assert STALE_TERMINAL_INITIATORS == {"cancelled"} | set(_TERMINAL_SKIP_INITIATOR.values())
+
+
+def test_tc_cls_07_close_entry_rejects_stale_terminal_initiators():
+    """Fix 3 (MEDIUM, 2026-07-25 Opus DO-NOT-SHIP finding): `CloseEntry.close()`
+    must REJECT "unfilled" and "cancelled_by_operator" as initiators. Both
+    are journaled DIRECTLY by execute_entry.py's `_skip` as pre-fill
+    terminals -- `_skip` appends `EntryClosed` itself and never routes
+    through `CloseEntry.close()` at all, so nothing legitimate needs them
+    accepted here. Both are also members of `STALE_TERMINAL_INITIATORS`
+    (domain/projection.py): a `CondorFilled` arriving after either one is
+    treated as broker truth superseding a STALE terminal and REOPENS the
+    entry. Accepting either one as a valid `CloseEntry.close()` initiator
+    would make it legal to run a full close (real buy-to-close broker
+    orders) under an initiator a later duplicate/late fill could silently
+    reopen -- something that must never happen to a genuine CLS close."""
+    import asyncio
+
+    from meic.application.close_entry import VALID_INITIATORS
+
+    assert "unfilled" not in VALID_INITIATORS
+    assert "cancelled_by_operator" not in VALID_INITIATORS
+
+    events: list = []
+    close_entry = CloseEntry(_CancelBroker(), events)
+
+    for bad_initiator in ("unfilled", "cancelled_by_operator"):
+        try:
+            asyncio.run(close_entry.close(
+                "e1", bad_initiator, resting_stop_ids={}, live_legs=[], close_price=D("0")))
+            raise AssertionError(f"{bad_initiator!r} should be rejected as a close initiator")
+        except ValueError as e:
+            assert bad_initiator in str(e)
+    assert events == []  # nothing was journaled for either rejected attempt
+
+
+# NOTE (2026-07-25): `test_tc_cls_07_no_consumer_hardcodes_a_stale_terminal_initiator_literal`,
+# a source-text-scanning regex test guarding against a THIRD consumer
+# hardcoding a stale-terminal-initiator literal instead of importing
+# `STALE_TERMINAL_INITIATORS`, was REMOVED here. A reviewer proved it was
+# INERT: run against the pre-fix buggy `lex_ladder_watchdog.py`
+# (`getattr(e, "initiator", None) != "cancelled"`), the regex found NO
+# offenders -- `"initiator"` there is a quoted string ARGUMENT to `getattr`,
+# not a `.initiator` attribute access, so the `\.initiator` anchor never
+# matched it. It also false-negatived on single quotes, the other two set
+# members ("unfilled", "cancelled_by_operator"), tuple/set literals, and a
+# comparison split across lines -- exactly how the fixed code is actually
+# formatted. A deleted test is honest; an inert one that looks like coverage
+# but catches nothing is worse than no test at all (see this codebase's own
+# `wiring_registry.py` comments on curated false positives vs silently
+# broken heuristics). Real, non-evadable coverage for this exact drift now
+# lives in `tests/application/test_lex_ladder_watchdog.py`'s
+# `test_any_stale_terminal_initiator_never_blinds_a_genuine_stop_out` -- a
+# BEHAVIOURAL pin on `_pending_ladder_starts` itself, parametrized over the
+# live `STALE_TERMINAL_INITIATORS` set, proven (by temporarily reverting
+# `lex_ladder_watchdog.py` to its old buggy comparison) to actually fail
+# against the bug this test was meant to catch.

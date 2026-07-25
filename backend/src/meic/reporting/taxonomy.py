@@ -28,6 +28,8 @@ MANUAL_FLATTEN = "MANUAL_FLATTEN"
 EOD_CLOSE = "EOD_CLOSE"
 INFEASIBLE_STOP = "INFEASIBLE_STOP"
 EXTERNAL = "EXTERNAL"
+CANCELLED = "CANCELLED"
+UNFILLED = "UNFILLED"
 
 # CLS-02/CLS-04 initiators that map directly to one outcome each. `decay` is
 # handled separately below (DCY-02's short-only close can ALSO show up via
@@ -35,7 +37,15 @@ EXTERNAL = "EXTERNAL"
 # signal means DECAY_CLOSE), and an initiator this taxonomy doesn't
 # recognize (e.g. a genuinely external, operator-at-the-broker action, D5)
 # falls through to EXTERNAL rather than raising — an unrecognized initiator
-# is exactly what EXTERNAL exists to catch.
+# is exactly what EXTERNAL exists to catch. CANCELLED/UNFILLED (CLS-03(a2)
+# v1.88) exist for the same reason EXTERNAL does: calling a bot-button
+# cancel "EXTERNAL" asserted "the operator acted at the broker", which is
+# false, and inflated a bucket this taxonomy deliberately excludes from
+# strategy-quality metrics. CANCELLED/UNFILLED stay excluded from those
+# metrics exactly the same way EXTERNAL was (see `_filled_entries` in
+# `adapters/api/reports.py`, gated on a non-zero `net_credit` -- an entry
+# that never filled stays at the projection's 0 default and never reaches
+# `classify()` there) -- they just stop lying about what happened.
 _INITIATOR_OUTCOME = {
     "manual": MANUAL_CLOSE,
     "manual_flatten": MANUAL_FLATTEN,
@@ -43,6 +53,9 @@ _INITIATOR_OUTCOME = {
     "take_profit_target": TPT_CLOSE,
     "eod": EOD_CLOSE,
     "infeasible_stop": INFEASIBLE_STOP,
+    "cancelled": CANCELLED,
+    "cancelled_by_operator": CANCELLED,
+    "unfilled": UNFILLED,
 }
 
 

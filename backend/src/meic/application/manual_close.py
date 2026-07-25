@@ -44,7 +44,7 @@ def _cancel_confirmed(cancel_result) -> bool:
 
 @dataclass(frozen=True)
 class CloseResult:
-    result: str      # "closed" | "cancelled" | "already_done" | "race_detected" | "cancel_superseded"
+    result: str      # "closed" | "cancelled" | "already_done" | "already_closed" | "already_terminal" | "race_detected" | "cancel_superseded"
     initiator: str   # "manual" | "cancel_entry"
 
 
@@ -193,6 +193,45 @@ class ManualClose:
                     return CloseResult("cancel_superseded", "cancel_entry")
 
                 self._clear_tpf_floor(entry_id)
+                # CLS-03(a)/(a2) v1.88 (never-two-terminals guard, mirrors
+                # execute_entry.py's `_skip`): the ladder's own v1.88 terminal
+                # (EntryClosed initiator "unfilled"/"cancelled_by_operator",
+                # from `_TERMINAL_SKIP_INITIATOR`) may have landed for this
+                # SAME entry_id first — e.g. the ladder gave up at the floor
+                # right as the operator's cancel was in flight. Journaling a
+                # SECOND EntryClosed here would violate the "never two
+                # terminals" invariant. THIS PRESS did not cancel anything —
+                # the entry was already terminal, possibly under a DIFFERENT
+                # truthful initiator (e.g. "unfilled", not this press's
+                # "cancelled") — no new event is appended.
+                #
+                # FIX 2 (2026-07-25 Opus DO-NOT-SHIP finding, v1.88): this used
+                # to report "already_closed" here, which is WRONG — that string
+                # sits in `panel_commands.py`'s flat tuple `("closed",
+                # "already_closed")`, so Flatten renders this entry GREEN
+                # (all-clear). But that all-clear would be justified only by
+                # this branch's own ladder-terminal-existence check, which is
+                # NOT proof of broker-truth flatness (v1.87(iii): flatness must
+                # be PROVEN, never merely inferred). Reporting "already_closed"
+                # here would actively ASSERT this press flattened something it
+                # never touched — worse than silently skipping it. "already_terminal"
+                # is a distinct, deliberately NOT-in-the-flat-set outcome: this
+                # press did nothing, the entry already carries a terminal
+                # (possibly a truthful "unfilled"), and flatness is not proven
+                # from broker truth on this path — it must never read as flat.
+                #
+                # INVARIANT (CLS-03(a)/(a2)): no `await` may ever be
+                # introduced between this existence check and the append
+                # below — the atomicity of that check-then-append pair under
+                # cooperative asyncio scheduling is what guarantees exactly
+                # one terminal is ever journaled for an entry_id. Race
+                # coverage: test_tc_cls_07_cancel_working_races_ladder_skip_yields_exactly_one_terminal.
+                if any(isinstance(ev, EntryClosed) and ev.entry_id == entry_id for ev in self.events):
+                    terminal = True  # already terminal — keep the latch, same as a clean cancel
+                    # NEW response vocabulary (2026-07-25, Fix 2): flagged for
+                    # TC-CLS-07/CLS-06 ratification — same footing as
+                    # `flatten_failed`/`incomplete` were when they were introduced.
+                    return CloseResult("already_terminal", "cancel_entry")
                 # CLS-03(a) v1.87: the terminal event for a genuinely clean,
                 # pre-fill, CONFIRMED cancel — the ratified "cancelled" initiator.
                 self.events.append(EntryClosed(entry_id=entry_id, initiator="cancelled", at=self._at()))

@@ -598,6 +598,13 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # Procedures/config/data invariants (not a standalone runtime component;
     # the keyword appears in the rule's PROSE, describing something else):
     "CLS-01",       # close PROCEDURE, driven synchronously per CloseEntry.close() call
+    "CLS-03",       # pre-fill CANCEL procedure + inline terminal journaling (v1.87/v1.88) --
+                    # the "cancelled" path runs synchronously per operator press
+                    # (PanelCommands._cancel_service -> ManualClose.cancel_working); the
+                    # "unfilled"/"cancelled_by_operator" terminals fire inline inside
+                    # entry-ladder attempts riding the ALREADY-registered Day supervisor
+                    # task (ENT-10/DAY-01 above, app.state.day_task) -- no loop of its
+                    # own, no second registration needed
     "ORD-01", "ORD-08", "ORD-09", "ORD-09a", "ORD-11",   # order-shape/journaling rules, not loops
     # ORD-09a (v1.74, added 2026-07-16 CAL-09 slice): "every journaled
     # execution price is the BROKER'S actual fill price, never the order's

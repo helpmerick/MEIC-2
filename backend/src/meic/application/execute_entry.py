@@ -29,6 +29,7 @@ from meic.domain.events import (
 )
 from meic.domain.fees import fee_for_legs
 from meic.domain.ladder import RepriceLadder
+from meic.domain.projection import STALE_TERMINAL_INITIATORS
 from meic.domain.stop_policy import StopBasis, effective_cap_check, feasible
 from meic.domain.ticks import TickTable
 from meic.domain.underlying import profile_for
@@ -62,6 +63,52 @@ from .order_intent import OrderIntent, condor_legs
 # by `_recover_first_submit` when the broker query ITSELF could not answer
 # (never confuse this with "confirmed not landed" -- see that method).
 _SUBMIT_QUERY_FAILED = object()
+
+# CLS-03(a2) v1.88: the skip reasons that leave a PROPOSED entry with no
+# position -- each terminal-journaled under the initiator naming what
+# ACTUALLY happened, never one convenient label. "unfilled" is NOT
+# "cancelled": nobody cancelled anything, the market didn't pay, and a
+# `cancelled` initiator here would put a falsehood in the audit trail.
+# `submit_indeterminate` (fail-closed: the submit's outcome is UNKNOWN) and
+# `insufficient_credit` (escalated to the operator separately, unratified)
+# are DELIBERATELY absent from this map.
+_TERMINAL_SKIP_INITIATOR = {
+    "unfilled_at_floor": "unfilled",
+    "cancelled_by_operator": "cancelled_by_operator",
+}
+
+# RSK-04 VERIFIED (v1.88, spec-mandated finding, CLS-03(a2)): projection-open
+# phantoms consume ZERO RSK-04 budget. The running exposure RSK-04 gates
+# against is `comp.worst_case` (composition/live.py, paper.py,
+# live_runtime.py) -- a dict keyed by entry_id, written ONLY inside each
+# composition's `_on_filled` handler (the FILLED branch), never at
+# CondorProposed/CondorWindowOpened time. `open_worst_cases`/`LiveRuntime._risk`
+# then filter that dict down to entries whose projection shows
+# `not close_initiator` (still open). A proposed-but-never-filled entry_id
+# (the "unfilled"/"cancelled_by_operator" terminals this map produces) is
+# therefore NEVER inserted into `comp.worst_case` at all -- nothing was ever
+# reserved for it, so its terminal releases nothing either. Phantoms polluted
+# Flatten/RPT-17/the event feed only (the problem CLS-03(a2) itself fixes);
+# they could never have blocked a legitimate entry from being sized or
+# placed by consuming RSK-04 headroom that was never actually taken.
+
+# CLS-03(a)/(a2) v1.87/v1.88: every terminal initiator a late fill can find
+# ALREADY journaled when the fill itself was actually genuine -- "cancelled"
+# (v1.87, ManualClose's clean pre-fill cancel) plus the two v1.88 ladder
+# terminals (`_TERMINAL_SKIP_INITIATOR`'s values). A fill landing after ANY
+# of these must never be silently swallowed -- see `_record_fill` below.
+# Defined ONCE in `meic.domain.projection` (imported above) so the ladder's
+# staleness check here and the projection's own reopen-on-late-fill clause
+# can never drift apart -- domain must never import from application, but
+# application already imports freely from domain, so importing it here is
+# the safe direction (see projection.py's own comment on this set).
+#
+# The drift guard for this invariant lives as a proper test,
+# `test_tc_cls_07_stale_terminal_initiator_set_matches_the_skip_initiators`,
+# in tests/application/test_tc_cls_07.py -- NOT a module-level assert here:
+# a bare `assert` is stripped under `python -O`, and if it ever fired it
+# would raise an AssertionError at IMPORT time, taking the whole panel down
+# with a poor diagnostic.
 
 
 @dataclass(frozen=True)
@@ -200,6 +247,48 @@ class ExecuteEntryAttempt:
 
     def _skip(self, day: str, n: int, reason: str) -> EntryOutcome:
         self._events.append(EntrySkipped(date=day, entry_number=n, reason=reason))
+        # CLS-03(a2) v1.88 (Finding C): a skip reason that fires AFTER
+        # CondorProposed leaves a proposed-but-never-filled entry with no
+        # terminal unless we journal one here -- otherwise it is a phantom
+        # "open" entry forever (in the projection, Flatten's targets, the
+        # day-trades table). Only the two ratified reasons get a terminal.
+        initiator = _TERMINAL_SKIP_INITIATOR.get(reason)
+        if initiator is not None:
+            entry_id = f"{day}#{n}"
+            proposed = any(isinstance(ev, CondorProposed) and ev.entry_id == entry_id
+                           for ev in self._events)
+            filled = any(isinstance(ev, CondorFilled) and ev.entry_id == entry_id
+                        for ev in self._events)
+            closed = any(isinstance(ev, EntryClosed) and ev.entry_id == entry_id
+                        for ev in self._events)
+            # INVARIANT (CLS-03(a)/(a2)): no `await` may ever be introduced
+            # between the three existence checks above and the append below
+            # (`_skip` itself is synchronous, but this block's atomicity
+            # under cooperative asyncio scheduling — nothing else can
+            # interleave with it — is what guarantees exactly one terminal
+            # is ever journaled for an entry_id, together with the mirrored
+            # check-then-append in manual_close.py's `cancel_working`. Race
+            # coverage: test_tc_cls_07_cancel_working_races_ladder_skip_yields_exactly_one_terminal.
+            if proposed and not filled and not closed:
+                self._events.append(EntryClosed(
+                    entry_id=entry_id, initiator=initiator,
+                    at=self._clock.now().isoformat()))
+            elif filled:
+                # BROKER-TRUTH-WINS (mirrors the v1.87 guard in _record_fill):
+                # the ladder skipped as `reason` but a CondorFilled is already
+                # journaled for THIS entry -- broker truth wins, the entry
+                # HOLDS a position and must stay open. Loud anomaly, never a
+                # silent phantom close.
+                detail = (f"CLS-03(a2): entry {entry_id} skipped as {reason!r} "
+                          "but a CondorFilled is already journaled for it -- "
+                          "broker truth wins, the entry holds a position and "
+                          "must stay open; no terminal was journaled")
+                self._events.append(ReconciliationMismatch(detail=detail))
+                if self._alerts is not None:
+                    self._alerts.alert("critical", detail, entry_id=entry_id)
+            # `not proposed`: a pre-proposal gate skip has no projection entry
+            # -- journaling would CREATE a phantom, so journal nothing.
+            # `closed` already: idempotent, never journal a second terminal.
         return EntryOutcome("SKIPPED", reason)
 
     # --- CLS-03 seam helpers (no-ops when no registry is wired) ----------------
@@ -578,13 +667,15 @@ class ExecuteEntryAttempt:
         # silent self-heal: journal it, and alert critically when an alert
         # sink is wired (it is, here — `self._alerts`, used elsewhere in
         # this class).
-        if any(isinstance(ev, EntryClosed) and ev.entry_id == entry_id
-               and ev.initiator == "cancelled" for ev in self._events):
-            detail = (f"REC-01/CLS-03(a): entry {entry_id} filled (order {working_id}) "
-                     "AFTER a terminal cancel was already journaled -- the cancel's "
-                     "fills-feed check missed this fill before it propagated, so the "
-                     "'cancelled' terminal was stale and has been superseded by "
-                     "broker truth (the entry holds a real position)")
+        stale = next((ev for ev in self._events if isinstance(ev, EntryClosed)
+                      and ev.entry_id == entry_id
+                      and ev.initiator in STALE_TERMINAL_INITIATORS), None)
+        if stale is not None:
+            detail = (f"REC-01/CLS-03(a)/(a2): entry {entry_id} filled (order {working_id}) "
+                     f"AFTER a terminal {stale.initiator!r} was already journaled -- the "
+                     "prior terminal's own staleness check missed this fill before it "
+                     "propagated, so it has been superseded by broker truth (the entry "
+                     "holds a real position)")
             self._events.append(ReconciliationMismatch(detail=detail))
             if self._alerts is not None:
                 self._alerts.alert("critical", detail, entry_id=entry_id, order_id=str(working_id))

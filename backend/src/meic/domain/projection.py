@@ -41,6 +41,30 @@ from .events import (
 )
 
 
+# CLS-03(a)/(a2) v1.87/v1.88: every PRE-FILL terminal initiator that can go
+# STALE the same way -- a fill lands after the terminal was journaled, but
+# the terminal's own fills-feed check (ManualClose.cancel_working / the
+# ladder's `_skip`) missed it because it had not yet propagated. "cancelled"
+# (v1.87, ManualClose's clean pre-fill cancel) and the two v1.88 ladder
+# terminals ("unfilled" from `unfilled_at_floor`, "cancelled_by_operator")
+# are ALL stale-able the same way: a genuine fill after any of them means the
+# entry HOLDS A POSITION, invisible to the stop-fill watcher, LEX, the EOD
+# force-close, Flatten All and the operator's Close button unless the stale
+# terminal is cleared. A genuine POST-FILL close (manual, take_profit_target,
+# eod, decay, ...) is NEVER in this set and must NEVER be reopened this way
+# -- only these three PRE-FILL terminals are broker-truth-supersedable.
+#
+# `execute_entry.py` (application layer) imports this SAME set (rather than
+# duplicating it) for its own late-fill staleness check in `_record_fill` --
+# domain must never import from application, but application already imports
+# freely from domain, so defining it here and importing it there is the safe
+# direction.
+# PUBLIC (no leading underscore): this is a cross-module contract between
+# projection.py and execute_entry.py, not a module-private implementation
+# detail.
+STALE_TERMINAL_INITIATORS = frozenset({"cancelled", "unfilled", "cancelled_by_operator"})
+
+
 @dataclass(frozen=True)
 class EntryProjection:
     entry_id: str
@@ -182,17 +206,20 @@ def apply(state: DayState, event: Event) -> DayState:
             blackout_overridden=event.blackout_overridden,
             underlying=event.underlying,
             eod_close_time=getattr(event, "eod_close_time", None),
-            # REC-01/CLS-03(a) v1.87: broker truth is authoritative. A
-            # CondorFilled arriving AFTER a terminal "cancelled" proves the
-            # cancel's fills-feed check missed a fill that had not yet
-            # propagated -- the entry HOLDS A POSITION. Clearing the stale
-            # terminal is what keeps it visible to the STP stop-fill
-            # watcher, LEX long recovery, the UND-03 EOD force-close,
-            # Flatten All and the operator's Close button. ONLY the
-            # "cancelled" initiator is cleared this way -- a genuine CLS
-            # close (manual/take_profit/eod/decay/...) is never reopened by
-            # a late fill.
-            close_initiator=None if e.close_initiator == "cancelled" else e.close_initiator)))
+            # REC-01/CLS-03(a)/(a2) v1.87/v1.88: broker truth is
+            # authoritative. A CondorFilled arriving AFTER any PRE-FILL
+            # terminal in `STALE_TERMINAL_INITIATORS` ("cancelled",
+            # "unfilled", "cancelled_by_operator") proves that terminal's own
+            # fills-feed check missed a fill that had not yet propagated --
+            # the entry HOLDS A POSITION. Clearing the stale terminal is what
+            # keeps it visible to the STP stop-fill watcher, LEX long
+            # recovery, the UND-03 EOD force-close, Flatten All and the
+            # operator's Close button. ONLY those three PRE-FILL initiators
+            # are cleared this way -- a genuine POST-FILL CLS close (manual,
+            # take_profit_target, eod, decay, ...) is NEVER reopened by a
+            # late/duplicate fill.
+            close_initiator=(None if e.close_initiator in STALE_TERMINAL_INITIATORS
+                             else e.close_initiator))))
     if isinstance(event, ShortStopped):
         e = _entry(state, event.entry_id)
         return replace(state, entries=_put(state, replace(

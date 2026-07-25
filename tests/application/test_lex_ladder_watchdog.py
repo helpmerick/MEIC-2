@@ -15,6 +15,8 @@ needs none of it to catch the gap.
 from datetime import datetime, timedelta
 from decimal import Decimal as D
 
+import pytest
+
 from meic.application.lex_ladder_watchdog import LexLadderWatchdog, _pending_ladder_starts
 from meic.domain.events import (
     CondorFilled,
@@ -26,6 +28,7 @@ from meic.domain.events import (
     ShortStopped,
     SideClosed,
 )
+from meic.domain.projection import STALE_TERMINAL_INITIATORS
 
 ENTRY = "2026-07-10#1"
 NOW = datetime(2026, 7, 14, 10, 0)
@@ -270,6 +273,54 @@ def test_pending_ladder_starts_pure_fold_matches_expectations():
 
 
 # --- two independent sides of the same entry are tracked separately --------
+
+@pytest.mark.parametrize("stale_initiator", sorted(STALE_TERMINAL_INITIATORS))
+def test_any_stale_terminal_initiator_never_blinds_a_genuine_stop_out(stale_initiator):
+    """Fix A (2026-07-25, reviewer finding): `lex_ladder_watchdog.py` shipped
+    hardcoding its own `getattr(e, "initiator", None) != "cancelled"` check
+    instead of importing the shared `STALE_TERMINAL_INITIATORS` set --
+    silently missing the two v1.88 terminals ("unfilled",
+    "cancelled_by_operator"). Failure mode: a pre-fill terminal is journaled
+    stale (the terminal's own fills-feed check missed a fill that had not yet
+    propagated), a genuine stop-out later lands on the SAME entry, and this
+    watchdog's `_pending_ladder_starts` treats the stale `EntryClosed` as a
+    real close -- dropping the entry into `closed_entries` -- so the stop-out
+    never reaches `pending` and the LEX-07 orphaned-long CRITICAL ALERT never
+    fires. This is the exact 2026-07-10 incident class this module exists to
+    prevent, now reachable again via any member of
+    `STALE_TERMINAL_INITIATORS` the source-text-scanning test in
+    `test_tc_cls_07.py` cannot actually detect. Parametrized over the
+    imported set itself (not a hardcoded tuple) so a future fourth stale
+    terminal is covered the instant it is added to the shared set, with no
+    test-file edit required."""
+    events = [
+        _condor(),
+        ShortStopped(entry_id=ENTRY, side="PUT", fill=D("3.80"), slippage=D("0"),
+                     initiator="resting_stop"),
+        EntryClosed(entry_id=ENTRY, initiator=stale_initiator),
+    ]
+
+    pending = _pending_ladder_starts(events)
+
+    assert (ENTRY, "PUT") in pending, (
+        f"stale terminal {stale_initiator!r} must not suppress a genuine stop-out")
+
+
+def test_genuine_close_after_a_genuine_stop_out_is_not_pending():
+    """Negative pin for Fix A: `EntryClosed(initiator="manual")` is a real,
+    non-stale-able close (not a member of `STALE_TERMINAL_INITIATORS`) -- the
+    entry is genuinely disposed of and must NOT be reported pending."""
+    events = [
+        _condor(),
+        ShortStopped(entry_id=ENTRY, side="PUT", fill=D("3.80"), slippage=D("0"),
+                     initiator="resting_stop"),
+        EntryClosed(entry_id=ENTRY, initiator="manual"),
+    ]
+
+    pending = _pending_ladder_starts(events)
+
+    assert (ENTRY, "PUT") not in pending
+
 
 def test_whipsaw_both_sides_stopped_tracked_independently():
     """STP-08: both sides of one condor can stop the same day. One side's
