@@ -24,6 +24,7 @@ from typing import Callable
 
 from fastapi import HTTPException, Query
 
+from meic.application.exit_alerts import ExitAlertRateLimiter, error_key
 from meic.adapters.api.app import _strike_from_symbol
 from meic.adapters.logging_setup import configure_logging
 from meic.application.clocks import MutableClock
@@ -375,6 +376,18 @@ def _exit_eval_interval_ms(env: dict[str, str]) -> int:
     except ValueError:
         return 250
     return raw if 100 <= raw <= 5000 else 250
+
+
+def _exit_unevaluable_alert_s(env: dict[str, str]) -> int:
+    """TPF-03d / NFR-08a `exit_unevaluable_alert_s` (doc 06: range 5-600,
+    default 60) — how long an armed exit may be unevaluable before an RSK-06
+    alert, and the NFR-08a per-distinct-error alert rate limit. Out-of-range
+    falls back to the spec default (reject-the-dial, as above)."""
+    try:
+        raw = int(env.get("MEIC_EXIT_UNEVALUABLE_ALERT_S", "60"))
+    except ValueError:
+        return 60
+    return raw if 5 <= raw <= 600 else 60
 
 
 def _quote_stream_poll_seconds(env: dict[str, str]) -> float:
@@ -1525,36 +1538,109 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
     # trigger input now, not a counter.
     now_ms = int(now.timestamp() * 1000) if now is not None else int(_time.monotonic() * 1000)
     for entry_id, e in day.entries.items():
-        level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
-        if level_floor is None and level_target is None:
-            continue
-        if e.status in _TERMINAL_STATUSES:
-            exit_monitor.forget(entry_id)
-            continue
-        # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
-        # (`_snap_for` accepts the per-underlying registry, a legacy holder,
-        # or a bare snapshot -- every pre-v1.86 caller unchanged). No stream
-        # for the entry's underlying -> stale -> pause, never another chain.
-        snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
-        stale = snap_e is None or snap_e.stale
-        profit_pct = None if stale else _entry_profit_pct_now(
-            e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-        entry_stale = stale or profit_pct is None
+        # TPF-03g: each entry is evaluated INDEPENDENTLY. NFR-08a keeps the
+        # LOOP alive, which is a strictly weaker guarantee than keeping the
+        # PASS complete -- the 2026-07-20 incident's shape was exactly one
+        # throwing path killing everything downstream of it in the same pass,
+        # so three armed floors could be silently disabled by one unmarkable
+        # leg on a fourth entry. The failure is captured, alerted naming THAT
+        # entry, and the pass continues.
+        try:
+            await _evaluate_one_entry(
+                comp, entry_id, e, floors, targets, exit_monitor, commands,
+                snapshot=snapshot, hub=hub, now=now, now_ms=now_ms,
+                max_quote_age_ms=max_quote_age_ms)
+        except Exception as exc:  # noqa: BLE001 -- one entry must never blind the others
+            _alert_exit_failure(comp, exc, entry_id=entry_id, now=now)
 
-        if level_floor is not None:
-            if exit_monitor.evaluate_floor(entry_id, profit_pct=profit_pct,
-                                           level=int(level_floor), stale=entry_stale,
-                                           now_ms=now_ms):
-                await commands.close_as(entry_id, "take_profit")
-                continue  # the entry is now closed — skip its target this tick
 
-        if level_target is not None:
-            if e.sides_stopped:  # TPT-05: permanent disarm
-                exit_monitor.disarm_target(entry_id)
-            elif exit_monitor.evaluate_target(entry_id, profit_pct=profit_pct,
-                                              level=int(level_target), stale=entry_stale,
-                                              now_ms=now_ms):
-                await commands.close_as(entry_id, "take_profit_target")
+
+def _exit_alert_limiter(comp) -> ExitAlertRateLimiter:
+    """NFR-08a's limiter, held on the COMPOSITION.
+
+    It must outlive any single evaluation pass -- a throw every 250 ms that
+    reset its own cooldown would flood exactly the channel the limit protects
+    -- but it must NOT be module-global. Two reasons, both found the moment it
+    was: a module singleton silently ignores the operator's configured
+    `exit_unevaluable_alert_s` (it is built at import, before any env is
+    read), and it leaks suppression state between independent apps, so one
+    app's alert could mute another's. Per-composition is the scope that
+    matches the lifetime of the thing being alerted about."""
+    limiter = getattr(comp, "_exit_alert_limiter", None)
+    if limiter is None:
+        window = getattr(comp, "exit_unevaluable_alert_s", None)
+        limiter = ExitAlertRateLimiter(
+            window_s=window if window is not None else _exit_unevaluable_alert_s({}))
+        comp._exit_alert_limiter = limiter
+    return limiter
+
+def _alert_exit_failure(comp, exc, *, entry_id: str | None = None, now=None) -> None:
+    """NFR-08a: a raised exception from exit evaluation produces a CRITICAL
+    alert, rate-limited per distinct error -- never a log line alone.
+
+    The rate limit is part of the rule: at 250 ms an unlimited alert on a
+    persistent throw is four per second, and a channel emitting four a second
+    is one the operator mutes -- which is indistinguishable from the silence
+    NFR-08a exists to end.
+
+    Never raises. An alert sink that fails must not be the thing that kills
+    the evaluation pass it was reporting on."""
+    key = error_key(entry_id or "pass", exc)
+    now_s = now.timestamp() if now is not None else _time.monotonic()
+    if not _exit_alert_limiter(comp).should_send(key, now_s=now_s):
+        logger.warning("exit evaluation failed (alert rate-limited): %r", exc)
+        return
+    scope = f"entry {entry_id}" if entry_id else "the evaluation pass"
+    try:
+        comp.alerts.alert(
+            "critical",
+            f"EXIT EVALUATION FAILED for {scope} -- floors/targets for it are NOT "
+            f"being evaluated: {type(exc).__name__}: {exc}",
+            entry_id=entry_id, error=repr(exc))
+    except Exception:  # noqa: BLE001 -- a broken sink must not kill the pass
+        logger.exception("exit evaluation failed AND the alert sink raised: %r", exc)
+    else:
+        logger.warning("exit evaluation failed for %s: %r", scope, exc)
+
+
+async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, commands,
+                              *, snapshot, hub, now, now_ms, max_quote_age_ms) -> None:
+    """ONE entry's floor/target evaluation (TPF-03g's unit of isolation).
+
+    Extracted so the pass-level loop above has a single place to catch per
+    entry: an inline try/except around a multi-branch body invites a later
+    edit to land outside it, and the isolation guarantee would silently
+    narrow."""
+    level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
+    if level_floor is None and level_target is None:
+        return
+    if e.status in _TERMINAL_STATUSES:
+        exit_monitor.forget(entry_id)
+        return
+    # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
+    # (`_snap_for` accepts the per-underlying registry, a legacy holder,
+    # or a bare snapshot -- every pre-v1.86 caller unchanged). No stream
+    # for the entry's underlying -> stale -> pause, never another chain.
+    snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
+    stale = snap_e is None or snap_e.stale
+    profit_pct = None if stale else _entry_profit_pct_now(
+        e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+    entry_stale = stale or profit_pct is None
+
+    if level_floor is not None:
+        if exit_monitor.evaluate_floor(entry_id, profit_pct=profit_pct,
+                                       level=int(level_floor), stale=entry_stale,
+                                       now_ms=now_ms):
+            await commands.close_as(entry_id, "take_profit")
+            return  # the entry is now closed — skip its target this pass
+
+    if level_target is not None:
+        if e.sides_stopped:  # TPT-05: permanent disarm
+            exit_monitor.disarm_target(entry_id)
+        elif exit_monitor.evaluate_target(entry_id, profit_pct=profit_pct,
+                                          level=int(level_target), stale=entry_stale,
+                                          now_ms=now_ms):
+            await commands.close_as(entry_id, "take_profit_target")
 
 
 async def _recover_exits_once(comp, snapshot, commands, *,
@@ -2991,6 +3077,11 @@ def live_app():
     # 100-5000 ms, default 250). Read here so it is bound ONCE for the
     # process, alongside the freshness bar it works with.
     exit_eval_interval_ms = _exit_eval_interval_ms(env)
+    # NFR-08a / TPF-03d: the alert cooldown AND the unevaluable-for-this-long
+    # threshold are the same ratified dial. Bound onto the composition so the
+    # limiter built on first failure uses the OPERATOR's value, not the
+    # import-time default.
+    comp.exit_unevaluable_alert_s = _exit_unevaluable_alert_s(env)
 
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],
@@ -3377,7 +3468,14 @@ def live_app():
                 except Exception as exc:  # noqa: BLE001 -- must never kill this loop
                     app.state.exit_eval_error = repr(exc)
                     app.state.broker_error = repr(exc)
-                    logger.warning("exit evaluation pass failed: %r", exc)
+                    # NFR-08a: a raised exception from the pass ALERTS. The
+                    # predecessor logged a warning and nothing else, so a
+                    # throwing evaluator left every exit dead for a session
+                    # with no operator-visible signal. TPF-03g isolates the
+                    # per-ENTRY failures inside the pass; this catches a
+                    # failure of the pass ITSELF (before or around the loop),
+                    # which would blind every entry at once.
+                    _alert_exit_failure(comp, exc, now=comp.clock.now())
                 await asyncio.sleep(interval_s)
 
         app.state.exit_eval_task = asyncio.create_task(_loop())

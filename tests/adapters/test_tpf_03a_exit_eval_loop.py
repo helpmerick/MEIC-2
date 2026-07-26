@@ -98,16 +98,49 @@ def test_tpf03a_a_dedicated_owner_exists_and_is_the_only_caller():
     assert "_start_exit_eval_loop" in source
 
 
+def _exit_loop_body():
+    """The `while True:` body of the dedicated exit-evaluation loop, as AST.
+
+    Located structurally rather than by slicing characters out of the file:
+    the first version of this test took a fixed 3000-character window and
+    broke the moment the loop's error handler grew, which is a test that
+    fails for a reason unrelated to the property it guards."""
+    tree = ast.parse(SERVER_SRC.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_start_exit_eval_loop":
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.AsyncFunctionDef) and inner.name == "_loop":
+                    for stmt in inner.body:
+                        if isinstance(stmt, ast.While):
+                            return stmt.body
+    return None
+
+
 def test_tpf03a_the_dedicated_loop_evaluates_before_it_sleeps():
     """SLEEP-FIRST WAS THE DEFECT. A loop that sleeps before its first pass
     runs blind for a full interval after every boot -- which at 60 s was the
     original hole, and is a property of the loop's SHAPE, not its interval."""
-    source = SERVER_SRC.read_text(encoding="utf-8")
-    start = source.index("async def _start_exit_eval_loop")
-    loop_src = source[start:start + 3000]
-    body = loop_src[loop_src.index("async def _loop()"):]
-    pass_at = body.index("_pass()")
-    sleep_at = body.index("asyncio.sleep")
+    body = _exit_loop_body()
+    assert body, "could not locate the exit-evaluation loop -- update this test, not the rule"
+
+    def _first_index(predicate):
+        for i, stmt in enumerate(body):
+            for sub in ast.walk(stmt):
+                if predicate(sub):
+                    return i
+        return None
+
+    def _is_pass_call(n):
+        return (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_pass")
+
+    def _is_sleep_call(n):
+        return (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "sleep")
+
+    pass_at, sleep_at = _first_index(_is_pass_call), _first_index(_is_sleep_call)
+    assert pass_at is not None, "the loop never evaluates"
+    assert sleep_at is not None, "the loop never sleeps -- that is a busy loop"
     assert pass_at < sleep_at, (
         "the exit-evaluation loop sleeps before its first pass -- every boot "
         "would run blind for a full interval (the original 60 s hole)")
