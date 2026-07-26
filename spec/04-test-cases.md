@@ -1903,6 +1903,14 @@ Scenario: Parity is observation-based and catches the Routed divergence (v1.91)
   And stop confirmation counts it, so a protected position is never auto-flattened as UNPROTECTED
   And a stub-vs-stub parity check that misses this divergence fails
 
+Scenario: Filled quantity is derived, bounded, and never decides a close (v1.97, ENT-11(9))
+  Given a leg at status Received with quantity 1 and remaining_quantity 1
+  Then filled_qty derives as 0
+  And given remaining_quantity absent or unparsable, filled_qty is UNKNOWN — never zero, never filled
+  And given a CANCELLED order with remaining_quantity 0, filled_qty is UNKNOWN — never "fully filled"
+  And no close order's quantity is decided by the derivation: broker positions decide (ENT-11(3))
+  And a wrong derivation can produce a wrong report but never a wrong order
+
 Scenario: A close can never open a position (ORD-12)
   Given a leg the resolver reports TERMINAL_NO_POSITION
   Then no exit order is submitted for it — the close is a no-op
