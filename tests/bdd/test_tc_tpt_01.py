@@ -63,19 +63,13 @@ def _(world):
     world["net_credit"] = D("4.00")
 
 
-@when('whole-entry profit holds at or above 60 percent for 2 consecutive valid evaluations')
+@when('whole-entry profit holds at or above 60 percent continuously for at least tp_confirmation_ms')
 def _(world):
     mon = world["monitor"]
-    # TPF-03b (v1.94): confirmation is a DURATION. Two consecutive VALID
-    # evaluations still describe this scenario truthfully -- they simply have
-    # to SPAN the confirmation window, because it is the elapsed continuous
-    # breach that fires, not the number of evaluations.
-    #
-    # NOTE for the operator (raised, not papered over): this scenario's own
-    # text still reads "for 2 consecutive valid evaluations", which is the
-    # COUNT language TPF-03b retired. The step below is truthful either way,
-    # but the "2" no longer carries normative weight, and a stale number that
-    # looks intentional is exactly TPF-03b(ii)'s hazard.
+    # TPF-03b (v1.94/v2.07): confirmation is a DURATION. What fires the target
+    # is the ELAPSED continuous run at/above the level, never the number of
+    # evaluations -- so the second evaluation below is placed one confirmation
+    # window later, and it is the elapsed time that does the work.
     hold_ms = mon.tp_confirmation_ms
     fired_1 = mon.evaluate_target("e1", profit_pct=D("62"), level=world["level"],
                                   stale=False, now_ms=NOW_MS)
