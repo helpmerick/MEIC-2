@@ -51,6 +51,11 @@ Feature: TC-ENT-11
     Then writes to that name are applied to the WRAPPER, never forwarded inward
     And write-through survives only for names the wrapper does not define
 
+  Scenario: A non-advancing clock is unevaluable, not silently unfired (v2.07, TPF-03b(iii))
+    Given an armed exit and a now_ms that does not advance between passes
+    Then those entries are surfaced as unevaluable per TPF-03d
+    And a missing now_ms is a loud TypeError at the call site, never a silent non-fire
+
   Scenario: A retired cadence-denominated parameter is verified against a NON-default value (v2.06, TPF-03b(ii))
     Given a count-based confirmation being migrated to a duration
     Then the migration is verified with a non-default count
