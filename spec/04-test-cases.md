@@ -1901,6 +1901,18 @@ Scenario: A wrapper answers the same question for writes as for reads (v2.04, NF
   Then writes to that name are applied to the WRAPPER, never forwarded inward
   And write-through survives only for names the wrapper does not define
 
+Scenario: Late attribute assignment never reaches a captured reference (v2.05, NFR-11)
+  Given a component that captured a collaborator at construction
+  When the composition's attribute for that collaborator is reassigned afterwards
+  Then the component still holds the ORIGINAL reference
+  And therefore collaborators whose identity matters are supplied at construction
+  Or are a stable relay retargeted in place, which replays anything raised before a target existed
+
+Scenario: An unevaluable proof reports its reason, never a plain negative (v2.05, NFR-11a)
+  Given a wiring proof whose path cannot be resolved by the checker
+  Then the gate reports UNEVALUABLE with the reason
+  And never reports it as an ordinary "unconstructed" negative
+
 Scenario: Git state operations are single-step on a real-money tree (v2.03, NFR-10)
   Then no documented procedure chains a state-changing git step onto an unverified prior step
   And recovery procedures move files aside rather than deleting them
@@ -2046,7 +2058,7 @@ Scenario: The disarm still wins at any cadence
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
 | UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
-| ENT-11 / CLS-08 / ORD-12/12a / OWN-03a / NFR-07a/08/09/09a/10 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
+| ENT-11 / CLS-08 / ORD-12/12a / OWN-03a / NFR-07a/08/09/09a/10/11/11a | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |
