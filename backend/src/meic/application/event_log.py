@@ -29,6 +29,17 @@ class EventLog(list):
     def __init__(self, iterable: Iterable = (), *, config_version: str = "") -> None:
         super().__init__(iterable)
         self.config_version = config_version
+        # TPF-03c: bumped by every mutating path so `fold` can tell an
+        # UNCHANGED log from a changed one. Paired with len() in the cache key
+        # (see domain/projection.fold) because `list.append(self, x)` can and
+        # DOES bypass these overrides -- DurableEventLog.append calls it
+        # directly to keep its journal-first ordering. Revision catches a
+        # same-length change (clear-then-refill); length catches a bypass.
+        # Neither alone is sufficient, which is why both are in the key.
+        self._revision = 0
+
+    def _touch(self) -> None:
+        self._revision += 1
 
     def _stamp(self, item):
         if isinstance(item, Event) and self.config_version and not item.config_version:
@@ -37,12 +48,58 @@ class EventLog(list):
 
     def append(self, item) -> None:
         super().append(self._stamp(item))
+        self._touch()
 
     def extend(self, items) -> None:
         super().extend(self._stamp(i) for i in items)
+        self._touch()
 
     def insert(self, index: int, item) -> None:
         super().insert(index, self._stamp(item))
+        self._touch()
+
+    # TPF-03c: EVERY remaining list mutator, enumerated rather than assumed.
+    # An un-overridden mutator is a silent stale-projection path, so the list
+    # is exhaustive by construction: if a new one appears in a future Python,
+    # the len() half of the cache key still catches any change of length.
+    def remove(self, item) -> None:
+        super().remove(item)
+        self._touch()
+
+    def pop(self, index: int = -1):
+        item = super().pop(index)
+        self._touch()
+        return item
+
+    def clear(self) -> None:
+        super().clear()
+        self._touch()
+
+    def sort(self, *a, **k) -> None:
+        super().sort(*a, **k)
+        self._touch()
+
+    def reverse(self) -> None:
+        super().reverse()
+        self._touch()
+
+    def __setitem__(self, index, value) -> None:
+        super().__setitem__(index, value)
+        self._touch()
+
+    def __delitem__(self, index) -> None:
+        super().__delitem__(index)
+        self._touch()
+
+    def __iadd__(self, other):
+        result = super().__iadd__(other)
+        self._touch()
+        return result
+
+    def __imul__(self, other):
+        result = super().__imul__(other)
+        self._touch()
+        return result
 
 
 class DurableEventLog(EventLog):
@@ -75,6 +132,7 @@ class DurableEventLog(EventLog):
         stamped = self._stamp(item)
         self._journal.append(stamped)  # REC-01: journal FIRST; a raise here
         list.append(self, stamped)     # leaves the in-memory list untouched.
+        self._touch()                  # TPF-03c: this path BYPASSES EventLog.append
 
     def extend(self, items) -> None:
         # REC-01: journal-then-memory PER ITEM, not as two separate batch
@@ -87,6 +145,7 @@ class DurableEventLog(EventLog):
             stamped = self._stamp(i)
             self._journal.append(stamped)
             list.append(self, stamped)
+            self._touch()              # TPF-03c: bypasses EventLog.extend
 
     def insert(self, index: int, item) -> None:
         # Not used by any current caller (services only append/extend); refusing

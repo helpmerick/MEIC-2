@@ -264,12 +264,60 @@ def apply(state: DayState, event: Event) -> DayState:
     return state
 
 
+def _fold_key(events) -> tuple[int, int] | None:
+    """TPF-03c: a token that changes whenever `events` could have changed, or
+    None for a log that cannot be cached.
+
+    TWO components, because neither is sufficient alone:
+      * `_revision` — bumped by every mutating method on `EventLog`. Catches a
+        change that leaves the LENGTH identical, e.g. the drill reset's
+        clear-then-refill.
+      * `len()` — catches a mutation that BYPASSED those methods. That is not
+        hypothetical: `DurableEventLog.append` calls `list.append(self, ...)`
+        directly to preserve its journal-first ordering, so a revision bumped
+        only in the base class would have gone stale in LIVE and nowhere else.
+
+    A plain `list` (every `fold(scoped)` call over a filtered slice) has no
+    `_revision`, so it returns None and is NOT cached -- correct, and the same
+    cost as before. Caching those would need a content hash, which is the very
+    O(events) work this rule exists to remove."""
+    revision = getattr(events, "_revision", None)
+    if revision is None:
+        return None
+    return (revision, len(events))
+
+
 def fold(events: list[Event]) -> DayState:
     """Rebuild day state from an ordered event log (REC-01). Deterministic:
-    equal input lists yield equal DayState."""
+    equal input lists yield equal DayState.
+
+    TPF-03c (v1.94) EVALUATION COST INVARIANT: this is a FULL REPLAY, and it
+    ships first because it is the safety precondition for any faster cadence.
+    At the 250 ms exit cadence an uncached fold is O(evaluations x events) and
+    DEGRADES AS THE DAY GROWS -- passing in the morning and failing in the
+    afternoon, which is the worst shape a performance defect can have. So the
+    projection is folded at most once per unchanged log.
+
+    ALIASING CONTRACT, stated because `DayState` is mutable: callers receive a
+    SHARED instance and MUST NOT mutate it. Every current caller only reads
+    (verified 2026-07-26 across all ~20 sites). A caller that mutated the
+    result would poison every later reader, so mutate a copy or extend
+    `apply`."""
+    key = _fold_key(events)
+    if key is not None:
+        cached = getattr(events, "_fold_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
     state = DayState()
     for event in events:
         state = apply(state, event)
+
+    if key is not None:
+        try:
+            events._fold_cache = (key, state)
+        except (AttributeError, TypeError):  # a log that cannot carry the cache
+            pass                             # -- uncached, never incorrect
     return state
 
 
