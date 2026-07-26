@@ -858,7 +858,7 @@ Scenario: Backend is authoritative at arm time
   Then the request is rejected (not clamped) and the UI refreshes  # EC-TPF-04
 ```
 
-**TC-TPF-03** — TPF-01/03 trigger mechanics: floor 20% on $4.00 credit ⇒ close fires when profit marks ≤ $0.80 for tp_confirmation_evals consecutive valid evaluations; a single bad print does not fire; stale marks pause evaluation and reset the counter (EC-TPF-02).
+**TC-TPF-03** — TPF-01/03 trigger mechanics: floor 20% on $4.00 credit ⇒ close fires when profit marks ≤ $0.80 CONTINUOUSLY for at least `tp_confirmation_ms` (TPF-03b); a single bad print does not fire; a recovery OR a stale/invalid evaluation CLEARS the elapsed time — never pauses and resumes (EC-TPF-02).
 
 **TC-TPF-04** — TPF-04/CLS-01 close procedure: stops cancelled and confirmed before spread close orders; close via reprice ladder with fallback; close-submit failure after stop cancel ⇒ stops re-placed and UNPROTECTED handling engaged.
 
@@ -1404,7 +1404,7 @@ Scenario: Settlement journaling is idempotent and never guesses
 ```gherkin
 Scenario: Target fires on the way up through the canonical close
   Given an entry with actual net credit 4.00 and take-profit target 60 percent
-  When whole-entry profit holds at or above 60 percent for 2 consecutive valid evaluations
+  When whole-entry profit holds at or above 60 percent continuously for at least tp_confirmation_ms
   Then CloseEntry runs with initiator "take_profit_target"
   And the order sequence is identical to a manual close of the same position
 
@@ -1900,6 +1900,11 @@ Scenario: A wrapper answers the same question for writes as for reads (v2.04, NF
   Given a decorator that intercepts reads of a name it defines
   Then writes to that name are applied to the WRAPPER, never forwarded inward
   And write-through survives only for names the wrapper does not define
+
+Scenario: A non-advancing clock is unevaluable, not silently unfired (v2.07, TPF-03b(iii))
+  Given an armed exit and a now_ms that does not advance between passes
+  Then those entries are surfaced as unevaluable per TPF-03d
+  And a missing now_ms is a loud TypeError at the call site, never a silent non-fire
 
 Scenario: A retired cadence-denominated parameter is verified against a NON-default value (v2.06, TPF-03b(ii))
   Given a count-based confirmation being migrated to a duration

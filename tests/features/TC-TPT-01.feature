@@ -1,7 +1,7 @@
 Feature: TC-TPT-01
   Scenario: Target fires on the way up through the canonical close
     Given an entry with actual net credit 4.00 and take-profit target 60 percent
-    When whole-entry profit holds at or above 60 percent for 2 consecutive valid evaluations
+    When whole-entry profit holds at or above 60 percent continuously for at least tp_confirmation_ms
     Then CloseEntry runs with initiator "take_profit_target"
     And the order sequence is identical to a manual close of the same position
 
