@@ -22,6 +22,14 @@ services:
     volumes:
       - meic-live-data:/data
     restart: unless-stopped
+    # Bounded logs. The default json-file driver rotates NOTHING, so a full
+    # disk was one long unattended run away -- and a full disk takes the panel
+    # down, which on an armed day is the worst failure available.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   meic-live-data:

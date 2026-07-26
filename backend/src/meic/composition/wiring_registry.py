@@ -135,6 +135,25 @@ def _exit_guard_on(attr_path: str) -> Callable[[object], bool]:
 
 REGISTRY: tuple[WiringEntry, ...] = (
     WiringEntry(
+        rule_ids=("TPF-03a", "TPF-03b", "TPF-03d", "TPF-03g", "NFR-08a"),
+        component="the dedicated exit-evaluation loop",
+        proof="app.state.exit_eval_task is a live task (TPF-03a's dedicated owner "
+              "-- exit evaluation is NOT a duty of the health loop); AND "
+              "app.state.exit_eval_error is None, i.e. the most recent pass "
+              "completed. Two different real facts per NFR-07a: a task that EXISTS "
+              "but throws every pass is exactly the NFR-08a incident (an evaluator "
+              "threw on 15 consecutive ticks while every exit was dead), so "
+              "liveness alone would prove the wrong thing. TPF-03b (duration "
+              "confirmation), TPF-03d (unevaluable surfacing) and TPF-03g "
+              "(per-entry isolation) are properties OF this pass and ship with it; "
+              "pinned by tests/adapters/test_tpf_03a_exit_eval_loop.py, "
+              "test_tpf_03d_unevaluable_exits.py and "
+              "test_nfr_08a_tpf_03g_exit_failures.py.",
+        constructed=_task_check("exit_eval_task"),
+        ticked=lambda state: (_task_check("exit_eval_task")(state)
+                              and getattr(state, "exit_eval_error", None) is None),
+    ),
+    WiringEntry(
         rule_ids=("NFR-08",),
         component="AlertRelay (the late-binding alert sink)",
         proof="app.state.composition.alerts is a real AlertRelay (construction); "
@@ -157,7 +176,7 @@ REGISTRY: tuple[WiringEntry, ...] = (
         )(getattr(state, "composition", None)),
     ),
     WiringEntry(
-        rule_ids=("ENT-11", "ORD-12", "CLS-08"),
+        rule_ids=("ENT-11", "ORD-12", "ORD-12a", "CLS-08"),
         component="ExitGuardedBroker (the ORD-12 chokepoint + ENT-11 resolver)",
         proof="app.state.composition.broker is exit-guarded (installed at the "
               "composition root, innermost, before any service captures the "
@@ -751,6 +770,14 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # watchers, sweeps, loops, samplers, reconcilers") -- the meta-rule about
     # the registry is not itself a registry entry.
     "NFR-07",
+    # NFR-07a (v2.04) and NFR-12 (v2.06) are META-RULES ABOUT THIS REGISTRY AND
+    # ITS TESTS, not components it can construct: NFR-07a says what SHAPE a
+    # proof must take for a given component type, and NFR-12 says a required
+    # ABSENCE is pinned at source rather than at runtime. Both are enforced by
+    # the entries and tests themselves -- the same class as NFR-07 immediately
+    # above, which matches its own defining line.
+    "NFR-07a",
+    "NFR-12",
 })
 
 

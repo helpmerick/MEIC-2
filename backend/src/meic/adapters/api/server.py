@@ -25,6 +25,7 @@ from typing import Callable
 from fastapi import HTTPException, Query
 
 from meic.application.exit_alerts import ExitAlertRateLimiter, error_key
+from meic.application.exit_evaluability import ClockStallDetector, ExitEvaluabilityTracker
 from meic.adapters.api.app import _strike_from_symbol
 from meic.adapters.logging_setup import configure_logging
 from meic.application.clocks import MutableClock
@@ -1537,6 +1538,9 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
     # entries milliseconds apart for no reason, and the elapsed span is the
     # trigger input now, not a counter.
     now_ms = int(now.timestamp() * 1000) if now is not None else int(_time.monotonic() * 1000)
+    # TPF-03b(iii): computed ONCE per pass -- a stalled clock is a property
+    # of the pass, not of any single entry.
+    clock_advanced = _clock_stall(comp).advanced(now_ms)
     for entry_id, e in day.entries.items():
         # TPF-03g: each entry is evaluated INDEPENDENTLY. NFR-08a keeps the
         # LOOP alive, which is a strictly weaker guarantee than keeping the
@@ -1549,10 +1553,46 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
             await _evaluate_one_entry(
                 comp, entry_id, e, floors, targets, exit_monitor, commands,
                 snapshot=snapshot, hub=hub, now=now, now_ms=now_ms,
-                max_quote_age_ms=max_quote_age_ms)
+                max_quote_age_ms=max_quote_age_ms, clock_advanced=clock_advanced)
         except Exception as exc:  # noqa: BLE001 -- one entry must never blind the others
             _alert_exit_failure(comp, exc, entry_id=entry_id, now=now)
 
+
+
+def _exit_evaluability(comp) -> ExitEvaluabilityTracker:
+    """TPF-03d's tracker, held on the composition for the same reasons as the
+    NFR-08a limiter (see `_exit_alert_limiter`): it must outlive a pass, must
+    honour the OPERATOR's dial rather than an import-time default, and must
+    not leak state between apps."""
+    tracker = getattr(comp, "_exit_evaluability", None)
+    if tracker is None:
+        window = getattr(comp, "exit_unevaluable_alert_s", None)
+        tracker = ExitEvaluabilityTracker(
+            alert_after_s=window if window is not None else _exit_unevaluable_alert_s({}))
+        comp._exit_evaluability = tracker
+    return tracker
+
+
+def _clock_stall(comp) -> ClockStallDetector:
+    detector = getattr(comp, "_clock_stall", None)
+    if detector is None:
+        detector = ClockStallDetector()
+        comp._clock_stall = detector
+    return detector
+
+
+def _alert_unevaluable_exit(comp, surfaced, *, now=None) -> None:
+    """TPF-03d/RSK-06: an armed exit unevaluable for the whole threshold."""
+    try:
+        comp.alerts.alert(
+            "critical",
+            f"ARMED EXIT UNEVALUABLE for {int(surfaced.seconds)}s on entry "
+            f"{surfaced.entry_id} -- its floor/target is NOT being evaluated: "
+            f"{surfaced.reason}",
+            entry_id=surfaced.entry_id, reason=surfaced.reason,
+            seconds=int(surfaced.seconds))
+    except Exception:  # noqa: BLE001 -- a broken sink must not kill the pass
+        logger.exception("unevaluable-exit alert sink raised for %s", surfaced.entry_id)
 
 
 def _exit_alert_limiter(comp) -> ExitAlertRateLimiter:
@@ -1604,7 +1644,8 @@ def _alert_exit_failure(comp, exc, *, entry_id: str | None = None, now=None) -> 
 
 
 async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, commands,
-                              *, snapshot, hub, now, now_ms, max_quote_age_ms) -> None:
+                              *, snapshot, hub, now, now_ms, max_quote_age_ms,
+                              clock_advanced: bool = True) -> None:
     """ONE entry's floor/target evaluation (TPF-03g's unit of isolation).
 
     Extracted so the pass-level loop above has a single place to catch per
@@ -1616,6 +1657,7 @@ async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, 
         return
     if e.status in _TERMINAL_STATUSES:
         exit_monitor.forget(entry_id)
+        _exit_evaluability(comp).forget(entry_id)
         return
     # UND-01/UND-04 (v1.86): THIS entry's own underlying's snapshot
     # (`_snap_for` accepts the per-underlying registry, a legacy holder,
@@ -1626,6 +1668,27 @@ async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, 
     profit_pct = None if stale else _entry_profit_pct_now(
         e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
     entry_stale = stale or profit_pct is None
+
+    # TPF-03d: an armed exit that cannot be evaluated is SURFACED. An
+    # unmarkable leg makes profit_pct None, which reads downstream as "no
+    # breach" -- indistinguishable from "not breached", so the operator
+    # believes a floor is protecting them when it has not been evaluated for
+    # hours. TPF-03b(iii) rides the same path: a clock that is not ADVANCING
+    # cannot accumulate a continuous breach, so it is the same observable and
+    # earns the same treatment.
+    if not clock_advanced:
+        unevaluable_reason = ("the evaluation clock is not advancing -- no continuous "
+                              "breach can accumulate, so nothing can ever confirm")
+    elif entry_stale:
+        unevaluable_reason = ("the entry cannot be fully marked (stale snapshot, or an "
+                              "open side with no usable mark)")
+    else:
+        unevaluable_reason = ""
+    surfaced = _exit_evaluability(comp).observe(
+        entry_id, evaluable=not unevaluable_reason, reason=unevaluable_reason,
+        now_s=now_ms / 1000.0)
+    if surfaced is not None:
+        _alert_unevaluable_exit(comp, surfaced, now=now)
 
     if level_floor is not None:
         if exit_monitor.evaluate_floor(entry_id, profit_pct=profit_pct,
@@ -2949,6 +3012,29 @@ def _wire_live_day(comp, env: dict[str, str], *, flatten_in_progress: Callable[[
     }
 
 
+
+def _quiet_noisy_third_party_loggers(env: dict[str, str]) -> None:
+    """Keep the SDK's DEBUG firehose out of the operator's log.
+
+    Measured on the 2026-07-26 deploy: 167 of 221 lines in the first two
+    minutes were `DEBUG tastytrade` quote dumps, each carrying a full chain
+    snapshot. That is not merely untidy -- it directly weakens NFR-08a. The
+    whole point of that rule is that a failing evaluator produces an
+    OPERATOR-VISIBLE signal rather than a log line nobody reads, and a CRITICAL
+    buried in thousands of quote dumps is closer to the second than the first.
+    We would have replaced "log-only, therefore invisible" with "alerted, but
+    unfindable".
+
+    Only the THIRD-PARTY feed loggers are raised; `meic.*` is untouched, so
+    nothing this codebase says about its own state is suppressed. Overridable
+    via MEIC_SDK_LOG_LEVEL for a debugging session."""
+    import logging as _logging
+
+    level_name = (env.get("MEIC_SDK_LOG_LEVEL") or "INFO").upper()
+    level = getattr(_logging, level_name, _logging.INFO)
+    for name in ("tastytrade", "websockets", "httpx", "httpcore"):
+        _logging.getLogger(name).setLevel(level)
+
 def live_app():
     """Live composition behind the panel: real broker + feed, SQLite-persisted,
     token-gated, safe defaults. Connects on startup; NO trading auto-starts —
@@ -2962,6 +3048,7 @@ def live_app():
     from meic.composition.panel_commands import PanelCommands
 
     env = _read_env()
+    _quiet_noisy_third_party_loggers(env)
     configure_logging(env, root=ROOT)  # 2026-07-14: logging works however the app is started
     is_test = env.get("MEIC_LIVE_IS_TEST", "true").lower() != "false"
     # Boot announcement: which environment, never which secret -- see
