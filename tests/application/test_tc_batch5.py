@@ -17,6 +17,7 @@ from meic.config.validation import (
 )
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
+from meic.composition.exit_guard import ExitGuardedBroker
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 CLOCK = FakeClock(datetime(2026, 7, 6, 9, 30, tzinfo=ET))
@@ -83,8 +84,9 @@ def test_tc_rsk_06_paper_wiring_never_constructs_live_adapter(monkeypatch):
     comp = PaperComposition(clock=CLOCK, ticks=SPX)
     comp.compose_and_arm(["10:00", "11:00"])   # exercises the full paper assembly
 
-    assert isinstance(comp.broker, SimulatedBroker)
-    assert type(comp.broker).__name__ != "TastytradeAdapter"
+    assert isinstance(comp.broker, ExitGuardedBroker)           # ORD-12
+    assert isinstance(comp.broker.inner, SimulatedBroker)
+    assert type(comp.broker.inner).__name__ != "TastytradeAdapter"
 
     # the paper composition module does not even import the live adapter
     import inspect

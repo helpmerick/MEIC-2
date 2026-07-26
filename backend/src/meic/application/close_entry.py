@@ -53,6 +53,7 @@ close only ever touches the bot's own lots.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -65,6 +66,7 @@ from meic.domain.projection import entry_underlying
 from .cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from .execute_entry import _fill_matches  # reused normalizer (2026-07-11 sweep), never a new one
 from .order_intent import OrderIntent, OrderLeg, marketable_close, right_of
+from .terminal_state import ExitWouldOpen
 
 VALID_INITIATORS = frozenset({
     "manual", "manual_flatten", "take_profit", "take_profit_target", "eod", "decay",
@@ -98,6 +100,9 @@ VALID_INITIATORS = frozenset({
 })
 
 _SIDE_ORDER = {"PUT": 0, "CALL": 1}  # deterministic order (TC-CLS-01 scenario 1)
+
+
+_logger = logging.getLogger(__name__)
 
 
 class _NoOpAlerts:
@@ -178,7 +183,7 @@ class CloseEntry:
             if stop_id is None:
                 # CLS-01 (3): no resting stop recorded (never confirmed,
                 # USER_UNPROTECTED, ...) — direct marketable buy-to-close.
-                await self._broker.submit(intent)
+                await self._submit_exit(intent)   # ORD-12: already-flat is a no-op
                 self._events.append(SideClosed(entry_id=entry_id, side=leg.side, at=self._at()))
                 if progress is not None:  # CLS-06: this short's exit completed
                     progress.append(leg)
@@ -235,7 +240,7 @@ class CloseEntry:
         )
         for leg in longs:
             qty = self._exit_qty(leg)
-            await self._broker.submit(OrderIntent(
+            await self._submit_exit(OrderIntent(
                 order_type="marketable_limit", tif="Day", kind="close", entry_id=entry_id,
                 contracts=qty, price=close_price,
                 idempotency_key=f"close:{entry_id}:{leg.symbol}",  # ORD-04
@@ -247,6 +252,35 @@ class CloseEntry:
 
         # CLS-04: record the close with its initiator (the ONLY per-initiator diff)
         self._events.append(EntryClosed(entry_id=entry_id, initiator=initiator, at=self._at()))
+
+    async def _submit_exit(self, intent) -> bool:
+        """Submit one exit leg. Returns False if it was ALREADY a no-op.
+
+        ORD-12, verbatim: "a leg resolving TERMINAL_NO_POSITION is a no-op,
+        never an order." The exit guard enforces that by RAISING (ENT-11(5):
+        a refusal nobody is forced to inspect is not a refusal), and this is
+        the one place allowed to interpret that raise -- as "this leg is
+        already flat, so its exit is already achieved", which is exactly what
+        a SECOND Close click on a partially-closed entry means.
+
+        This is what makes the second click safe rather than harmful: the
+        already-closed short must NOT be re-bought, because re-buying it would
+        OPEN an unintended long -- the CLS-01 double-fill risk. Skipping it and
+        continuing to the remaining legs is the behaviour CLS-06 scenario 3
+        requires.
+
+        `TerminalStateUnknown` is deliberately NOT caught. UNKNOWN authorises
+        re-resolution and an alert, never a close and never an assumption that
+        the leg is done -- so it propagates and aborts, leaving the entry
+        visible."""
+        try:
+            await self._broker.submit(intent)
+            return True
+        except ExitWouldOpen:
+            _logger.warning(
+                "ORD-12: exit leg already flat at the broker -- treating as closed, "
+                "no order placed (entry=%s key=%s)", intent.entry_id, intent.idempotency_key)
+            return False
 
     def _exit_qty(self, leg: LiveLeg) -> int:
         return self._ledger.cap_exit_qty(leg.symbol, abs(leg.signed_qty)) or abs(leg.signed_qty)
@@ -268,7 +302,7 @@ class CloseEntry:
                 # ORD-08b: nothing is resting for this leg any more — no race
                 # left to run, so submit the close directly rather than retry
                 # a replace against a dead order.
-                await self._broker.submit(intent)
+                await self._submit_exit(intent)   # ORD-12: already-flat is a no-op
                 return "TERMINAL", None
             except Exception as e:  # ORD-08(c) / unclassifiable -> transient
                 last_exc = e

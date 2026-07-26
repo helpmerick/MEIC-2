@@ -362,5 +362,16 @@ class TerminalStateResolver:
         return LegState.TERMINAL_NO_POSITION, resolutions
 
     def _alert(self, level: str, message: str, **context) -> None:
-        if self._alerts is not None:
-            self._alerts.alert(level, message, **context)
+        """Resolve the alert sink AT ALERT TIME, not at construction.
+
+        NFR-08 exists because sinks wired at construction were `None` in BOTH
+        compositions for the process's whole life, so the lost-submit,
+        stale-fill and unconfirmable-terminal alerts were all DEAD in
+        production. The composition roots build the broker BEFORE the real
+        sink exists and rebind `comp.alerts` later, so a sink captured here at
+        construction would be the null one forever -- that defect, rebuilt.
+        Passing a zero-argument callable defers the lookup; an alert sink
+        object is not callable, so the two cases cannot be confused."""
+        sink = self._alerts() if callable(self._alerts) else self._alerts
+        if sink is not None:
+            sink.alert(level, message, **context)

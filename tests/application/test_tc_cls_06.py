@@ -47,6 +47,11 @@ def _seed_protected_entry():
     two resting stops), dated 2026-07-20 like the tester's entries."""
     comp = PaperComposition(clock=FakeClock(datetime(2026, 7, 20, 10, 29, tzinfo=ET)), ticks=SPX)
     comp.events.append(CondorFilled(entry_id=ENTRY_ID, net_credit=D("3.60"), legs=_legs()))
+    # ORD-12: the journal says this entry is open, so the BROKER must say so
+    # too. Before the exit guard existed nothing read positions(), and this
+    # fixture could assert a close succeeded against a broker that reported
+    # holding nothing -- a world the live broker can never be in.
+    comp.broker.seed_positions(_legs())
     asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id=ENTRY_ID)))
     asyncio.run(comp.broker.submit(stop_intent("CALL", "3.80", entry_id=ENTRY_ID)))
     return comp

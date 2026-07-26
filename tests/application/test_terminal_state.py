@@ -374,6 +374,43 @@ async def test_ord12_an_es_exit_is_refused_as_unknown_not_silently_allowed():
 
 
 @pytest.mark.asyncio
+async def test_ord12_guard_attribute_writes_reach_the_wrapped_broker():
+    """`composition/runtime.py` resets paper cash with
+    `comp.broker.ledger = SimLedger(...)`. Against a read-only proxy that
+    lands on the WRAPPER while the simulator keeps spending the old ledger --
+    a reset that reports success and changes nothing."""
+    broker = _Broker([_Row(SPXW_PUT)])
+    guarded = ExitGuardedBroker(broker)
+    guarded.ledger = "fresh"
+    assert broker.ledger == "fresh"        # reached the real broker
+    assert guarded.ledger == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_ord12_guard_writes_stay_symmetric_with_reads():
+    """REGRESSION (2026-07-26, found by CLS-06 scenario 3): `broker.submit`
+    READS the wrapper's own method, so writing it must also hit the WRAPPER.
+    Forwarding that write to the inner broker while the read still resolved
+    here made a test spy call the guard, which called the spy, until the stack
+    ran out -- a proxy answering a different question for writes than for
+    reads, which is NFR-09's shape in a new place."""
+    broker = _Broker([_Row(SPXW_PUT)])
+    guarded = ExitGuardedBroker(broker)
+    original = guarded.submit
+    seen = []
+
+    async def spy(intent, *a, **k):
+        seen.append(intent)
+        return await original(intent, *a, **k)
+
+    guarded.submit = spy
+    await guarded.submit(_close())          # must terminate, not recurse
+    assert len(seen) == 1
+    assert len(broker.submitted) == 1
+    assert "submit" not in vars(broker), "the write must not have leaked inward"
+
+
+@pytest.mark.asyncio
 async def test_ord12_guard_passes_every_other_primitive_straight_through():
     """A wrapper that quietly dropped a port method would be a silent
     capability loss, not a visible error."""

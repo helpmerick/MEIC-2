@@ -148,6 +148,14 @@ class SimulatedBroker:
     ) -> None:
         self._ids = itertools.count(1)
         self._orders: dict[str, SimOrder] = {}
+        # ENT-11(4): positions the simulator holds WITHOUT having filled them
+        # itself -- a book carried in from a previous session (REC-07 boot
+        # restore), or, in a test, an entry journaled straight into the event
+        # log. Before ORD-12 nothing read `positions()`, so a world where the
+        # journal said "open" and the broker said "flat" was never
+        # contradictory; now it is, and a fake that cannot express the state
+        # under test cannot model the broker. Signed: +long, -short.
+        self._seeded_positions: dict[str, Decimal] = {}
         self.ledger = ledger or SimLedger()
         self._tick = tick
         self._through = fill_through_ticks
@@ -309,6 +317,21 @@ class SimulatedBroker:
     async def working_orders(self):
         return [o for o in self._orders.values() if o.status == "WORKING"]
 
+    def seed_positions(self, legs) -> None:
+        """Declare positions the simulator holds without having filled them.
+
+        Takes journaled `FilledLeg`s (symbol + role) so a caller that has
+        appended a `CondorFilled` can make the broker's view agree with the
+        journal in one line. Signs from `role`, never from a raw number --
+        the same discipline `quantity_direction` enforces on the live side."""
+        for leg in legs:
+            signed = Decimal(getattr(leg, "qty", 1) or 1)
+            if getattr(leg, "role", "") == "short":
+                signed = -signed
+            symbol = leg.symbol if hasattr(leg, "symbol") else leg[0]
+            self._seeded_positions[symbol] = self._seeded_positions.get(
+                symbol, Decimal("0")) + signed
+
     async def positions(self):
         """ENT-11(3)/(4): the positions the simulator's own FILLS imply,
         reported in the SAME fields and types as the live adapter.
@@ -340,7 +363,7 @@ class SimulatedBroker:
         because the live payload contains no zero-quantity rows -- emitting one
         would be a shape the resolver has never observed and would resolve
         UNKNOWN (correctly, and uselessly)."""
-        net: dict[str, Decimal] = {}
+        net: dict[str, Decimal] = dict(self._seeded_positions)
         for order in self._orders.values():
             if order.status != "FILLED":
                 continue

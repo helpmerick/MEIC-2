@@ -18,6 +18,7 @@ from decimal import Decimal
 from meic.adapters.dxlink.adapter import DXLinkAdapter
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.adapters.tastytrade.adapter import TastytradeAdapter
+from meic.composition.exit_guard import ExitGuardedBroker
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
@@ -71,7 +72,18 @@ class LiveComposition:
                 journal.load(), config_version=self.events.config_version, journal=journal)
 
         # BrokerGateway -> live adapter (SimulatedBroker is NOT constructed here)
-        self.broker = TastytradeAdapter(self.provider_secret, self.refresh_token, is_test=self.is_test)
+        #
+        # ORD-12: the exit guard is installed HERE, at construction, and every
+        # service below therefore captures the GUARDED reference. Installing it
+        # any later would leave those services holding an ungated wire for the
+        # process's whole life -- the guard present, wired, tested and bypassed.
+        # `alerts` is passed as a CALLABLE because `self.alerts` does not exist
+        # yet on this line and is rebound to the real sink later; capturing the
+        # value here would wire the null sink permanently, which is NFR-08's
+        # own defect rebuilt inside its fix.
+        self.broker = ExitGuardedBroker(
+            TastytradeAdapter(self.provider_secret, self.refresh_token, is_test=self.is_test),
+            alerts=lambda: getattr(self, "alerts", None))
         self.feed = DXLinkAdapter(session=None, clock=self.clock)  # session set on connect()
         self.state = PersistentState(self.state_store or InMemoryStateStore())
         self.state.trading_mode = "live"  # DAY-05

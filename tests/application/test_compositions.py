@@ -13,6 +13,7 @@ from meic.composition.paper import PaperComposition
 from meic.domain.events import CondorFilled, EntryClosed, FilledLeg
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
+from meic.composition.exit_guard import ExitGuardedBroker
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 CLOCK = FakeClock(datetime(2026, 7, 6, 9, 30, tzinfo=ET))
@@ -21,10 +22,10 @@ CLOCK = FakeClock(datetime(2026, 7, 6, 9, 30, tzinfo=ET))
 def _filled_legs():
     """Today's incident shape: 1.80/1.95 sold, 0.08/0.07 bought -> 3.60 actual."""
     return (
-        FilledLeg(symbol="SPXW260706P07535000", right="P", role="short", qty=1, price=D("1.80")),
-        FilledLeg(symbol="SPXW260706P07510000", right="P", role="long", qty=1, price=D("0.08")),
-        FilledLeg(symbol="SPXW260706C07540000", right="C", role="short", qty=1, price=D("1.95")),
-        FilledLeg(symbol="SPXW260706C07565000", right="C", role="long", qty=1, price=D("0.07")),
+        FilledLeg(symbol="SPXW  260706P07535000", right="P", role="short", qty=1, price=D("1.80")),
+        FilledLeg(symbol="SPXW  260706P07510000", right="P", role="long", qty=1, price=D("0.08")),
+        FilledLeg(symbol="SPXW  260706C07540000", right="C", role="short", qty=1, price=D("1.95")),
+        FilledLeg(symbol="SPXW  260706C07565000", right="C", role="long", qty=1, price=D("0.07")),
     )
 
 
@@ -47,7 +48,11 @@ def _cert_jwt() -> str:
 
 def test_paper_binds_simulated_broker_only():
     comp = PaperComposition(clock=CLOCK, ticks=SPX)
-    assert isinstance(comp.broker, SimulatedBroker)
+    # ORD-12: the broker is wrapped in the exit guard at construction, so the
+    # EC-RSK-04 type assertion unwraps rather than being weakened -- the point
+    # of this test is WHICH gateway was constructed, and that must keep biting.
+    assert isinstance(comp.broker, ExitGuardedBroker)
+    assert isinstance(comp.broker.inner, SimulatedBroker)
     assert comp.state.trading_mode == "paper"
 
 
@@ -56,8 +61,9 @@ def test_live_binds_tastytrade_adapter_never_simulated():
     SimulatedBroker is never constructed in the live path."""
     comp = LiveComposition(clock=CLOCK, ticks=SPX, provider_secret="s",
                            refresh_token=_cert_jwt(), is_test=True)
-    assert isinstance(comp.broker, TastytradeAdapter)
-    assert not isinstance(comp.broker, SimulatedBroker)
+    assert isinstance(comp.broker, ExitGuardedBroker)          # ORD-12, at construction
+    assert isinstance(comp.broker.inner, TastytradeAdapter)
+    assert not isinstance(comp.broker.inner, SimulatedBroker)
     assert comp.state.trading_mode == "live"
     # same service surface as paper (structurally identical pipeline)
     assert comp.execute and comp.protect and comp.recover and comp.close and comp.day
@@ -84,6 +90,7 @@ def test_paper_on_filled_passes_the_actual_fill_credit_to_protect():
     comp = PaperComposition(clock=CLOCK, ticks=SPX)
     entry_id = "2026-07-06#1"
     comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.60"), legs=_filled_legs()))
+    comp.broker.seed_positions(_filled_legs())  # ORD-12: broker agrees with the journal
 
     captured = {}
 
@@ -121,6 +128,7 @@ def test_paper_auto_flatten_closes_the_entrys_real_legs_with_unprotected_initiat
     comp = PaperComposition(clock=CLOCK, ticks=SPX)
     entry_id = "2026-07-06#1"
     comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.60"), legs=_filled_legs()))
+    comp.broker.seed_positions(_filled_legs())  # ORD-12: broker agrees with the journal
 
     asyncio.run(comp.protect._close_entry(entry_id, "unprotected"))
 
@@ -151,6 +159,7 @@ def test_paper_on_filled_falls_back_to_mid_when_fill_credit_is_none():
     comp = PaperComposition(clock=CLOCK, ticks=SPX)
     entry_id = "2026-07-06#1"
     comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.60"), legs=_filled_legs()))
+    comp.broker.seed_positions(_filled_legs())  # ORD-12: broker agrees with the journal
 
     captured = {}
 
@@ -168,6 +177,9 @@ def test_live_on_filled_passes_the_actual_fill_credit_to_protect():
     comp = LiveComposition(clock=CLOCK, ticks=SPX, provider_secret="s", refresh_token=_cert_jwt())
     entry_id = "2026-07-06#1"
     comp.events.append(CondorFilled(entry_id=entry_id, net_credit=D("3.60"), legs=_filled_legs()))
+    # No seeding: this is the LIVE composition, whose broker is the real
+    # adapter and has no simulator affordances. This test stubs `protect`
+    # rather than placing an order, so nothing reaches the exit guard.
 
     captured = {}
 

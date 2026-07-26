@@ -33,6 +33,7 @@ def _comp():
 def test_close_closes_open_entry_cancels_stops_clears_tpf_idempotent():
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     comp.state.tpf_floors = {"e1": "6.00"}
     stop_id = asyncio.run(comp.broker.submit(stop_intent("PUT", "3.80", entry_id="e1")))
 
@@ -62,7 +63,9 @@ def test_close_unknown_entry():
 def test_flatten_requires_typed_confirmation_then_closes_open_entries():
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     comp.events.append(CondorFilled(entry_id="e2", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     cmd = PanelCommands(comp)
 
     assert asyncio.run(cmd.flatten("")) == {"result": "confirmation_required"}
@@ -82,6 +85,7 @@ def test_flatten_in_progress_is_true_only_for_the_duration_of_the_flatten_call()
     raises partway through (finally)."""
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     cmd = PanelCommands(comp)
     assert cmd.flatten_in_progress is False
 
@@ -102,6 +106,7 @@ def test_flatten_in_progress_is_true_only_for_the_duration_of_the_flatten_call()
 def test_flatten_in_progress_clears_even_if_a_close_raises():
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     cmd = PanelCommands(comp)
 
     async def _boom(entry_id, *a, **kw):
@@ -149,6 +154,7 @@ def test_a_panel_without_manual_entry_wiring_can_never_fire():
 def _comp_with_entry(profit_pct=None):
     comp = _comp()
     comp.events.append(CondorFilled(entry_id="e1", net_credit=D("4.00"), legs=_legs()))
+    comp.broker.seed_positions(_legs())  # ORD-12: broker agrees with the journal
     return comp
 
 

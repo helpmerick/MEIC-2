@@ -102,7 +102,52 @@ def _all_truthy_attrs(*attrs: str) -> Callable[[object], bool]:
     return _check
 
 
+def _exit_guard_on(attr_path: str) -> Callable[[object], bool]:
+    """(app.state) -> bool: the broker reached by `attr_path` is exit-guarded.
+
+    ORD-12's guard is a STRUCTURAL CHOKEPOINT, not a loop -- it has no task to
+    watch, so the two proofs below are two DIFFERENT real facts rather than
+    "constructed" and "ticking": the composition root's broker is guarded, AND
+    the close path's broker is the guarded one. The second is the one that
+    matters, and it is precisely the failure this rule fears -- a service that
+    captured the raw broker before the guard was installed would hold an
+    ungated wire for the process's whole life, with the guard present, wired,
+    tested and bypassed. It tolerates outer wrappers (CountingBroker is added
+    at arm time, OUTSIDE the guard) by unwrapping `.inner`."""
+    def _check(state: object) -> bool:
+        from meic.composition.exit_guard import ExitGuardedBroker
+
+        obj = state
+        for part in attr_path.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                return False
+        for _ in range(4):  # bounded unwrap; never an unguarded loop
+            if isinstance(obj, ExitGuardedBroker):
+                return True
+            obj = getattr(obj, "inner", None)
+            if obj is None:
+                return False
+        return False
+
+    return _check
+
+
 REGISTRY: tuple[WiringEntry, ...] = (
+    WiringEntry(
+        rule_ids=("ENT-11", "ORD-12", "CLS-08"),
+        component="ExitGuardedBroker (the ORD-12 chokepoint + ENT-11 resolver)",
+        proof="app.state.composition.broker is exit-guarded (installed at the "
+              "composition root, innermost, before any service captures the "
+              "reference); AND app.state.composition.close._broker is the guarded "
+              "one -- proving the ONE canonical close path actually goes through "
+              "it rather than holding a raw broker captured earlier. The pinned "
+              "regressions: tests/application/test_terminal_state.py drives real "
+              "refusals through the guard against the RECORDED PROD positions() "
+              "payload (ENT-11(7): observation-based, never stub-vs-stub).",
+        constructed=_exit_guard_on("composition.broker"),
+        ticked=_exit_guard_on("composition.close._broker"),
+    ),
     WiringEntry(
         rule_ids=("DCY-01", "DCY-02", "DCY-03", "DCY-04"),
         component="DecayWatcher",

@@ -17,6 +17,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 
+from meic.adapters.occ import occ_symbol
 from meic.adapters.sim.simulated_broker import SimLedger
 from meic.application.execute_entry import Condor
 from meic.application.market_calendar import trading_day
@@ -84,8 +85,16 @@ class PaperDemoRuntime:
             if n == 2:
                 await asyncio.sleep(self.step)
                 comp.broker.tick_marks({"short_put": D("3.85")}, entry_id=f"{day}#2")
-                await comp.recover.recover(entry_id=f"{day}#2", side="PUT", long_symbol="SPXW_5938P",
-                                           quote=Quote(bid=D("0.38"), ask=D("0.42")), intrinsic=D("0"))
+                # ORD-12 (2026-07-26): this passed the hand-written stand-in
+                # "SPXW_5938P" -- a shape no broker emits, for a leg the
+                # simulator had never filled. The demo was "recovering" a long
+                # that did not exist, and nothing noticed because nothing
+                # checked. Use the OCC symbol of the condor's ACTUAL put wing,
+                # which is what the simulator really holds.
+                await comp.recover.recover(
+                    entry_id=f"{day}#2", side="PUT",
+                    long_symbol=occ_symbol("SPXW", condor.expiration, "P", condor.put_long),
+                    quote=Quote(bid=D("0.38"), ask=D("0.42")), intrinsic=D("0"))
             # a bit later: entry 3 closes by decay
             if n == 3:
                 await asyncio.sleep(self.step)

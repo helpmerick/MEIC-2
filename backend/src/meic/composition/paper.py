@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker
+from meic.composition.exit_guard import ExitGuardedBroker
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
 from meic.application.persistent_state import PersistentState
@@ -51,8 +52,14 @@ class PaperComposition:
     fee_model: FeeModel = field(default_factory=FeeModel)  # PNL-01, config.fee_model
 
     def __post_init__(self) -> None:
-        self.broker = SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events,
-                                      fee_model=self.fee_model, clock=self.clock)  # SIM-01
+        # ORD-12: guarded at construction, exactly as live (SIM-05: the pipeline
+        # runs identically and unaware of the mode). Paper MUST carry the guard
+        # too -- the paper marathon is where the exit path is proved, and an
+        # unguarded paper broker would prove a path production does not run.
+        self.broker = ExitGuardedBroker(
+            SimulatedBroker(SimLedger(cash=self.starting_cash), events=self.events,
+                            fee_model=self.fee_model, clock=self.clock),  # SIM-01
+            alerts=lambda: getattr(self, "alerts", None))
         self.state = PersistentState(InMemoryStateStore())
         self.state.trading_mode = "paper"  # DAY-05
         self.alerts = _NullAlerts()

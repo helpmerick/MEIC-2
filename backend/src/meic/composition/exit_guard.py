@@ -49,6 +49,10 @@ _logger = logging.getLogger(__name__)
 # twin -- which is the whole incident.
 _CLOSING_ACTIONS = ("buy_to_close", "sell_to_close")
 
+# The wrapper's OWN attributes -- everything else written through a guarded
+# reference is forwarded to the wrapped broker (see `__setattr__`).
+_WRAPPER_OWN_ATTRS = frozenset({"_broker", "_resolver", "_alerts"})
+
 
 def is_exit_order(intent) -> bool:
     """Is this intent an EXIT, in ORD-12's sense?
@@ -84,6 +88,17 @@ class ExitGuardedBroker:
         self._broker = broker
         self._resolver = resolver or TerminalStateResolver(broker, alerts=alerts)
         self._alerts = alerts
+
+    @property
+    def inner(self):
+        """The wrapped gateway. Named so `isinstance` checks have somewhere
+        honest to look -- the same affordance `CountingBroker.inner` provides,
+        and for the same reason: EC-RSK-04's "paper never constructs the live
+        adapter" tests assert on the broker's TYPE, and a wrapper that hid the
+        type would force those tests to be weakened rather than unwrapped.
+        A guard that made a safety test easier to delete would be a bad
+        trade."""
+        return self._broker
 
     async def _assert_may_exit(self, intent) -> None:
         """Refuse the order, by RAISING, unless every closing leg provably
@@ -129,3 +144,27 @@ class ExitGuardedBroker:
         to update -- the same class of "remembering path" ENT-11(1) forbids.
         """
         return getattr(self._broker, name)
+
+    def __setattr__(self, name, value):
+        """Writes pass through to the wrapped broker too.
+
+        NOT symmetry for its own sake -- a read-only proxy is actively wrong
+        here. `composition/runtime.py`'s drill reset does
+        `comp.broker.ledger = SimLedger(...)`, which against a read-only proxy
+        would land the fresh ledger on the WRAPPER while the simulator kept
+        spending the old one: a reset that reports success and changes
+        nothing. Any state written through a broker reference must reach the
+        broker.
+
+        WRITES MUST STAY SYMMETRIC WITH READS. A name this wrapper itself
+        defines (`submit`, `replace`, `inner`) is read from the WRAPPER, so it
+        must also be WRITTEN to the wrapper. Forwarding those writes to the
+        inner broker while reads still resolved here produced an infinite
+        recursion the first time a test replaced `broker.submit` with a spy:
+        the read handed back the guard's own bound method, the write landed on
+        the simulator, and the two called each other until the stack ran out.
+        """
+        if name in _WRAPPER_OWN_ATTRS or hasattr(type(self), name):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._broker, name, value)

@@ -11,10 +11,11 @@ from decimal import Decimal as D
 
 from meic.application.recover_long import Quote
 from meic.composition.paper import PaperComposition
-from meic.domain.events import SideExpired
+from meic.domain.events import CondorFilled, SideExpired
 from meic.domain.projection import day_report
 from meic.domain.ticks import TickRung, TickTable
 from tests.harness.fake_clock import ET, FakeClock
+from meic.composition.exit_guard import ExitGuardedBroker
 
 SPX = TickTable((TickRung(D("3.00"), D("0.05")), TickRung(None, D("0.10"))))
 OPEN = datetime(2026, 7, 6, 9, 30, tzinfo=ET)
@@ -64,8 +65,16 @@ def test_full_paper_day_through_simulated_broker():
     filled = paper.broker.tick_marks({"short_put": D("3.85")}, entry_id="2026-07-06#2")  # >= 3.80
     assert len(filled) == 1, "exactly entry 2's put stop should trigger"
     # LEX recovers entry 2's long
+    # ORD-12 (2026-07-26): this named the hand-written stand-in "SPXW_5938P" --
+    # a shape no broker emits, for a leg the simulator never filled. The test
+    # was "recovering" a long that did not exist and nothing noticed, because
+    # nothing read positions(). Take the entry's REAL long-put symbol from its
+    # journaled ORD-09 legs, which is what production does.
+    long_put = next(leg.symbol for e in paper.events
+                    if isinstance(e, CondorFilled) and e.entry_id == "2026-07-06#2"
+                    for leg in e.legs if leg.right == "P" and leg.role == "long")
     asyncio.run(paper.recover.recover(
-        entry_id="2026-07-06#2", side="PUT", long_symbol="SPXW_5938P",
+        entry_id="2026-07-06#2", side="PUT", long_symbol=long_put,
         quote=Quote(bid=D("0.38"), ask=D("0.42")), intrinsic=D("0")))
 
     # EOD: the rest expire worthless (EOD-01)
@@ -88,5 +97,6 @@ def test_paper_wiring_is_paper_only():
     broker is the SimulatedBroker (the live adapter is never constructed)."""
     from meic.adapters.sim.simulated_broker import SimulatedBroker
     paper = PaperComposition(clock=FakeClock(OPEN), ticks=SPX)
-    assert isinstance(paper.broker, SimulatedBroker)
+    assert isinstance(paper.broker, ExitGuardedBroker)          # ORD-12
+    assert isinstance(paper.broker.inner, SimulatedBroker)
     assert paper.state.trading_mode == "paper"

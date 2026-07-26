@@ -11,6 +11,7 @@ from meic.adapters.persistence.event_store import SqliteStateStore
 from meic.adapters.sim.simulated_broker import SimulatedBroker
 from meic.adapters.tastytrade.adapter import TastytradeAdapter
 from meic.application.persistent_state import PersistentState
+from meic.composition.exit_guard import ExitGuardedBroker
 
 
 @pytest.fixture(autouse=True)
@@ -58,8 +59,11 @@ def test_live_app_wires_live_adapter_with_safe_defaults_and_persistence(monkeypa
     from meic.composition.live_wiring import CountingBroker
 
     assert isinstance(comp.broker, CountingBroker)
-    assert isinstance(comp.broker.inner, TastytradeAdapter)
-    assert not isinstance(comp.broker, SimulatedBroker)
+    # ORD-12: the exit guard sits INSIDE the CountingBroker, because it is
+    # installed at construction while the counter is wrapped on at arm time.
+    assert isinstance(comp.broker.inner, ExitGuardedBroker)
+    assert isinstance(comp.broker.inner.inner, TastytradeAdapter)
+    assert not isinstance(comp.broker.inner.inner, SimulatedBroker)
     assert comp.state.trading_mode == "live"
 
     # SAFE DEFAULTS: nothing trades until the operator deliberately acts
