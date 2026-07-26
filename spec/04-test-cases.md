@@ -1908,6 +1908,10 @@ Scenario: Filled quantity is derived, bounded, and never decides a close (v1.97,
   Then filled_qty derives as 0
   And given remaining_quantity absent or unparsable, filled_qty is UNKNOWN — never zero, never filled
   And given a CANCELLED order with remaining_quantity 0, filled_qty is UNKNOWN — never "fully filled"
+  And given a PARTIALLY REMOVED order, filled_qty is UNKNOWN (remaining reduced by removal, not filling)
+  And partially removed is simultaneously WORKING for liveness and UNKNOWN for fill-derivation — different questions
+  And a partially-filled order at a working status derives correctly, since no Partially Filled status exists
+  And fills_since is corrected for its REAL defects: ignored cursor, orders-not-fills sim/live parity divergence, and live-window scoping that silently drops an aged-out fill
   And no close order's quantity is decided by the derivation: broker positions decide (ENT-11(3))
   And a wrong derivation can produce a wrong report but never a wrong order
 
