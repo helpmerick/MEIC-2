@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from meic.adapters.persistence.event_store import InMemoryStateStore
 from meic.adapters.sim.simulated_broker import SimLedger, SimulatedBroker
+from meic.composition.alert_relay import AlertRelay
 from meic.composition.exit_guard import ExitGuardedBroker
 from meic.application.close_entry import CloseEntry
 from meic.application.execute_entry import ExecuteEntryAttempt
@@ -62,11 +63,12 @@ class PaperComposition:
             alerts=lambda: getattr(self, "alerts", None))
         self.state = PersistentState(InMemoryStateStore())
         self.state.trading_mode = "paper"  # DAY-05
-        self.alerts = _NullAlerts()
+        self.alerts = AlertRelay()   # NFR-08: retargeted in place by server.py
         # CLS-03 seam (2026-07-11): same registry as live — the panel's
         # Cancel-entry path is mode-unaware (SIM-05).
         self.working_entries = WorkingEntryOrders()
         self.execute = ExecuteEntryAttempt(self.broker, self.clock, self.events, self.ticks,
+                                           alerts=self.alerts,  # NFR-08
                                            stop_basis=self.stop_basis,
                                            working_orders=self.working_entries,
                                            fee_model=self.fee_model)
@@ -78,9 +80,34 @@ class PaperComposition:
                                        close_entry=self._auto_flatten_entry)
         self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks,
                                    fee_model=self.fee_model)
-        self.close = CloseEntry(self.broker, self.events, fee_model=self.fee_model, clock=self.clock)
+        self.close = CloseEntry(self.broker, self.events, alerts=self.alerts,  # NFR-08
+                                fee_model=self.fee_model, clock=self.clock)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
+
+    def __setattr__(self, name, value):
+        """NFR-08: `comp.alerts = sink` RETARGETS the relay, never replaces it.
+
+        `server.py` installs the real operator-facing sink long after this
+        root is built, with a plain `comp.alerts = alerts`. Every alert-raising
+        component captured the sink AT CONSTRUCTION, so replacing the
+        attribute would leave all of them holding the old one -- which is the
+        production defect NFR-08 exists to close: ProtectPosition's STP-04
+        critical, ExecuteEntryAttempt's lost-submit critical and CloseEntry's
+        CLS-06 partial-close critical were ALL dead in live and paper.
+
+        This read/write asymmetry is DELIBERATE and is the exception that
+        proves NFR-09a rather than a violation of it: there, a proxy answering
+        differently for reads and writes was an accident that recursed; here
+        the relay's stable identity IS the mechanism, the retarget is the
+        documented contract, and `test_nfr08_alert_sinks.py` pins it. Do not
+        "simplify" this into a plain assignment."""
+        if name == "alerts":
+            existing = self.__dict__.get("alerts")
+            if isinstance(existing, AlertRelay) and not isinstance(value, AlertRelay):
+                existing.set_target(value)
+                return
+        object.__setattr__(self, name, value)
 
     async def _auto_flatten_entry(self, entry_id: str, initiator: str) -> None:
         """STP-04 AUTO-FLATTEN — ProtectPosition's `close_entry` callback.

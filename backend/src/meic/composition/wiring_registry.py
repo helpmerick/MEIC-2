@@ -135,6 +135,28 @@ def _exit_guard_on(attr_path: str) -> Callable[[object], bool]:
 
 REGISTRY: tuple[WiringEntry, ...] = (
     WiringEntry(
+        rule_ids=("NFR-08",),
+        component="AlertRelay (the late-binding alert sink)",
+        proof="app.state.composition.alerts is a real AlertRelay (construction); "
+              "AND execute/close/protect all hold THAT SAME relay object -- the "
+              "second is the load-bearing proof (NFR-07a), because the defect was "
+              "never a missing relay but components holding a sink captured "
+              "BEFORE the real one existed: server.py rebinds comp.alerts long "
+              "after construction, so identity-sharing is what makes the late "
+              "install reach every holder. Pinned by "
+              "tests/composition/test_nfr08_alert_sinks.py.",
+        # NOT `_isinstance_check`: that helper does a FLAT getattr, so a dotted
+        # path would silently resolve to None and the proof would report
+        # "unconstructed" forever without ever saying why.
+        constructed=lambda state: type(getattr(
+            getattr(state, "composition", None), "alerts", None)).__name__ == "AlertRelay",
+        ticked=lambda state: (
+            lambda comp: comp is not None and all(
+                getattr(getattr(comp, name, None), "_alerts", None) is comp.alerts
+                for name in ("execute", "close", "protect"))
+        )(getattr(state, "composition", None)),
+    ),
+    WiringEntry(
         rule_ids=("ENT-11", "ORD-12", "CLS-08"),
         component="ExitGuardedBroker (the ORD-12 chokepoint + ENT-11 resolver)",
         proof="app.state.composition.broker is exit-guarded (installed at the "
