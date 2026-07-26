@@ -358,6 +358,24 @@ def _max_quote_age_ms(env: dict[str, str]) -> int:
     return raw if 500 <= raw <= 15000 else 3000
 
 
+def _exit_eval_interval_ms(env: dict[str, str]) -> int:
+    """TPF-03a `exit_eval_interval_ms` (doc 06: range 100-5000, default 250) --
+    the MAXIMUM interval between exit evaluations of every armed entry.
+
+    This is NOT an infra polling dial like `MEIC_HEALTH_INTERVAL_S`: it is a
+    ratified TRADING parameter, and it is the one the 2026-07-26 defect of
+    record was really about. Exit evaluation had exactly one caller -- the 60 s
+    health tick, SLEEP-FIRST -- so a breach that began and ended inside one
+    window was NEVER OBSERVED, and a persisting breach acted 60-120 s late.
+    Out-of-range falls back to the spec default (the same reject-the-dial
+    convention as `_max_quote_age_ms` above)."""
+    try:
+        raw = int(env.get("MEIC_EXIT_EVAL_INTERVAL_MS", "250"))
+    except ValueError:
+        return 250
+    return raw if 100 <= raw <= 5000 else 250
+
+
 def _quote_stream_poll_seconds(env: dict[str, str]) -> float:
     """NFR-04 (2026-07-13) quote-stream loop cadence: range 1-60, default 5 --
     how long the loop idles between checks when there are no open entries to
@@ -2960,6 +2978,10 @@ def live_app():
     # SAME live-first/snapshot-fallback rule (`_resolve_leg_mid`).
     hub = live["quote_hub"]
     max_quote_age_ms = live["max_quote_age_ms"]
+    # TPF-03a: the dedicated exit-evaluation loop's cadence (doc 06,
+    # 100-5000 ms, default 250). Read here so it is bound ONCE for the
+    # process, alongside the freshness bar it works with.
+    exit_eval_interval_ms = _exit_eval_interval_ms(env)
 
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],
@@ -3119,17 +3141,20 @@ def live_app():
         except Exception as exc:  # noqa: BLE001
             app.state.broker_error = repr(exc)
             logger.warning("health tick: mark sampling failed: %r", exc)
-        try:
-            # TPF-03/TPT-04: the bot-side profit monitor, same cadence as the
-            # marks sample above (same snapshot, no new subscription). NFR-04:
-            # `hub` lets the evaluator prefer a live mark per leg.
-            # UND-01/UND-04 (v1.86): the holder, routed per entry inside.
-            await _evaluate_exits_once(comp, live["snapshots"],
-                                       live["exit_monitor"], commands,
-                                       hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
-        except Exception as exc:  # noqa: BLE001
-            app.state.broker_error = repr(exc)
-            logger.warning("health tick: exit evaluation failed: %r", exc)
+        # TPF-03a (v1.94): exit evaluation is NO LONGER A DUTY OF THIS TICK.
+        # It was, and that was the defect of record (2026-07-26): this tick is
+        # SLEEP-FIRST on a 60 s interval, so every boot went a full minute
+        # before the first evaluation, a breach beginning and ending inside one
+        # window was NEVER OBSERVED, and a persisting breach acted 60-120 s
+        # late. TPF-03 already required "every valid quote evaluation"; the
+        # code did not do what was ratified.
+        #
+        # It now runs on its OWN loop whose ONLY duty is exit evaluation
+        # (`_start_exit_eval_loop` below, `exit_eval_interval_ms`, default
+        # 250 ms), evaluate-FIRST and skip-if-busy. Exactly the EC-STP-06
+        # precedent immediately below: one owner per concern. Do NOT add an
+        # exit-evaluation call back onto this tick -- two owners at different
+        # cadences is worse than one at the wrong cadence.
         # EC-STP-06 (v1.60) stop-fill catch-up MOVED OFF this tick (operator
         # ruling 2026-07-11, ITEM 1's follow-up): it used to run here, inline,
         # every ~60s. It now runs on its OWN dedicated poll loop
@@ -3294,6 +3319,66 @@ def live_app():
     # exposed for the wiring capstone (tests/application/test_live_app.py) --
     # proves the loop's cadence actually comes from env, not a hardcoded value.
     app.state.stop_fill_poll_interval_s = stop_fill_poll_interval_s
+
+    @app.on_event("startup")
+    async def _start_exit_eval_loop() -> None:
+        """TPF-03a: the DEDICATED exit-evaluation owner. Its only duty is
+        evaluating floors and targets.
+
+        Three properties the health tick did not have, each one a defect it
+        actually exhibited:
+
+          * EVALUATE FIRST, then sleep. Sleep-first meant every boot ran blind
+            for a full interval -- 60 s with an armed floor, at the one moment
+            (just after a restart) when state is least certain.
+          * SKIP IF BUSY, never queue. At 250 ms a pass that overruns must not
+            let passes pile up behind it; a lock that is already held means an
+            evaluation is in flight, which is the thing we wanted anyway.
+          * The loop CANNOT DIE. A per-pass exception is caught, surfaced and
+            retried on the next pass, and the task carries the same
+            done-callback the health loop uses so a loop that dies anyway is a
+            CRITICAL alert rather than silence. An exit evaluator that stops
+            evaluating looks exactly like an entry that never breached.
+
+        TPF-03g's per-entry isolation lives INSIDE `_evaluate_exits_once`, not
+        here: this guard keeps the LOOP alive, which is a strictly weaker
+        guarantee than keeping the PASS complete."""
+        lock = asyncio.Lock()
+        app.state.exit_eval_lock = lock
+        app.state.exit_eval_error = None
+        app.state.exit_eval_passes = 0
+        interval_s = exit_eval_interval_ms / 1000.0
+
+        async def _pass() -> None:
+            if not app.state.broker_connected:
+                return
+            if lock.locked():
+                return          # a pass is already in flight -- skip, never queue
+            async with lock:
+                await _evaluate_exits_once(
+                    comp, live["snapshots"], live["exit_monitor"], commands,
+                    hub=hub, clock=comp.clock, max_quote_age_ms=max_quote_age_ms)
+                app.state.exit_eval_passes += 1
+
+        async def _loop() -> None:
+            while True:
+                try:
+                    await _pass()          # EVALUATE FIRST -- never sleep-first
+                    app.state.exit_eval_error = None
+                except Exception as exc:  # noqa: BLE001 -- must never kill this loop
+                    app.state.exit_eval_error = repr(exc)
+                    app.state.broker_error = repr(exc)
+                    logger.warning("exit evaluation pass failed: %r", exc)
+                await asyncio.sleep(interval_s)
+
+        app.state.exit_eval_task = asyncio.create_task(_loop())
+        app.state.exit_eval_task.add_done_callback(_health_task_done_callback(alerts))
+
+    @app.on_event("shutdown")
+    async def _stop_exit_eval_loop() -> None:
+        task = getattr(app.state, "exit_eval_task", None)
+        if task:
+            task.cancel()
 
     @app.on_event("startup")
     async def _start_stop_fill_poll_loop() -> None:
