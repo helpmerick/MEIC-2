@@ -47,7 +47,7 @@ async def test_fake_broker_scripted_fill_reaches_account_stream():
     order_id = await broker.submit(any_intent())
     evt = await asyncio.wait_for(anext(events), timeout=1)
     assert evt["type"] == "order_filled" and evt["order_id"] == order_id
-    assert await broker.fills_since(None) == [evt | {}] or evt["order_id"] == order_id
+    assert await broker.fills_since() == [evt | {}] or evt["order_id"] == order_id
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_fake_broker_state_survives_simulated_bot_restart():
     await broker.submit(any_intent())
     store.append("day-2026-07-06", [{"type": "CondorFilled", "entry": 1}])
     # --- simulated crash: the "bot" is discarded; broker + store live on ---
-    fills_seen_by_new_instance = await broker.fills_since(None)
+    fills_seen_by_new_instance = await broker.fills_since()
     assert len(fills_seen_by_new_instance) == 1
     assert store.read("day-2026-07-06") == [{"type": "CondorFilled", "entry": 1}]
 

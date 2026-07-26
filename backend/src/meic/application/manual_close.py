@@ -145,7 +145,7 @@ class ManualClose:
                 # guard, and returns a distinct result so a caller never treats it as
                 # a clean cancel. (EC-ENT-06 owns the fill itself — no terminal event
                 # is journaled on this path.)
-                if any(_fill_matches(f, target) for f in await self.broker.fills_since(None)):
+                if any(_fill_matches(f, target) for f in await self.broker.fills_since()):
                     detail = (f"CLS-03 cancel of working entry {entry_id} (order {target}) "
                              "raced a fill — position may be unprotected; operator must "
                              "reconcile manually")

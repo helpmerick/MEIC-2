@@ -755,7 +755,7 @@ class ExecuteEntryAttempt:
         return found_id if decision["exists"] else None
 
     async def _filled(self, order_id) -> bool:
-        for f in await self._broker.fills_since(None):
+        for f in await self._broker.fills_since():
             if _fill_matches(f, order_id):
                 return True
         return False

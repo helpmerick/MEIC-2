@@ -47,5 +47,5 @@ def _(world):
 def _(world):
     assert world["through_filled"] is True
     assert asyncio.run(world["broker"].working_orders()) == []  # all-or-nothing, now filled
-    fills = asyncio.run(world["broker"].fills_since(None))
+    fills = asyncio.run(world["broker"].fills_since())
     assert len(fills) == 1

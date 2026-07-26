@@ -211,7 +211,7 @@ class LiveShapedBroker:
             rec["cancelled"] = True
         return {"result": "cancelled"}
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return [_Order(oid, "Filled", self._legs(r["intent"]))
                 for oid, r in self._orders.items() if self._is_filled(r)]
 

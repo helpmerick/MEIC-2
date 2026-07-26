@@ -125,7 +125,7 @@ class StopWatchdog:
             # can do is recognize a genuine double-fill and say so loudly,
             # rather than silently cancelling (a no-op, since the stop is
             # already gone) and journaling a clean single escalation.
-            if any(_fill_matches(f, resting_id) for f in await self.broker.fills_since(None)):
+            if any(_fill_matches(f, resting_id) for f in await self.broker.fills_since()):
                 self.alerts.alert(
                     "critical",
                     "watchdog escalation raced the resting stop to a fill — both may "
@@ -180,7 +180,7 @@ class StopWatchdog:
         record has not APPEARED yet (poll again); `found=True, price=None`
         means the record exists but carries no per-leg price (paper/simulated
         fills -- honest, stop polling, fall back)."""
-        for f in await self.broker.fills_since(None):
+        for f in await self.broker.fills_since():
             if _fill_matches(f, order_id):
                 legs = await self.broker.fill_legs(order_id)
                 return True, next((l.price for l in legs if l.price is not None), None)

@@ -34,7 +34,7 @@ class RecordingBroker:
         self.cancels.append(id)
         return await self.submit(new)
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return []  # this fixture never scripts a race-fill scenario
 
 
@@ -112,7 +112,7 @@ def test_cancel_working_racing_a_fill_is_flagged_not_reported_clean():
     from meic.domain.events import ReconciliationMismatch
 
     class RaceBroker(RecordingBroker):
-        async def fills_since(self, cursor):
+        async def fills_since(self):
             return [{"order_id": "entry-ord-9", "partial": False}]
 
     events: list = []

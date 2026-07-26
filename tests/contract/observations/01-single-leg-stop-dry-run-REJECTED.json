@@ -1,6 +1,6 @@
 {
-  "recorded_at": "2026-07-11T09:18:42.904583+00:00",
+  "recorded_at": "2026-07-21T21:55:44.292010+00:00",
   "observation": {
-    "exception": "TastytradeError('tif_no_after_hours_market_orders: Market orders with a time in force of Day cannot be placed when the market is closed.\\n')"
+    "exception": "TastytradeError('instruments_stopped_trading: Stopped symbols: SPXW  260721P03000000 stopped trading at 26-07-21 16:00 EDT\\n')"
   }
 }

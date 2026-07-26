@@ -68,7 +68,7 @@ class EndOfDaySweep:
         # EOD-03: CONFIRM the bot's own orders are gone; a foreign order still
         # working is EXPECTED and ignored — the confirmation only covers ours.
         remaining = {_order_id(o) for o in await self._broker.working_orders()}
-        fills = await self._broker.fills_since(None)
+        fills = await self._broker.fills_since()
         for oid in before:
             if oid in remaining:
                 result.uncancellable.append(oid)

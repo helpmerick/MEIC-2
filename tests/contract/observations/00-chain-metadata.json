@@ -1,10 +1,10 @@
 {
-  "recorded_at": "2026-07-13T15:41:34.745659+00:00",
+  "recorded_at": "2026-07-21T21:55:43.920065+00:00",
   "observation": {
     "underlying": "SPXW",
-    "expiration": "2026-07-13",
-    "strike_count": 238,
+    "expiration": "2026-07-21",
+    "strike_count": 192,
     "chosen_put_strike": "3000.0",
-    "put_symbol": "SPXW  260713P03000000"
+    "put_symbol": "SPXW  260721P03000000"
   }
 }

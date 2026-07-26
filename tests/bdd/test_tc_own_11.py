@@ -47,7 +47,7 @@ class _Broker:
         self.cancelled.append(oid)
         return {"result": "cancelled"}
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return []  # this fixture never scripts a race-fill scenario
 
     async def submit(self, intent):

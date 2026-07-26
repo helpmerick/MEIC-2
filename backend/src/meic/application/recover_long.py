@@ -218,7 +218,7 @@ class RecoverLong:
         without one) -- the caller falls back to the rung/intent price ONLY
         in that documented case, the same ORD-09 fallback
         `execute_entry._record_fill` already uses for entry fills."""
-        for f in await self._broker.fills_since(None):
+        for f in await self._broker.fills_since():
             if _fill_matches(f, order_id):
                 legs = await self._broker.fill_legs(order_id)
                 return next((l.price for l in legs if l.price is not None), None)
@@ -319,7 +319,7 @@ class RecoverLong:
             price=bid, kind="fallback", at=self._clock.now().isoformat()))
 
     async def _filled(self, order_id) -> bool:
-        for f in await self._broker.fills_since(None):
+        for f in await self._broker.fills_since():
             if _fill_matches(f, order_id):
                 return True
         return False

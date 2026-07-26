@@ -226,7 +226,7 @@ def test_stop_fill_detector_drives_lex_with_a_real_quote_from_the_held_snapshot(
         async def working_orders(self):
             return []
 
-        async def fills_since(self, cursor):
+        async def fills_since(self):
             return [{"order_id": "STOP-1", "partial": False}]
 
         async def fill_legs(self, order_id):
@@ -1261,7 +1261,7 @@ class _EodSweepBroker:
         self._working.pop(str(oid), None)
         return {"result": "cancelled"}
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return list(self._fills)
 
 
@@ -1472,7 +1472,7 @@ class _CancelBroker:
         self.cancels.append(str(oid))
         return {"result": "cancelled"}
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return list(self._fills)
 
     async def submit(self, order):

@@ -31,7 +31,7 @@ class SweepBroker:
             return {"result": "cancelled"}
         return {"result": "terminal"}  # broker refused — stays WORKING
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return []  # this fixture never scripts a race-fill scenario
 
 

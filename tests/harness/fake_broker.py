@@ -178,9 +178,11 @@ class FakeBroker:
     async def positions(self) -> list[Any]:
         return list(self._positions)
 
-    async def fills_since(self, cursor: int | None) -> list[dict[str, Any]]:
-        start = 0 if cursor is None else cursor
-        return self._fills[start:]
+    async def fills_since(self) -> list[dict[str, Any]]:
+        # ENT-11(9) v2.00(i): cursor REMOVED. This fake even IMPLEMENTED cursor
+        # semantics the live broker never had -- a fake more capable than the
+        # real broker is its own parity defect.
+        return list(self._fills)
 
     async def fill_legs(self, order_id: str):
         """ORD-09: a BrokerGateway reports the legs it filled. The fake must too,

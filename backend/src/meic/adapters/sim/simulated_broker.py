@@ -388,9 +388,15 @@ class SimulatedBroker:
             if signed != 0
         ]
 
-    async def fills_since(self, cursor):
-        return [{"order_id": o.order_id, "price": str(o.fill_price)} for o in self._orders.values()
-                if o.status == "FILLED"]
+    async def fills_since(self):
+        """ENT-11(4)/(9) v2.00(ii): ORDER OBJECTS, the same answer-shape as the
+        live adapter -- this returned `{"order_id", "price"}` dicts while live
+        returned SDK order objects, a real broker-primitive parity divergence
+        that `_fill_matches` NORMALISED rather than eliminated (its docstring
+        records the 2026-07-09 incident where treating one shape as the other
+        left a filled condor unprotected). A SimOrder carries `order_id`,
+        `status` and `fill_price`, which is every field a consumer reads."""
+        return [o for o in self._orders.values() if o.status == "FILLED"]
 
     async def fill_legs(self, order_id):
         """ORD-09: report the filled legs' symbols, as a real broker does.

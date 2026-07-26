@@ -316,7 +316,7 @@ class CloseEntry:
         # the leg is already closed and this must route like any other stop-out
         # (ShortStopped -> LEX), never sit in a retry-exhausted limbo repeating
         # a replace against a dead order.
-        for f in await self._broker.fills_since(None):
+        for f in await self._broker.fills_since():
             if _fill_matches(f, stop_id):
                 price = None
                 for leg in await self._broker.fill_legs(stop_id):

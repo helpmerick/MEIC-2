@@ -49,7 +49,7 @@ class _FakeBroker:
     async def working_orders(self):
         return list(self.working)
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return list(self.fills)
 
     async def fill_legs(self, order_id):

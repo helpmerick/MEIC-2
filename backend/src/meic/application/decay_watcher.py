@@ -92,7 +92,7 @@ class DecayWatcher:
         cancel = await self.broker.cancel(resting_stop_id)
         if isinstance(cancel, dict) and cancel.get("status") == "FILLED":
             return "STOP_FILLED_RUN_LEX"  # it was a real stop-out (DCY-02.1)
-        for f in await self.broker.fills_since(None):
+        for f in await self.broker.fills_since():
             if _fill_matches(f, resting_stop_id):
                 return "STOP_FILLED_RUN_LEX"
 
@@ -153,7 +153,7 @@ class DecayWatcher:
         order_id = getattr(self, "_buyback_id", None)
         if order_id is None:
             return None
-        for f in await self.broker.fills_since(None):
+        for f in await self.broker.fills_since():
             if _fill_matches(f, order_id):
                 legs = await self.broker.fill_legs(order_id)
                 return next((l.price for l in legs if l.price is not None), None)
@@ -184,7 +184,7 @@ class DecayWatcher:
         """
         if not unfilled and current_ask <= self.decay_buyback_trigger:
             return "BUYBACK_STILL_LIVE"
-        for f in await self.broker.fills_since(None):
+        for f in await self.broker.fills_since():
             if _fill_matches(f, buyback_id):
                 return "BUYBACK_ALREADY_FILLED"
         await self.broker.cancel(buyback_id)

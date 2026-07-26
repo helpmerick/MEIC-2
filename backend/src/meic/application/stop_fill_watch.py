@@ -289,7 +289,7 @@ async def _resolve_by_order_id(broker, order_id: str) -> tuple[bool, Decimal | N
     the SAME object-shape-safe normalizer execute_entry's ladder fix uses
     (`_fill_matches`; a raw `.get(...)` here would crash on a live SDK fill,
     the identical trap that normalizer was built to close)."""
-    for f in await broker.fills_since(None):
+    for f in await broker.fills_since():
         if _fill_matches(f, order_id):
             legs = await broker.fill_legs(order_id)
             price = next((l.price for l in legs if l.price is not None), None)
@@ -320,7 +320,7 @@ async def _resolve_by_symbol(broker, symbol: str) -> tuple[bool, Decimal | None,
     a buy-to-close on the short's own symbol that is NOT a stop-out) before ever
     treating the match as a stop fill.
     """
-    for order in await broker.fills_since(None):
+    for order in await broker.fills_since():
         for leg in _order_legs(order):
             if _leg_symbol(leg) == symbol and _leg_action(leg) == "buy_to_close":
                 oid = _order_id(order)

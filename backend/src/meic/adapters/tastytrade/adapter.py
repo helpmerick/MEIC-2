@@ -711,7 +711,27 @@ class TastytradeAdapter:
         balances = await self._account.get_balances(self._session)
         return Decimal(str(balances.derivative_buying_power))
 
-    async def fills_since(self, cursor) -> list[Any]:
+    async def fills_since(self) -> list[Any]:
+        """The broker's CURRENT filled-orders view -- ORDER objects, not fills.
+
+        ENT-11(9) v2.00 dispositions, applied here:
+          (i) `cursor` REMOVED, not implemented -- all 13 callers passed None,
+              so it promised incremental delivery nothing ever gave;
+          (ii) the sim now returns ORDER OBJECTS too (SimOrder), collapsing the
+              dicts-vs-objects parity divergence `_fill_matches` normalised;
+          (iii) KNOWN LIMIT, deferred BEHIND OBSERVATION: this reads the
+              LIVE-ORDERS window, so a fill that ages out of it silently
+              vanishes from this feed. The durable source is `get_history`
+              Trade transactions (`day_fills`), but whether a Trade carries an
+              order id, and under which field, is UNOBSERVED -- rebuilding on
+              it now would swap a window defect for a shape assumption
+              (v1.97's forbidden move). Until that observation is recorded,
+              callers must treat absence-from-this-feed as advisory, never as
+              proof of no fill (ENT-11(3)).
+
+        The `.endswith("filled")` predicate matches exactly ONE status: the
+        SDK enum contains no `Partially Filled` value (v1.98 -- the claimed
+        partial-fill defect was a phantom)."""
         live = await self._account.get_live_orders(self._session)
         return [o for o in live if str(o.status).lower().endswith("filled")]
 

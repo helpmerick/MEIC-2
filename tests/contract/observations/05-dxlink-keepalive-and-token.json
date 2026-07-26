@@ -1,13 +1,15 @@
 {
-  "recorded_at": "2026-07-13T15:42:55.187401+00:00",
+  "recorded_at": "2026-07-21T21:55:31.727897+00:00",
   "observation": {
     "setup_frames": [
       "received: {'type': 'SETUP', 'channel': 0, 'version': '1.0-2.8.3', 'keepaliveTimeout': 60, 'acceptKeepaliveTimeout': 60}",
       "sending keepalive message: {'type': 'KEEPALIVE', 'channel': 0}"
     ],
-    "token_log_lines": [],
+    "token_log_lines": [
+      "HTTP Request: GET https://api.cert.tastyworks.com/api-quote-tokens \"HTTP/1.1 200 OK\""
+    ],
     "streamer_attrs": {
-      "_auth_token": "dGFzdHksZGVtbywsMTc4NDA0Mzc3MywxNzgzOTU3MzczLFUwMmY0NzdjNy00MGQyLTRlMTItYTQ1Yy0wNDI4ZTlmZGVkMTA.uWRPnuTPbB5ViWrO0vvPaIUNhWZ22aA0GIDCJY3m4aI",
+      "_auth_token": "dGFzdHksZGVtbywsMTc4NDc1NzMyOSwxNzg0NjcwOTI5LFUwMmY0NzdjNy00MGQyLTRlMTItYTQ1Yy0wNDI4ZTlmZGVkMTA.Vs6gF5T-jPf3dAOAw7b3IwoncxRnRjy9k-Zp5akEtvc",
       "_wss_url": "wss://tasty-demo-dxlink-md-ws.dxfeed.com/delayed"
     },
     "note": "spec expectation ~24h quote token (doc 05 NFR-04); session OAuth token separately ~900s per refresh log"

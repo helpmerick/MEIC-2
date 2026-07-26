@@ -48,7 +48,7 @@ class _CancelBroker:
         self.cancels.append(str(order_id))
         return self._cancel_result() if callable(self._cancel_result) else self._cancel_result
 
-    async def fills_since(self, cursor):
+    async def fills_since(self):
         return list(self._fills)
 
 

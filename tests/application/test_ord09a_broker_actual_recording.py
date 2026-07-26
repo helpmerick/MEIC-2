@@ -187,11 +187,11 @@ def test_ord09a_watchdog_poll_catches_a_fill_that_posts_on_the_second_poll():
     real_fills_since = broker.fills_since
     reads = {"n": 0}
 
-    async def latent_fills_since(cursor):
+    async def latent_fills_since():
         reads["n"] += 1
         if reads["n"] == 1:
             return []  # the beat between submit and the fill posting
-        return await real_fills_since(cursor)
+        return await real_fills_since()
     broker.fills_since = latent_fills_since
 
     async def fake_fill_legs(order_id):
@@ -221,9 +221,9 @@ def test_ord09a_watchdog_poll_stops_immediately_on_a_priceless_fill_record():
     reads = {"n": 0}
     real_fills_since = broker.fills_since
 
-    async def counting_fills_since(cursor):
+    async def counting_fills_since():
         reads["n"] += 1
-        return await real_fills_since(cursor)
+        return await real_fills_since()
     broker.fills_since = counting_fills_since
 
     wd = StopWatchdog(broker=broker, alerts=_Alerts(), events=events,

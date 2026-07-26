@@ -182,7 +182,7 @@ class Reconcile:
             # race loudly instead, exactly like any other genuine
             # reconciliation mismatch (RSK-03 blocks new entries until the
             # operator resolves it by hand).
-            for f in await self._broker.fills_since(None):
+            for f in await self._broker.fills_since():
                 if _fill_matches(f, order_id):
                     detail = (f"stale entry order {order_id} filled while boot was "
                              "cancelling it (ORD-06/RSK-03 race) — position may be "

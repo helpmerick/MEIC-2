@@ -1,20 +1,20 @@
 {
-  "recorded_at": "2026-07-13T15:43:20.906409+00:00",
+  "recorded_at": "2026-07-21T09:30:48.996729+00:00",
   "observation": {
     "account_number": "5WZ67393",
     "time_in_force": "Day",
     "order_type": "Limit",
     "underlying_symbol": "SPX",
     "underlying_instrument_type": "Equity",
-    "status": "Routed",
-    "cancellable": false,
-    "editable": false,
+    "status": "Received",
+    "cancellable": true,
+    "editable": true,
     "edited": false,
-    "updated_at": "2026-07-13 15:43:20.712000+00:00",
+    "updated_at": "2026-07-21 09:30:48.531000+00:00",
     "legs": [
       {
         "instrument_type": "Equity Option",
-        "symbol": "SPXW  260713P07010000",
+        "symbol": "SPXW  260721P07000000",
         "action": "Buy to Open",
         "quantity": 1,
         "remaining_quantity": "1",
@@ -22,7 +22,7 @@
       },
       {
         "instrument_type": "Equity Option",
-        "symbol": "SPXW  260713P07020000",
+        "symbol": "SPXW  260721P07025000",
         "action": "Sell to Open",
         "quantity": 1,
         "remaining_quantity": "1",
@@ -30,7 +30,7 @@
       },
       {
         "instrument_type": "Equity Option",
-        "symbol": "SPXW  260713C07615000",
+        "symbol": "SPXW  260721C07570000",
         "action": "Sell to Open",
         "quantity": 1,
         "remaining_quantity": "1",
@@ -38,7 +38,7 @@
       },
       {
         "instrument_type": "Equity Option",
-        "symbol": "SPXW  260713C07620000",
+        "symbol": "SPXW  260721C07575000",
         "action": "Buy to Open",
         "quantity": 1,
         "remaining_quantity": "1",
@@ -59,7 +59,7 @@
     "replaces_order_id": null,
     "in_flight_at": null,
     "live_at": null,
-    "received_at": "2026-07-13 15:43:20.388000+00:00",
+    "received_at": "2026-07-21 09:30:48.531000+00:00",
     "reject_reason": null,
     "user_id": null,
     "username": null,
@@ -70,6 +70,6 @@
     "order_rule": null,
     "source": "tastyware/tastytrade:v13.0.0",
     "external_identifier": null,
-    "id": 1221895
+    "id": 1241789
   }
 }
