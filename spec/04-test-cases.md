@@ -1890,6 +1890,17 @@ Scenario: Quantity is filled, not ordered (v1.91)
   Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
   And a cancelled-after-partial order still reports its filled legs
 
+Scenario: Second-click semantics — skip the absent, abort the unknown (v2.04, ORD-12a)
+  Given a close where one leg resolves TERMINAL_NO_POSITION
+  Then that leg is treated as already closed and the close continues to the remaining legs
+  And the already-closed short is never re-bought
+  And given instead a leg resolving UNKNOWN, the close ABORTS and the entry stays visible
+
+Scenario: A wrapper answers the same question for writes as for reads (v2.04, NFR-09a)
+  Given a decorator that intercepts reads of a name it defines
+  Then writes to that name are applied to the WRAPPER, never forwarded inward
+  And write-through survives only for names the wrapper does not define
+
 Scenario: Git state operations are single-step on a real-money tree (v2.03, NFR-10)
   Then no documented procedure chains a state-changing git step onto an unverified prior step
   And recovery procedures move files aside rather than deleting them
@@ -2035,7 +2046,7 @@ Scenario: The disarm still wins at any cadence
 | TPT-01→07 | TC-TPT-01 | | STP-08a | TC-STP-20 |
 | UI-18a/23a/26a/28 / RPT-09a | TC-UI-07 | | RPT-16 | TC-RPT-10 |
 | EC-LEX-08 | TC-LEX-10 | | RPT-15a→d / PNL-01a / PNL-04a / RPT-16a | TC-RPT-17→22, TC-PNL-02b |
-| ENT-11 / CLS-08 / ORD-12 / OWN-03a / NFR-08/09/10 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
+| ENT-11 / CLS-08 / ORD-12/12a / OWN-03a / NFR-07a/08/09/09a/10 | TC-ENT-11 | | ORD-10/11 | TC-RPT-17, TC-RPT-22 | | OWN-12 | TC-OWN-12 |
 | NFR-07 / STP-03 (tombstone) | TC-NFR-07 | | STP-02b (cage) | TC-STP-21 |
 | CAL-01→11 / UI-30/34 | TC-CAL-01→05 | | DOC-01→06 / UI-29/32 | TC-DOC-01 |
 | UI-31 | TC-UI-09 | | RPT-17 / UI-33 | TC-RPT-23 |

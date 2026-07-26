@@ -40,6 +40,17 @@ Feature: TC-ENT-11
     Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
     And a cancelled-after-partial order still reports its filled legs
 
+  Scenario: Second-click semantics — skip the absent, abort the unknown (v2.04, ORD-12a)
+    Given a close where one leg resolves TERMINAL_NO_POSITION
+    Then that leg is treated as already closed and the close continues to the remaining legs
+    And the already-closed short is never re-bought
+    And given instead a leg resolving UNKNOWN, the close ABORTS and the entry stays visible
+
+  Scenario: A wrapper answers the same question for writes as for reads (v2.04, NFR-09a)
+    Given a decorator that intercepts reads of a name it defines
+    Then writes to that name are applied to the WRAPPER, never forwarded inward
+    And write-through survives only for names the wrapper does not define
+
   Scenario: Git state operations are single-step on a real-money tree (v2.03, NFR-10)
     Then no documented procedure chains a state-changing git step onto an unverified prior step
     And recovery procedures move files aside rather than deleting them
