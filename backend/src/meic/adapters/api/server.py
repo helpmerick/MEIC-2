@@ -3030,6 +3030,22 @@ def _quiet_noisy_third_party_loggers(env: dict[str, str]) -> None:
     via MEIC_SDK_LOG_LEVEL for a debugging session."""
     import logging as _logging
 
+    # ORDER MATTERS, and getting it wrong is why the first attempt at this
+    # silently did nothing. `tastytrade/__init__.py` runs
+    # `logger.setLevel(logging.DEBUG)` AT IMPORT, and the adapter imports the
+    # SDK LAZILY (it is optional offline) -- so setting the level here first
+    # and letting the SDK import later means the SDK overwrites us and the
+    # firehose comes back. Importing it FIRST, then setting the level, makes
+    # ours the last word.
+    #
+    # Same shape as NFR-11: a value configured BEFORE the thing that
+    # overrides it exists. Verified rather than assumed -- the first version
+    # looked correct, passed review, and left 55 KB of quote dumps in the log.
+    try:
+        import tastytrade  # noqa: F401 -- imported for its side effect on logging
+    except Exception:  # noqa: BLE001 -- SDK is optional offline; nothing to quiet
+        pass
+
     level_name = (env.get("MEIC_SDK_LOG_LEVEL") or "INFO").upper()
     level = getattr(_logging, level_name, _logging.INFO)
     for name in ("tastytrade", "websockets", "httpx", "httpcore"):
