@@ -109,6 +109,19 @@ class _FakeClock:
         return self._now
 
 
+# TPF-03b (v1.94): confirmation is a DURATION, so two passes at the SAME
+# instant can never confirm -- no time has elapsed. That is the rule working,
+# not a test defect: it is exactly why a count was retired. A second pass one
+# confirmation window later is the honest translation of "held continuously".
+from datetime import timedelta as _timedelta  # noqa: E402
+
+_CONFIRM = _timedelta(milliseconds=500)
+
+
+def _later(now, span=_CONFIRM):
+    return now + span
+
+
 # --- _open_side_costs / _entry_profit_pct_now -------------------------------
 
 def test_open_side_costs_both_sides_open():
@@ -147,7 +160,7 @@ def test_stopped_side_excluded_from_open_costs():
 
 # --- _evaluate_exits_once: floor ---------------------------------------------
 
-def test_floor_fires_after_confirmation_evals_via_close_as():
+def test_floor_fires_after_the_confirmation_duration_via_close_as():
     events = [CondorFilled(entry_id="e1", net_credit=D("3.60"), legs=_legs())]
     # deep in-the-money-for-the-condor marks -> big open cost -> low/negative profit%
     put_marks = {D("7535"): Mark(bid=D("3.00"), ask=D("3.10")), D("7510"): Mark(bid=D("0.02"), ask=D("0.03"))}
@@ -157,10 +170,14 @@ def test_floor_fires_after_confirmation_evals_via_close_as():
     monitor = ExitMonitor()
     commands = _Commands()
 
-    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands))
-    assert commands.closed == []   # 1st confirmation only
-    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands))
-    assert commands.closed == [("e1", "take_profit")]   # 2nd confirmation fires
+    # TPF-03b: the breach must hold for the confirmation DURATION. Two passes
+    # at the same instant no longer fire -- no time has elapsed between them,
+    # and that is the rule working rather than a test defect.
+    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, clock=_FakeClock(_NOW)))
+    assert commands.closed == []                        # breach observed, not yet confirmed
+    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands,
+                                     clock=_FakeClock(_later(_NOW))))
+    assert commands.closed == [("e1", "take_profit")]   # held through the window -> fires
 
 
 def test_stale_snapshot_pauses_evaluation_never_fires():
@@ -425,7 +442,7 @@ def test_nfr04_evaluate_exits_once_fires_off_a_live_hub_mark():
 
     asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_NOW)))
     assert commands.closed == []   # 1st confirmation only
-    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_NOW)))
+    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_later(_NOW))))
     assert commands.closed == [("e1", "take_profit")]   # 2nd confirmation fires, off the LIVE marks
 
 
@@ -443,5 +460,5 @@ def test_nfr04_evaluate_exits_once_empty_hub_is_byte_identical_to_pre_wiring():
 
     asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_NOW)))
     assert commands.closed == []
-    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_NOW)))
+    asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_later(_NOW))))
     assert commands.closed == [("e1", "take_profit")]

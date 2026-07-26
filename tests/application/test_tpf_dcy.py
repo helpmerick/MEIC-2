@@ -6,6 +6,8 @@ generator skips prose TCs that have a hand-written test).
 import asyncio
 from decimal import Decimal as D
 
+import pytest
+
 from meic.application.decay_watcher import DecayWatcher
 from meic.application.tpf_monitor import TPFMonitor
 from meic.domain.events import EntryClosed, LongSold, ShortStopped
@@ -15,36 +17,77 @@ from tests.harness.intents import condor_intent, stop_intent
 
 # --- TPFMonitor --------------------------------------------------------------
 
+# TPF-03b(ii) — THE MIGRATION IS VERIFIED AGAINST A NON-DEFAULT DURATION.
+# 2 evals x the 250 ms cadence = 500 ms, which is EXACTLY tp_confirmation_ms's
+# default, so a count-shaped regression would still pass every test written at
+# the default. These use 1500 ms deliberately: at the default, "fires on the
+# second evaluation" and "fires after 500 ms" are indistinguishable.
+CONFIRM_MS = 1500
+
+
 class TestTPFMonitor:
-    def test_confirmation_evals_required(self):
-        m = TPFMonitor(tp_confirmation_evals=2)
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is False   # 1st
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is True    # 2nd -> fire
+    def test_confirmation_is_a_duration_not_a_count(self):
+        """The breach must hold for the full DURATION. Evaluation COUNT is
+        irrelevant: a hundred evaluations inside the window still do not fire."""
+        m = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=0) is False
+        for t in range(50, CONFIRM_MS, 50):          # 29 more evaluations, all inside
+            assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=t) is False, (
+                f"fired at {t}ms, before the {CONFIRM_MS}ms confirmation elapsed -- "
+                "this is the count-shaped regression TPF-03b retired")
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=CONFIRM_MS) is True
 
-    def test_single_bad_print_does_not_fire(self):
-        m = TPFMonitor(tp_confirmation_evals=2)
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is False
-        assert m.evaluate(profit=D("2.00"), floor=D("0.80")) is False   # recovers -> reset
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is False   # counter restarted
+    def test_a_slow_cadence_fires_on_the_same_wall_clock(self):
+        """The point of a duration: the SAME two evaluations, spaced far apart,
+        fire because time passed -- not because there were two of them."""
+        m = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=0) is False
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=CONFIRM_MS) is True
 
-    def test_stale_pauses_and_resets(self):
-        m = TPFMonitor(tp_confirmation_evals=2)
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is False
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), stale=True) is False  # EC-TPF-02
-        assert m.evaluate(profit=D("0.80"), floor=D("0.80")) is False  # streak reset
+    def test_zero_confirmation_fires_on_the_first_valid_breach(self):
+        """TPF-03b, explicit: `tp_confirmation_ms = 0` fires immediately."""
+        m = TPFMonitor(tp_confirmation_ms=0)
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=12345) is True
+
+    def test_recovery_CLEARS_the_elapsed_time_never_pauses_it(self):
+        """TPF-03b: a recovery CLEARS. An accumulator would let a flickering
+        mark bank progress across recoveries and fire on a breach that was
+        never continuous -- so after recovering, the full duration restarts."""
+        m = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=0) is False
+        assert m.evaluate(profit=D("2.00"), floor=D("0.80"), now_ms=1400) is False  # recovers
+        # 1400ms of breach was banked before the recovery. If it were PAUSED
+        # rather than CLEARED, 100ms more would fire. It must not.
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=1500) is False
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=1500 + CONFIRM_MS) is True
+
+    def test_stale_CLEARS_the_elapsed_time_never_pauses_it(self):
+        """EC-TPF-02. An invalid evaluation is not evidence the breach
+        continued, so it cannot count toward a CONTINUOUS breach."""
+        m = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=0) is False
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), stale=True, now_ms=1400) is False
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=1500) is False
+        assert m.evaluate(profit=D("0.80"), floor=D("0.80"), now_ms=1500 + CONFIRM_MS) is True
+
+    def test_tp_confirmation_evals_is_tombstoned_at_the_constructor(self):
+        """The retired parameter must not be quietly accepted and ignored --
+        that would let an operator believe a tuned count was still in force."""
+        with pytest.raises(TypeError):
+            TPFMonitor(tp_confirmation_evals=2)
 
 
 def test_tc_tpf_03_trigger_mechanics():
-    """TC-TPF-03: floor 20% on $4.00 (=$0.80) fires after 2 valid evals; a
-    single bad print doesn't; stale pauses+resets."""
-    m = TPFMonitor(tp_confirmation_evals=2)
+    """TC-TPF-03: floor 20% on $4.00 (=$0.80) fires once the breach has held
+    for the confirmation DURATION; a single bad print doesn't; stale clears."""
+    m = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
     floor = D("4.00") * 20 / 100  # 0.80
-    assert m.evaluate(profit=D("0.75"), floor=floor) is False
-    assert m.evaluate(profit=D("0.75"), floor=floor) is True
+    assert m.evaluate(profit=D("0.75"), floor=floor, now_ms=0) is False
+    assert m.evaluate(profit=D("0.75"), floor=floor, now_ms=CONFIRM_MS) is True
     # a lone print below the floor never fires
-    m2 = TPFMonitor(tp_confirmation_evals=2)
-    assert m2.evaluate(profit=D("0.70"), floor=floor) is False
-    assert m2.evaluate(profit=D("5.00"), floor=floor) is False
+    m2 = TPFMonitor(tp_confirmation_ms=CONFIRM_MS)
+    assert m2.evaluate(profit=D("0.70"), floor=floor, now_ms=0) is False
+    assert m2.evaluate(profit=D("5.00"), floor=floor, now_ms=CONFIRM_MS) is False
 
 
 # --- DecayWatcher ------------------------------------------------------------

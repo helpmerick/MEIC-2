@@ -95,8 +95,8 @@ def test_tc_tpf_07_restart_floor_persists_and_fires_immediately():
     floor_pct = recovered.tpf_floors["e1"]
     floor = D("4.00") * floor_pct / 100  # 0.80
     # on recovery, profit already gapped below the floor -> fires on first eval
-    m = TPFMonitor(tp_confirmation_evals=1)
-    assert m.evaluate(profit=D("0.50"), floor=floor) is True
+    m = TPFMonitor(tp_confirmation_ms=0)
+    assert m.evaluate(profit=D("0.50"), floor=floor, now_ms=0) is True
 
 
 def test_tc_eod_01_untouched_condor_settles_expired_keeps_credit():

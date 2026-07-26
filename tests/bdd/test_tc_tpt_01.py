@@ -20,6 +20,9 @@ from meic.domain.tpt import ALL_LEVELS, armed_feedback, is_armable, reached, val
 from tests.harness.fake_broker import FakeBroker
 from tests.harness.intents import CALL_LONG, CALL_SHORT, PUT_LONG, PUT_SHORT, stop_intent
 
+# TPF-03b: evaluations carry an explicit clock reading (a DURATION, not a count).
+NOW_MS = 1_000_000
+
 scenarios("../features/TC-TPT-01.feature")
 
 LEGS = [LiveLeg(PUT_SHORT, "PUT", "short", -1), LiveLeg(PUT_LONG, "PUT", "long", 1),
@@ -55,7 +58,7 @@ class RecordingBroker:
 
 @given('an entry with actual net credit 4.00 and take-profit target 60 percent')
 def _(world):
-    world["monitor"] = ExitMonitor(tp_confirmation_evals=2)
+    world["monitor"] = ExitMonitor(tp_confirmation_ms=500)
     world["level"] = 60
     world["net_credit"] = D("4.00")
 
@@ -63,8 +66,21 @@ def _(world):
 @when('whole-entry profit holds at or above 60 percent for 2 consecutive valid evaluations')
 def _(world):
     mon = world["monitor"]
-    fired_1 = mon.evaluate_target("e1", profit_pct=D("62"), level=world["level"], stale=False)
-    fired_2 = mon.evaluate_target("e1", profit_pct=D("62"), level=world["level"], stale=False)
+    # TPF-03b (v1.94): confirmation is a DURATION. Two consecutive VALID
+    # evaluations still describe this scenario truthfully -- they simply have
+    # to SPAN the confirmation window, because it is the elapsed continuous
+    # breach that fires, not the number of evaluations.
+    #
+    # NOTE for the operator (raised, not papered over): this scenario's own
+    # text still reads "for 2 consecutive valid evaluations", which is the
+    # COUNT language TPF-03b retired. The step below is truthful either way,
+    # but the "2" no longer carries normative weight, and a stale number that
+    # looks intentional is exactly TPF-03b(ii)'s hazard.
+    hold_ms = mon.tp_confirmation_ms
+    fired_1 = mon.evaluate_target("e1", profit_pct=D("62"), level=world["level"],
+                                  stale=False, now_ms=NOW_MS)
+    fired_2 = mon.evaluate_target("e1", profit_pct=D("62"), level=world["level"],
+                                  stale=False, now_ms=NOW_MS + hold_ms)
     assert fired_1 is False and fired_2 is True
     world["A"], world["B"] = RecordingBroker(), RecordingBroker()
     world["events_A"], world["events_B"] = [], []
@@ -149,7 +165,7 @@ def _(world):
     # tests/adapters/test_exit_evaluator.py::test_target_disarms_permanently_when_a_stop_fills)
     # never calls evaluate_target at all once `sides_stopped` is non-empty —
     # that permanent-disarm behavior is asserted end-to-end there.
-    monitor = ExitMonitor(tp_confirmation_evals=1)
+    monitor = ExitMonitor(tp_confirmation_ms=0)
     monitor.disarm_target("e1")
     assert "e1" not in monitor._target
 
@@ -184,21 +200,21 @@ def _(world):
 
 @given('a floor at 20 percent and a target at 70 percent on one entry')
 def _(world):
-    world["coexist"] = ExitMonitor(tp_confirmation_evals=1)
+    world["coexist"] = ExitMonitor(tp_confirmation_ms=0)
 
 
 @then('rising to 70 first closes with initiator "take_profit_target"')
 def _(world):
     mon = world["coexist"]
-    assert mon.evaluate_target("eC", profit_pct=D("70"), level=70, stale=False) is True
-    assert mon.evaluate_floor("eC", profit_pct=D("70"), level=20, stale=False) is False
+    assert mon.evaluate_target("eC", profit_pct=D("70"), level=70, stale=False, now_ms=NOW_MS) is True
+    assert mon.evaluate_floor("eC", profit_pct=D("70"), level=20, stale=False, now_ms=NOW_MS) is False
 
 
 @then('falling to 20 first closes with initiator "take_profit"')
 def _(world):
-    mon = ExitMonitor(tp_confirmation_evals=1)
-    assert mon.evaluate_floor("eD", profit_pct=D("20"), level=20, stale=False) is True
-    assert mon.evaluate_target("eD", profit_pct=D("20"), level=70, stale=False) is False
+    mon = ExitMonitor(tp_confirmation_ms=0)
+    assert mon.evaluate_floor("eD", profit_pct=D("20"), level=20, stale=False, now_ms=NOW_MS) is True
+    assert mon.evaluate_target("eD", profit_pct=D("20"), level=70, stale=False, now_ms=NOW_MS) is False
 
 
 # =============================================================================

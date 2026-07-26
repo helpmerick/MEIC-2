@@ -10,6 +10,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+# TPF-03b: evaluations carry an explicit clock reading (a DURATION, not a count).
+NOW_MS = 1_000_000
+
 SRC = Path(__file__).resolve().parents[2] / "backend" / "src" / "meic"
 MONITOR_PATHS = [
     SRC / "domain" / "tpf.py",
@@ -64,8 +67,8 @@ def test_exit_monitor_public_surface_returns_only_booleans_or_none():
 
     from meic.application.exit_monitor import ExitMonitor
 
-    mon = ExitMonitor(tp_confirmation_evals=1)
-    result = mon.evaluate_floor("e1", profit_pct=Decimal("0"), level=50, stale=False)
+    mon = ExitMonitor(tp_confirmation_ms=0)
+    result = mon.evaluate_floor("e1", profit_pct=Decimal("0"), level=50, stale=False, now_ms=NOW_MS)
     assert isinstance(result, bool)
-    result = mon.evaluate_target("e1", profit_pct=Decimal("100"), level=50, stale=False)
+    result = mon.evaluate_target("e1", profit_pct=Decimal("100"), level=50, stale=False, now_ms=NOW_MS)
     assert isinstance(result, bool)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
@@ -1517,6 +1518,12 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
         return
     day = fold(comp.events)
     now = clock.now() if clock is not None else None
+    # TPF-03b: ONE reading of "now" for the whole pass, in milliseconds.
+    # Taken once so every entry in a pass measures its continuous breach
+    # against the SAME instant -- two readings inside one pass could put two
+    # entries milliseconds apart for no reason, and the elapsed span is the
+    # trigger input now, not a counter.
+    now_ms = int(now.timestamp() * 1000) if now is not None else int(_time.monotonic() * 1000)
     for entry_id, e in day.entries.items():
         level_floor, level_target = floors.get(entry_id), targets.get(entry_id)
         if level_floor is None and level_target is None:
@@ -1536,7 +1543,8 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
 
         if level_floor is not None:
             if exit_monitor.evaluate_floor(entry_id, profit_pct=profit_pct,
-                                           level=int(level_floor), stale=entry_stale):
+                                           level=int(level_floor), stale=entry_stale,
+                                           now_ms=now_ms):
                 await commands.close_as(entry_id, "take_profit")
                 continue  # the entry is now closed — skip its target this tick
 
@@ -1544,7 +1552,8 @@ async def _evaluate_exits_once(comp, snapshot, exit_monitor, commands, *,
             if e.sides_stopped:  # TPT-05: permanent disarm
                 exit_monitor.disarm_target(entry_id)
             elif exit_monitor.evaluate_target(entry_id, profit_pct=profit_pct,
-                                              level=int(level_target), stale=entry_stale):
+                                              level=int(level_target), stale=entry_stale,
+                                              now_ms=now_ms):
                 await commands.close_as(entry_id, "take_profit_target")
 
 

@@ -59,6 +59,22 @@ TOMBSTONE_KEYS_V168 = frozenset({"stop_limit_offset_ticks"})
 # "reject, never silently ignore" pattern as RSK-02/STK-10/STP-03 above.
 TOMBSTONE_KEYS_V181 = frozenset({"max_entries_per_day"})
 
+# TPF-03b v1.94 tombstone: confirmation is a DURATION (`tp_confirmation_ms`),
+# never a COUNT. A count SILENTLY RE-DENOMINATES ITSELF whenever the
+# evaluation cadence changes -- "2" meant two adjacent prints on the old 60 s
+# health tick, i.e. two MINUTES, and would mean 500 ms at the ratified 250 ms
+# cadence. **Nobody changed the parameter; the ground moved under it.**
+#
+# TPF-03b(ii), why this one is REJECTED rather than migrated: 2 x 250 ms is
+# EXACTLY the 500 ms `tp_confirmation_ms` default, so a silent migration would
+# look correct on default config and be wrong by the full cadence ratio for
+# any operator who had TUNED the count (a 5, meaning five minutes, becomes
+# 1.25 s). Refusing the key forces the operator to restate the intent in units
+# that cannot be reinterpreted, instead of inheriting a number whose meaning
+# changed underneath them. Same "reject, never silently ignore" pattern as
+# RSK-02/STK-10/STP-03/ENT-05 above.
+TOMBSTONE_KEYS_V194 = frozenset({"tp_confirmation_evals"})
+
 
 class ConfigRejected(ValueError):
     def __init__(self, key: str, reason: str) -> None:
@@ -215,6 +231,8 @@ def validate_config(cfg: dict) -> None:
             raise ConfigRejected(key, "removed_v168_stp03_sweep")  # STP-03 v1.68 sweep completion
         if key in TOMBSTONE_KEYS_V181:
             raise ConfigRejected(key, "removed_v181_ent05")    # ENT-05 v1.81 tombstone
+        if key in TOMBSTONE_KEYS_V194:
+            raise ConfigRejected(key, "removed_v194_tpf03b")   # TPF-03b duration-not-count
     if "stop_loss_pct" in cfg:
         validate_stop_loss_pct(int(cfg["stop_loss_pct"]))
     if "stop_basis" in cfg:

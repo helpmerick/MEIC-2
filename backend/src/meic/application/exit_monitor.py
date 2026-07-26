@@ -21,39 +21,55 @@ from meic.application.tpt_monitor import TPTMonitor
 
 @dataclass
 class ExitMonitor:
-    tp_confirmation_evals: int = 2
+    """TPF-03b (v1.94): confirmation is a DURATION. `tp_confirmation_evals` is
+    TOMBSTONED and is deliberately absent from this signature -- a count
+    silently re-denominates itself whenever the evaluation cadence changes,
+    and its accidental value at the new 250 ms cadence (2 x 250 = 500 ms)
+    lands EXACTLY on this duration's default, which is precisely what would
+    let the regression survive casual testing (TPF-03b(ii))."""
+
+    tp_confirmation_ms: int = 500
     _floor: dict = field(default_factory=dict)
     _target: dict = field(default_factory=dict)
 
     def evaluate_floor(self, entry_id: str, *, profit_pct: Decimal | None,
-                       level: int, stale: bool) -> bool:
+                       level: int, stale: bool, now_ms: int) -> bool:
         """`profit_pct`/`level` are both PERCENTAGES — `breached`'s `<=` is
         unit-agnostic, so no dollar conversion is needed here at all (TPT-06's
-        dollar feedback is a display-only concern, computed separately)."""
+        dollar feedback is a display-only concern, computed separately).
+
+        `now_ms` is REQUIRED, not defaulted: a caller that forgot to thread the
+        clock would otherwise silently confirm against a frozen "now" and
+        either never fire or fire instantly. A missing argument is a loud
+        TypeError at the call site; a defaulted one is a live trading defect."""
         mon = self._floor.setdefault(
-            entry_id, TPFMonitor(tp_confirmation_evals=self.tp_confirmation_evals))
+            entry_id, TPFMonitor(tp_confirmation_ms=self.tp_confirmation_ms))
         if stale or profit_pct is None:
-            return mon.evaluate(profit=Decimal("0"), floor=Decimal("0"), stale=True)
-        return mon.evaluate(profit=profit_pct, floor=Decimal(level), stale=False)
+            return mon.evaluate(profit=Decimal("0"), floor=Decimal("0"),
+                                stale=True, now_ms=now_ms)
+        return mon.evaluate(profit=profit_pct, floor=Decimal(level),
+                            stale=False, now_ms=now_ms)
 
     def evaluate_target(self, entry_id: str, *, profit_pct: Decimal | None,
-                        level: int, stale: bool) -> bool:
+                        level: int, stale: bool, now_ms: int) -> bool:
         mon = self._target.setdefault(
-            entry_id, TPTMonitor(tp_confirmation_evals=self.tp_confirmation_evals))
+            entry_id, TPTMonitor(tp_confirmation_ms=self.tp_confirmation_ms))
         if stale or profit_pct is None:
-            return mon.evaluate(profit=Decimal("0"), target=Decimal("0"), stale=True)
-        return mon.evaluate(profit=profit_pct, target=Decimal(level), stale=False)
+            return mon.evaluate(profit=Decimal("0"), target=Decimal("0"),
+                                stale=True, now_ms=now_ms)
+        return mon.evaluate(profit=profit_pct, target=Decimal(level),
+                            stale=False, now_ms=now_ms)
 
     def disarm_target(self, entry_id: str) -> None:
         """TPT-05: any stop fill on the entry disarms the target PERMANENTLY.
-        Drops the counter so a later re-arm (a NEW target on the SAME entry_id
+        Drops the elapsed-breach state so a later re-arm (a NEW target on the SAME entry_id
         would be operator error, not expected — but defensively) starts
         clean rather than inheriting a stale streak."""
         self._target.pop(entry_id, None)
 
     def forget(self, entry_id: str) -> None:
         """The entry reached a terminal status (closed/expired) — drop both
-        counters so a reused entry_id (should that ever happen) never
-        inherits a stale streak."""
+        timers so a reused entry_id (should that ever happen) never
+        inherits a stale elapsed breach."""
         self._floor.pop(entry_id, None)
         self._target.pop(entry_id, None)

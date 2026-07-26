@@ -108,11 +108,11 @@ def test_tc_tpf_06_partial_scope_profit_includes_realized():
     call_side_mark_profit = D("2.00")
     combined_profit = realized_put + call_side_mark_profit  # 0.90
     floor = floor_amount(20, net_credit)  # 0.80
-    m = TPFMonitor(tp_confirmation_evals=1)
+    m = TPFMonitor(tp_confirmation_ms=0)
     # combined profit 0.90 > floor 0.80 -> does not fire yet
-    assert m.evaluate(profit=combined_profit, floor=floor) is False
+    assert m.evaluate(profit=combined_profit, floor=floor, now_ms=0) is False
     # if the call side decays so combined dips to the floor, it fires (closes the open side)
-    assert TPFMonitor(tp_confirmation_evals=1).evaluate(profit=D("0.80"), floor=floor) is True
+    assert TPFMonitor(tp_confirmation_ms=0).evaluate(profit=D("0.80"), floor=floor, now_ms=0) is True
 
 
 # --- TC-TPF-08: controls (no trailing, gap rule) -----------------------------
