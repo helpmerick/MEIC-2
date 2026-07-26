@@ -102,7 +102,11 @@ Unset fields inherit the global value. Validation rules apply per entry after in
 | Parameter | Type / Range | Default | Effectivity | Rules |
 |---|---|---|---|---|
 | `tp_gap_pct` | {5, 10, 15, 20} | 5 | immediate | TPF-02 — minimum gap between current profit% and a selectable floor |
-| `tp_confirmation_evals` | 1–10 | 2 | immediate | TPF-03 — consecutive valid breaches required to trigger |
+| ~~`tp_confirmation_evals`~~ | — | — | — | RETIRED v1.94 (TPF-03b — a count silently re-denominates on any cadence change); config loader rejects the key |
+| `exit_eval_interval_ms` | 100–5000 | 250 | immediate | TPF-03a — max interval between exit evaluations (floor + target); dedicated owner, never the health loop |
+| `tp_confirmation_ms` | 0–10000 | 500 | immediate | TPF-03b — breach must hold CONTINUOUSLY this long; 0 = fire on first valid breach |
+| `exit_unevaluable_alert_s` | 5–600 | 60 | immediate | TPF-03d / NFR-08a — armed exit unevaluable this long ⇒ RSK-06 alert; also the NFR-08a rate limit |
+| `exit_long_leg_max_age_ms` | 3000–120000 | 30000 | immediate | TPF-03f — extended freshness budget for the LONG leg only; short legs use max_quote_age_ms; stale longs take the CONSERVATIVE value |
 
 The floor levels themselves ({5..90 step 5}) are fixed by TPF-02, not configurable; the floor value is set per entry at runtime via the UI (UC-13), not in config.
 

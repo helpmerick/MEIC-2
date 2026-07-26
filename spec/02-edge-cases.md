@@ -49,7 +49,7 @@ The coding AI MUST implement explicit handling (not incidental behaviour) for ev
 ## C2. Take-profit floor edge cases (EC-TPF)
 
 - **EC-TPF-01 Bot down when profit crosses the floor.** No trigger occurs (TPF-03 is bot-side by design). On restart, TPF-08 evaluates reconciled profit and closes at the *current* level, which may be worse than the floor — recorded and displayed, never treated as an error.
-- **EC-TPF-02 Stale/absurd marks during monitoring.** Evaluation pauses on stale quotes (DAT-02) and sanity-rejected ticks (EC-DAT-04); the confirmation counter resets; no trigger fires on invalid data.
+- **EC-TPF-02 Stale/absurd marks during monitoring (AMENDED v1.94).** Evaluation pauses on stale quotes (DAT-02) and sanity-rejected ticks (EC-DAT-04); the **elapsed breach TIME is CLEARED** (TPF-03b), never paused-and-resumed; no trigger fires on invalid data.
 - **EC-TPF-03 Short stop fills during the TPF close.** Cancel-rejected-because-filled (EC-API-06) ⇒ that side is SIDE_STOPPED, LEX runs for its long; the TPF close proceeds for the other side only. No leg is ever bought back twice — idempotency keys per side enforce it.
 - **EC-TPF-04 Gap-violating set request.** Profit moved between UI render and click; backend rejects (TPF-02), UI refreshes enabled levels. Never clamp to the nearest legal level.
 - **EC-TPF-05 Floor set, then Flatten All triggers.** Flatten All supersedes TPF (positions close anyway); Stop Trading leaves TPF active (TPF-09). Both orderings are evented distinctly so reports show which mechanism closed the position.

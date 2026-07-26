@@ -1915,6 +1915,76 @@ Scenario: Alert sinks are wired and thrown evaluations are heard (NFR-08)
   And an exception inside a monitor's evaluation raises an alert rather than silently no-opping
 ```
 
+**TC-TPF-09** — TPF-03a–f live evaluation (v1.94). Credit 4.00, floor 20% ⇒ breach at profit ≤ 0.80; FakeClock; exit_eval_interval_ms 250, tp_confirmation_ms 500.
+```gherkin
+Scenario: A sub-minute breach is caught (regression guard for the 60s defect)
+  Given an armed floor of 20 percent on an entry with net credit 4.00
+  And profit falls below the floor at t=0ms and recovers at t=700ms
+  Then evaluations occur at t=0, 250 and 500ms
+  And CloseEntry runs with initiator "take_profit" at t=500ms
+
+Scenario: A breach shorter than the confirmation duration does not fire
+  Given profit falls below the floor at t=0ms and recovers at t=300ms
+  Then no close fires and the elapsed breach time is cleared on the recovery
+
+Scenario: An invalid evaluation CLEARS the elapsed time, never pauses it
+  Given profit is below the floor from t=0ms onward
+  And the evaluation at t=250ms is invalid
+  Then no close fires at t=500ms
+  And the close fires at t=1000ms
+
+Scenario: Confirmation of zero fires on the first valid breach
+  Given tp_confirmation_ms is 0 and profit is below the floor at t=0ms
+  Then CloseEntry runs with initiator "take_profit" at t=0ms
+
+Scenario: The projection is not re-folded per evaluation (TPF-03c)
+  Given an armed floor and an event log that does not change
+  When 20 evaluation passes run
+  Then the projection fold is invoked at most once
+
+Scenario: An armed floor that cannot be evaluated is surfaced (TPF-03d)
+  Given an armed floor whose entry has an open side that cannot be fully marked
+  When that condition persists for exit_unevaluable_alert_s
+  Then an RSK-06 critical alert names the entry and the reason
+  And the card shows the exit as unevaluable, distinct from armed-and-healthy
+
+Scenario: A throwing evaluator alerts, it does not merely log (NFR-08a)
+  Given the exit evaluation pass raises
+  Then a CRITICAL alert is raised naming the error
+  And repeat alerts for the same error are rate-limited to one per exit_unevaluable_alert_s
+  And the evaluation loop survives the exception
+
+Scenario: Asymmetric freshness, conservative-only (TPF-03f)
+  Given a short leg mark fresher than max_quote_age_ms and a long leg mark 20 seconds old
+  Then the entry is evaluable and the stale long is taken at its CONSERVATIVE value
+  And the evaluation records that a stale long mark was used
+  And a short leg staler than max_quote_age_ms makes the entry unevaluable
+  And a long leg older than exit_long_leg_max_age_ms makes the entry unevaluable
+
+Scenario: One entry's failure never blinds the others (TPF-03g)
+  Given entries A, B and C each with an armed floor, all breached
+  And evaluating A raises
+  Then B and C are still evaluated in that same pass and both fire
+  And the failure is alerted naming entry A specifically
+
+Scenario: The retired count key is rejected
+  Given a config containing tp_confirmation_evals
+  Then the config loader REJECTS it
+```
+
+**TC-TPT-02** — TPT-04 parity on the rising edge (v1.94)
+```gherkin
+Scenario: A target is caught on a sub-minute spike
+  Given an armed target of 60 percent on an entry with net credit 4.00
+  And profit rises above the target at t=0ms and falls back at t=700ms
+  Then CloseEntry runs with initiator "take_profit_target" at t=500ms
+
+Scenario: The disarm still wins at any cadence
+  Given an entry whose put stop has filled
+  And profit rises above the armed target
+  Then no close fires
+```
+
 ## Traceability matrix
 
 | Rule/Edge | Tests | | Rule/Edge | Tests |
@@ -1934,7 +2004,8 @@ Scenario: Alert sinks are wired and thrown evaluations are heard (NFR-08)
 | ENT-09b (manual floors) | TC-ENT-09 | | | |
 | STK-10 (baseline v1.55) | TC-STK-09 | | ENT-08/09 (baseline capture) | TC-STK-09 |
 | NLE-01→07 | TC-NLE-01→07 | | UI-13/14/15 | TC-NLE-07, TC-STK-02, TC-TPF-01 |
-| TPF-01→09 | TC-TPF-01→08 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08 |
+| TPF-01→09 (incl. 03a–f) | TC-TPF-01→09 | | EC-TPF-01→05 | TC-TPF-02/03/05/07/08/09 |
+| TPT-04 (v1.94) / NFR-08a | TC-TPT-02, TC-TPF-09 | | | |
 | CLS-01→06 | TC-CLS-01→04, TC-CLS-06, TC-CLS-07, TC-TPF-04 | | UI-16 / UC-14 | TC-CLS-02 |
 | ORD-08 | TC-ORD-06 | | DCY-01→04 | TC-DCY-01→04 |
 | ORD-09 | TC-ORD-07 | | STP-01 (qty invariant) | TC-STP-04 |

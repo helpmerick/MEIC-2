@@ -1,6 +1,6 @@
 # 12 — How It Works (plain-English operations guide, DOC)
 
-**v1.93 (operator-commissioned 2026-07-15; current through spec v1.93).** A complete, non-technical
+**v1.94 (operator-commissioned 2026-07-15; current through spec v1.94).** A complete, non-technical
 explanation of everything the bot can do — from composing a trade, arming,
 entering the password, through an entry firing, to how every watchdog and
 process protects the position — written so a non-technical reader understands
@@ -67,7 +67,7 @@ exactly what is happening and why.
 
 ---
 
-# THE GUIDE (ratified content, v1.93 — describes spec v1.93; DOC-05 stamp)
+# THE GUIDE (ratified content, v1.94 — describes spec v1.94; DOC-05 stamp)
 
 ## The master flowchart
 
@@ -547,8 +547,17 @@ gives back more than that (TPF-01). The **target** (TPT) closes a trade once
 profit rises up to a level the operator chose: on the same trade, arming a
 60% target means the trade closes once it could be closed for a debit of
 $1.60 or less — locking in at least $240 of the $400 collected (TPT-01,
-TPT-06). Both are evaluated by the bot watching live prices, not resting as
-orders at the broker — which the dashboard must say plainly, because unlike
+TPT-06). Both are watched continuously against the live price stream — several times a
+second, not once a minute — so a brief dip or spike is actually seen; a
+trigger needs the level to hold for a moment rather than a single flickering
+print. Two honest limits, though. **A floor is a giveback control, not a
+guaranteed exit price:** it decides *when* to start closing, and the close
+itself still walks the market, so on a fast move you can end up worse than
+the level you set — your broker-resting stops remain the risk control; the
+floor is a profit control. And if the bot ever cannot price a position (a
+leg goes unquoted), an armed floor is flagged as *unevaluable* and you're
+told — it never quietly reads as "not breached". Both are evaluated by the
+bot watching live prices, not resting as orders at the broker — which the dashboard must say plainly, because unlike
 the stop-loss, if the bot itself isn't running, neither one can fire (TPF-03,
 TPT-04). The moment any short actually stops out, that trade's target
 disarms permanently — the target exists for the plan going as intended, not
@@ -827,7 +836,7 @@ worst and block" (CAL-07; contrast with DAT-04a).
 
 ---
 
-# GETTING STARTED (ratified content, v1.93 — describes spec v1.93 and the build's true run procedure; DOC-05 stamp)
+# GETTING STARTED (ratified content, v1.94 — describes spec v1.94 and the build's true run procedure; DOC-05 stamp)
 
 ## 1. Prerequisites, and how this build actually runs
 
