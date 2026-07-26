@@ -560,7 +560,8 @@ def test_fill_legs_parses_the_futures_option_symbol_layout_via_instrument_type()
     futures-option symbol layout, never the equity OCC column-12 slice."""
     leg = SimpleNamespace(
         instrument_type="Future Option", symbol=ES_FUT_SYM, action="Sell to Open",
-        quantity=D("1"), fills=[SimpleNamespace(fill_price=D("12.50"), quantity=D("1"))])
+        quantity=D("1"), remaining_quantity=D("0"),
+        fills=[SimpleNamespace(fill_price=D("12.50"), quantity=D("1"))])
     order = SimpleNamespace(id="999", legs=[leg], status="Filled")
 
     legs = asyncio.run(_adapter_with_live_orders(order).fill_legs("999"))
@@ -579,7 +580,7 @@ def test_fill_legs_equity_path_is_untouched_by_instrument_type_dispatch():
     via the OCC column-12 convention."""
     leg = SimpleNamespace(
         symbol="SPXW  260721P05990000", action="Sell to Open",
-        quantity=D("2"), fills=None)
+        quantity=D("2"), remaining_quantity=D("0"), fills=None)
     order = SimpleNamespace(id="1", legs=[leg], status="Filled")
 
     legs = asyncio.run(_adapter_with_live_orders(order).fill_legs("1"))
@@ -599,7 +600,7 @@ def test_fill_legs_futures_put_with_no_instrument_type_is_never_misread_as_a_cal
     assert put_sym[12:13] == " "   # the trap: the equity slice would say "C" here
     leg = SimpleNamespace(   # NO instrument_type attribute at all
         symbol=put_sym, action="Sell to Open",
-        quantity=D("1"), fills=None)
+        quantity=D("1"), remaining_quantity=D("0"), fills=None)
     order = SimpleNamespace(id="7", legs=[leg], status="Filled")
 
     legs = asyncio.run(_adapter_with_live_orders(order).fill_legs("7"))
@@ -611,7 +612,7 @@ def test_fill_legs_fails_closed_on_an_ambiguous_leg_symbol_with_no_instrument_ty
     """FIX 2: an unrecognised symbol shape with no instrument_type RAISES
     (fail closed) rather than defaulting to the equity column slice, which
     could silently misread the right."""
-    leg = SimpleNamespace(symbol="WEIRD", action="Sell to Open", quantity=D("1"), fills=None)
+    leg = SimpleNamespace(symbol="WEIRD", action="Sell to Open", quantity=D("1"), remaining_quantity=D("0"), fills=None)
     order = SimpleNamespace(id="8", legs=[leg], status="Filled")
 
     with pytest.raises(ValueError, match="cannot determine option right"):
@@ -624,7 +625,7 @@ def test_fill_legs_equity_option_with_explicit_instrument_type_stays_on_the_occ_
     column-12 slice, exactly as before."""
     leg = SimpleNamespace(
         instrument_type="Equity Option", symbol="SPXW  260721C06060000",
-        action="Buy to Open", quantity=D("1"), fills=None)
+        action="Buy to Open", quantity=D("1"), remaining_quantity=D("0"), fills=None)
     order = SimpleNamespace(id="9", legs=[leg], status="Filled")
 
     legs = asyncio.run(_adapter_with_live_orders(order).fill_legs("9"))

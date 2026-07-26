@@ -1,0 +1,261 @@
+{
+  "recorded_at": "2026-07-26T15:40:17.437433+00:00",
+  "what": "ENT-11(3) evidence capture: the PRODUCTION shape of BrokerGateway.positions() -- the primitive the per-leg resolver's authority rests on. v2.01 made this capture BLOCKING on the resolver build.",
+  "captured_via": "TastytradeAdapter.positions() -> Account.get_positions(session)",
+  "environment": "PRODUCTION, read-only. Session + Account.get + Account.get_positions (a GET). No order was built, submitted, replaced, cancelled or dry-run.",
+  "account_number": "5WZ63684",
+  "sdk_type": "tastytrade.account.CurrentPosition",
+  "count_returned": 13,
+  "curation_note": "9 of the operator's unrelated single-name option/equity positions are omitted from `observation` below; they carry no symbology or shape information the retained rows do not. NOTHING about the payload's shape, field set, or types is redacted -- `field_shape` and `findings` are derived from all 13 rows. The retained rows are the ones that carry evidence: both SPXW rows (the FOREIGN-collision vector), one non-SPX equity option (root-padding width variation), one Equity and one Cryptocurrency (non-option instrument types sharing the same list).",
+  "field_shape": {
+    "keys_identical_across_all_13_rows": true,
+    "keys": [
+      "account_number",
+      "average_daily_market_close_price",
+      "average_open_price",
+      "average_yearly_market_close_price",
+      "close_price",
+      "cost_effect",
+      "created_at",
+      "deliverable_type",
+      "expires_at",
+      "fixing_price",
+      "instrument_type",
+      "is_frozen",
+      "is_suppressed",
+      "mark",
+      "mark_price",
+      "multiplier",
+      "quantity",
+      "quantity_direction",
+      "realized_day_gain",
+      "realized_day_gain_date",
+      "realized_today",
+      "realized_today_date",
+      "restricted_quantity",
+      "symbol",
+      "underlying_symbol",
+      "updated_at"
+    ],
+    "note": "Values below are rendered as strings by the capture; the SDK types them Decimal (quantity, prices, multiplier, restricted_quantity), InstrumentType enum (instrument_type), datetime (created_at, updated_at, expires_at). `quantity` is a Decimal, never an int."
+  },
+  "findings": {
+    "SYMBOL_BYTE_IDENTITY_CONFIRMED": {
+      "claim": "A broker position symbol matches a journaled CondorFilled.legs symbol byte-for-byte for the equity-option (SPXW) path.",
+      "evidence": {
+        "journaled_leg_symbol": "SPXW  260710C07565000",
+        "broker_position_symbol": "SPXW  261231C08010000",
+        "journaled_distinct_symbols_in_state_db": 12,
+        "all_journaled_lengths": [
+          21
+        ],
+        "all_broker_equity_option_lengths": [
+          21
+        ],
+        "root_field": "left-justified, space-padded to 6 -- 'SPXW  ' in BOTH; 'SPY   ' (3+3) and 'BE    ' (2+4) prove the padding is to width 6, not a fixed suffix",
+        "layout": "root(6) + YYMMDD(6) + C|P(1) + strike*1000 zero-padded(8) = OCC-21"
+      },
+      "consequence": "The v2.01 failure direction -- resolver returns TERMINAL_NO_POSITION for a leg we HOLD, ORD-12 refuses the close, and it presents as a take-profit that never fires -- is RULED OUT for SPX/SPXW. It remains OPEN for /ES (see UNOBSERVED below)."
+    },
+    "QUANTITY_IS_UNSIGNED": {
+      "claim": "`quantity` carries NO direction. Long and short both return a positive Decimal; direction lives in the separate `quantity_direction` field ('Long' | 'Short').",
+      "evidence": [
+        {
+          "symbol": "SPXW  261231C08010000",
+          "quantity": "1",
+          "quantity_direction": "Short"
+        },
+        {
+          "symbol": "SPXW  261231C08000000",
+          "quantity": "1",
+          "quantity_direction": "Long"
+        }
+      ],
+      "consequence": "A resolver that reads `quantity` alone cannot tell a short leg from a long one. Sign must come from `quantity_direction`, never from the number."
+    },
+    "FOREIGN_SPX_LEGS_ARE_PRESENT_TODAY": {
+      "claim": "The production account ALREADY holds SPXW positions that are not the bot's -- a far-dated operator call spread.",
+      "evidence": [
+        "SPXW  261231C08010000 (Short)",
+        "SPXW  261231C08000000 (Long)"
+      ],
+      "consequence": "The resolver must discriminate on the FULL OCC symbol (which encodes the expiration). Any match on `underlying_symbol` alone, or on root+right, would collide with the operator's own book. This is OWN-01/OWN-03's quarantine case, present in live data."
+    },
+    "MIXED_INSTRUMENT_TYPES_SHARE_THE_LIST": {
+      "claim": "positions() returns Equity and Cryptocurrency rows alongside Equity Option rows, in one unfiltered list.",
+      "evidence": {
+        "instrument_types_held": [
+          "Cryptocurrency",
+          "Equity",
+          "Equity Option"
+        ],
+        "non_occ_symbols": [
+          "ETH/USD",
+          "JOBY"
+        ]
+      },
+      "consequence": "Any iteration over positions() must tolerate rows whose `symbol` is not an OCC-21 string and whose `expires_at` is null. Parsing every row as an option would raise on the operator's stock and crypto."
+    },
+    "RESTRICTED_QUANTITY_EXISTS": {
+      "claim": "Each row carries `restricted_quantity` separately from `quantity`.",
+      "evidence": {
+        "values_observed": [
+          "0",
+          "0.0"
+        ]
+      },
+      "consequence": "Observed zero everywhere today, so its non-zero behaviour is UNOBSERVED. The resolver must not silently assume quantity == closeable quantity."
+    }
+  },
+  "unobserved_residual": {
+    "FUTURES_OPTION_SYMBOLOGY": "No /ES position is held, so the futures-option symbol format AS RETURNED BY positions() is still unobserved. The only recorded futures-option symbol is from a 2026-07-21 PROD instrument probe ('./ESU6 E3BN6 260721C7185'), which is the FutureOption instrument's symbol, NOT a positions() row. Per ENT-11(2)/NFR-09 the resolver must therefore return UNKNOWN -- never TERMINAL_NO_POSITION -- for any instrument type it has not observed.",
+    "NON_ZERO_RESTRICTED_QUANTITY": "Never seen; see findings.RESTRICTED_QUANTITY_EXISTS."
+  },
+  "observation": [
+    {
+      "__type__": "tastytrade.account.CurrentPosition",
+      "account_number": "5WZ63684",
+      "symbol": "SPY   260728C00741000",
+      "instrument_type": "Equity Option",
+      "underlying_symbol": "SPY",
+      "quantity": "1",
+      "quantity_direction": "Long",
+      "close_price": "2.51",
+      "average_open_price": "5.01",
+      "multiplier": "100.0",
+      "cost_effect": "Credit",
+      "is_suppressed": false,
+      "is_frozen": false,
+      "realized_day_gain": "0.0",
+      "realized_today": "0.0",
+      "created_at": "2026-07-23 14:06:07.980000+00:00",
+      "updated_at": "2026-07-23 14:06:09.543000+00:00",
+      "mark": null,
+      "mark_price": null,
+      "restricted_quantity": "0",
+      "expires_at": "2026-07-28 20:15:00+00:00",
+      "fixing_price": null,
+      "deliverable_type": null,
+      "average_yearly_market_close_price": "5.01",
+      "average_daily_market_close_price": "2.51",
+      "realized_day_gain_date": "2026-07-23",
+      "realized_today_date": "2026-07-23"
+    },
+    {
+      "__type__": "tastytrade.account.CurrentPosition",
+      "account_number": "5WZ63684",
+      "symbol": "SPXW  261231C08010000",
+      "instrument_type": "Equity Option",
+      "underlying_symbol": "SPX",
+      "quantity": "1",
+      "quantity_direction": "Short",
+      "close_price": "96.87",
+      "average_open_price": "168.18",
+      "multiplier": "100.0",
+      "cost_effect": "Debit",
+      "is_suppressed": false,
+      "is_frozen": false,
+      "realized_day_gain": "0.0",
+      "realized_today": "0.0",
+      "created_at": "2026-05-08 13:30:02.944000+00:00",
+      "updated_at": "2026-06-09 20:08:27.276000+00:00",
+      "mark": null,
+      "mark_price": null,
+      "restricted_quantity": "0",
+      "expires_at": "2026-12-31 21:00:00+00:00",
+      "fixing_price": null,
+      "deliverable_type": null,
+      "average_yearly_market_close_price": "168.18",
+      "average_daily_market_close_price": "96.87",
+      "realized_day_gain_date": "2026-06-09",
+      "realized_today_date": "2026-06-09"
+    },
+    {
+      "__type__": "tastytrade.account.CurrentPosition",
+      "account_number": "5WZ63684",
+      "symbol": "SPXW  261231C08000000",
+      "instrument_type": "Equity Option",
+      "underlying_symbol": "SPX",
+      "quantity": "1",
+      "quantity_direction": "Long",
+      "close_price": "99.73",
+      "average_open_price": "171.68",
+      "multiplier": "100.0",
+      "cost_effect": "Credit",
+      "is_suppressed": false,
+      "is_frozen": false,
+      "realized_day_gain": "0.0",
+      "realized_today": "0.0",
+      "created_at": "2026-05-08 13:30:03.098000+00:00",
+      "updated_at": "2026-06-09 20:08:27.268000+00:00",
+      "mark": null,
+      "mark_price": null,
+      "restricted_quantity": "0",
+      "expires_at": "2026-12-31 21:00:00+00:00",
+      "fixing_price": null,
+      "deliverable_type": null,
+      "average_yearly_market_close_price": "171.68",
+      "average_daily_market_close_price": "99.73",
+      "realized_day_gain_date": "2026-06-09",
+      "realized_today_date": "2026-06-09"
+    },
+    {
+      "__type__": "tastytrade.account.CurrentPosition",
+      "account_number": "5WZ63684",
+      "symbol": "ETH/USD",
+      "instrument_type": "Cryptocurrency",
+      "underlying_symbol": "ETH/USD",
+      "quantity": "0.09367686",
+      "quantity_direction": "Long",
+      "close_price": "1884.555",
+      "average_open_price": "3308.385",
+      "multiplier": "1.0",
+      "cost_effect": "Credit",
+      "is_suppressed": false,
+      "is_frozen": false,
+      "realized_day_gain": "0.0",
+      "realized_today": "0.0",
+      "created_at": "2026-01-16 12:38:17.398000+00:00",
+      "updated_at": "2026-01-16 12:38:19.187000+00:00",
+      "mark": null,
+      "mark_price": null,
+      "restricted_quantity": "0.0",
+      "expires_at": null,
+      "fixing_price": null,
+      "deliverable_type": null,
+      "average_yearly_market_close_price": "3308.385",
+      "average_daily_market_close_price": "1884.555",
+      "realized_day_gain_date": "2026-01-16",
+      "realized_today_date": "2026-01-16"
+    },
+    {
+      "__type__": "tastytrade.account.CurrentPosition",
+      "account_number": "5WZ63684",
+      "symbol": "JOBY",
+      "instrument_type": "Equity",
+      "underlying_symbol": "JOBY",
+      "quantity": "200",
+      "quantity_direction": "Long",
+      "close_price": "6.93",
+      "average_open_price": "11.31",
+      "multiplier": "1.0",
+      "cost_effect": "Credit",
+      "is_suppressed": false,
+      "is_frozen": false,
+      "realized_day_gain": "0.0",
+      "realized_today": "0.0",
+      "created_at": "2025-11-26 18:34:56.681000+00:00",
+      "updated_at": "2026-06-09 19:45:12.687000+00:00",
+      "mark": null,
+      "mark_price": null,
+      "restricted_quantity": "0",
+      "expires_at": null,
+      "fixing_price": null,
+      "deliverable_type": null,
+      "average_yearly_market_close_price": "11.31",
+      "average_daily_market_close_price": "6.93",
+      "realized_day_gain_date": "2026-06-09",
+      "realized_today_date": "2026-06-09"
+    }
+  ]
+}

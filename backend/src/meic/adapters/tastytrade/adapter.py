@@ -221,6 +221,103 @@ _KNOWN_ORDER_STATUS_TOKENS = frozenset({
 })
 
 
+# ENT-11(9) (v1.97/v1.98, operator-ratified) -- FILLED quantity is DERIVED,
+# BOUNDED, and ADVISORY.
+#
+# THE DEFECT: `fill_legs` reported each leg's ORDERED `quantity`. A 2-lot
+# condor that filled 1 therefore journalled qty=2, so a later close acted on 2
+# against a 1-lot position -- and the surplus contract is a BUY TO OPEN, which
+# is exactly the incident ORD-12 exists to prevent.
+#
+# THE DERIVATION: `filled = quantity - remaining_quantity`. Both fields are
+# present on every leg of every RECORDED observation, at every status we have
+# actually seen, so this rests on observed data rather than an assumed payload
+# shape. No recorded observation contains a FILLED order (every one sits at
+# Received/Routed/Live with `"fills": []`), which is precisely why the fills
+# array is NOT used here -- ENT-11(9) forbids building a predicate on a shape
+# nobody has seen.
+#
+# THE BOUNDARY (mandatory, v1.97(2)): the derivation is trusted ONLY where the
+# status is FILL-CONSISTENT -- i.e. where `remaining_quantity` can only have
+# been reduced by FILLING. Where it may have been reduced by CANCELLATION the
+# answer is UNKNOWN, never a quantity: a cancelled 1-lot reports
+# remaining 0, so `1 - 0 = 1` would read as FULLY FILLED when nothing filled at
+# all -- the Buy-to-Open direction again, arrived at from the opposite side.
+# `partially removed` is in the untrusted set (v1.98) because a partial
+# REMOVAL reduces `remaining` by exactly the same mechanism as a cancellation
+# and the derivation cannot tell the two apart.
+#
+# NON-CONTRADICTION (pinned, v1.98): `partially removed` is WORKING for the
+# LIVENESS question (NFR-09, `_WORKING_ORDER_DEAD_STATUSES` above -- a partially
+# removed stop can still carry a live remaining quantity worth protecting) and
+# UNKNOWN for the FILL-DERIVATION question here. Different questions, different
+# answers, both correct -- NFR-09's own discipline applied to itself.
+#
+# ADVISORY ONLY (v1.97(3)): this value may never decide a close. ENT-11(3)
+# ranks the evidence -- broker POSITIONS decide what and how much may be
+# closed; order/fill feeds are advisory. A wrong derivation must be able to
+# produce a wrong REPORT (visible and correctable) and never a wrong ORDER.
+_FILL_DERIVATION_UNTRUSTED_STATUSES = frozenset({
+    "cancelled", "rejected", "expired", "removed", "partially removed",
+})
+
+
+class FillQuantityUnknown(RuntimeError):
+    """ENT-11(9): the FILLED quantity cannot be derived, in EITHER direction.
+
+    Raised rather than returned, per v1.91's "refusals raise, never return a
+    sentinel": every silent alternative is a lie the caller cannot see. An
+    empty tuple would assert "nothing filled" (leaving a real
+    cancelled-after-partial position with no journalled legs and therefore no
+    stops); the ordered quantity would assert "fully filled" (the surplus
+    Buy-to-Open). The honest answer is that we do not know.
+
+    OUTSTANDING (v1.97(4)): the cancelled-after-partial case CANNOT be narrowed
+    until its raw payload is recorded as an observation -- the ratified capture
+    requirement. Until then this exception is the correct answer for it, and
+    TC-ENT-11's v1.91 line "a cancelled-after-partial order still reports its
+    filled legs" is not yet satisfiable from observed data: the only field that
+    could satisfy it is the per-leg `fills` array, which is empty in every
+    recorded observation we hold."""
+
+
+def _fill_derivation_trusted(status_token: str) -> bool:
+    """ENT-11(9)(b): may `quantity - remaining_quantity` be read as FILLED?
+
+    True only for a status where `remaining_quantity` can have been reduced
+    solely by filling. An UNRECOGNISED status is NOT trusted -- unobserved
+    means unassumed in BOTH directions, so a status we have never seen can
+    neither prove a fill nor disprove one."""
+    return (status_token in _KNOWN_ORDER_STATUS_TOKENS
+            and status_token not in _FILL_DERIVATION_UNTRUSTED_STATUSES)
+
+
+def _derive_filled_qty(leg, status_token: str) -> int | None:
+    """ENT-11(9): the leg's FILLED quantity, or None for UNKNOWN.
+
+    None means UNKNOWN -- NEVER zero and NEVER "fully filled". Returned when
+    the status is not fill-consistent, when either field is absent, or when
+    either is unparsable. Callers must treat None as "cannot say", not as
+    "nothing filled": a cancelled-after-partial order carries a REAL partial
+    position, and reporting it as nothing filled would leave that position
+    with no journalled legs and therefore no stops (ORD-09)."""
+    if not _fill_derivation_trusted(status_token):
+        return None
+    ordered_raw = getattr(leg, "quantity", None)
+    remaining_raw = getattr(leg, "remaining_quantity", None)
+    if ordered_raw is None or remaining_raw is None:
+        return None
+    try:
+        ordered = int(Decimal(str(ordered_raw)))
+        remaining = int(Decimal(str(remaining_raw)))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    filled = ordered - remaining
+    if filled < 0 or filled > ordered:
+        return None  # incoherent pair -- refuse to guess which field is wrong
+    return filled
+
+
 def _normalize_status_token(raw) -> str:
     """Fold every wire/enum shape of a broker order status onto one comparable
     token, e.g. `OrderStatus.IN_FLIGHT`, `"In Flight"`, `"in_flight"` all ->
@@ -695,15 +792,31 @@ class TastytradeAdapter:
         if order is None:
             return ()
 
+        status_token = _normalize_status_token(getattr(order, "status", ""))
+
         legs: list[FilledLeg] = []
         for leg in getattr(order, "legs", ()) or ():
             action = str(getattr(leg, "action", "")).lower().replace(" ", "_").split(".")[-1]
             symbol = str(leg.symbol)
+            # ENT-11(9) (v1.97/v1.98): FILLED, never ORDERED. UNKNOWN (None)
+            # is refused rather than coerced -- reporting a quantity we cannot
+            # derive is how a 2-lot-filled-1 became a 2-lot close whose
+            # surplus was a Buy to Open.
+            filled_qty = _derive_filled_qty(leg, status_token)
+            if filled_qty is None:
+                raise FillQuantityUnknown(
+                    f"ENT-11(9): cannot derive FILLED quantity for leg {symbol} on order "
+                    f"{order_id} at status {status_token!r} -- quantity/remaining_quantity "
+                    "absent, unparsable, incoherent, or the status is one where remaining "
+                    "may have been reduced by cancellation rather than filling. UNKNOWN is "
+                    "never zero and never fully-filled; the caller must not infer either.")
+            if filled_qty == 0:
+                continue        # this leg genuinely did not fill -- not a fill to report
             legs.append(FilledLeg(
                 symbol=symbol,                       # verbatim, never reconstructed
                 right=_leg_right(symbol, getattr(leg, "instrument_type", None)),
                 role="short" if "sell_to_open" in action else "long",
-                qty=int(Decimal(str(getattr(leg, "quantity", 0)))),
+                qty=filled_qty,
                 price=self._allocated_price(leg),
             ))
         return tuple(legs)

@@ -315,6 +315,13 @@ ALLOWED_SUBMIT_MODULES = {
     "application/protect_position.py", "application/recover_long.py",
     "application/decay_watcher.py", "application/reconcile.py",
     "application/watchdog.py",
+    # ORD-12 (v1.90/v1.91): the exit guard is a BrokerGateway DECORATOR, not a
+    # new order-submission path. It ORIGINATES no order -- it forwards the
+    # caller's own intent to the wrapped broker, and its only other behaviour
+    # is to REFUSE. Reviewed and admitted deliberately, which is precisely what
+    # this list exists to force: had it been added silently, a wrapper sitting
+    # on the wire would have escaped review.
+    "composition/exit_guard.py",
 }
 
 

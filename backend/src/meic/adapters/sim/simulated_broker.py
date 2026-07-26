@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from meic.adapters.occ import simulated_fill_legs
+from meic.adapters.occ import leg_symbol, simulated_fill_legs
 from meic.application.cancel_taxonomy import ReplaceFilled, ReplaceTerminal
 from meic.application.order_intent import OrderIntent
 from meic.config.fee_model import FeeModel
@@ -109,6 +109,23 @@ class SimOrder:
     def stop_leg_key(self) -> str:
         """`short_put` / `short_call` — the mark key the pipeline feeds."""
         return "short_put" if self.intent.legs[0].right == "P" else "short_call"
+
+
+@dataclass(frozen=True)
+class SimPosition:
+    """One row of the simulator's `positions()`, field-for-field the shape the
+    live broker returns (ENT-11(4) parity; fields taken from the recorded PROD
+    capture). `quantity` is UNSIGNED and the sign lives in
+    `quantity_direction` -- the live broker reports `1` for both a long and a
+    short leg, and a fake that signed the number instead would let a resolver
+    pass its tests while being wrong against the real payload."""
+
+    symbol: str
+    instrument_type: str
+    quantity: Decimal
+    quantity_direction: str
+    restricted_quantity: Decimal
+    underlying_symbol: str
 
 
 class SimulatedBroker:
@@ -293,7 +310,60 @@ class SimulatedBroker:
         return [o for o in self._orders.values() if o.status == "WORKING"]
 
     async def positions(self):
-        return []  # projected from fills in paper; positions feed not simulated
+        """ENT-11(3)/(4): the positions the simulator's own FILLS imply,
+        reported in the SAME fields and types as the live adapter.
+
+        THE DEFECT THIS REPLACES: this returned `[]` unconditionally. Once
+        ORD-12 makes `positions()` the deciding evidence for whether an exit
+        may be placed, a broker that reports no positions REFUSES EVERY PAPER
+        EXIT -- so the paper marathon that is supposed to prove the close path
+        would instead prove nothing but the guard's own veto, and it would do
+        it while looking like a genuine failure of the exit logic.
+
+        ENT-11(4) (broker-primitive parity) is why the row SHAPE below is not
+        a convenient internal one: every fake MUST answer each broker primitive
+        identically to the live adapter, and four of the five defects that
+        motivated ENT-11 were invisible precisely because the fakes answered a
+        different question from the live adapter in the same method name. The
+        fields and semantics here are taken from the recorded PROD capture
+        (`tests/contract/observations/06-positions-prod-shape.json`):
+
+          * `symbol` -- the full OCC-21 string, never a shorthand;
+          * `quantity` -- an UNSIGNED Decimal (ENT-11(10)(b)): the live broker
+            reports 1 for both a long and a short;
+          * `quantity_direction` -- "Long" | "Short", where the sign actually
+            lives;
+          * `instrument_type` -- "Equity Option";
+          * `restricted_quantity` -- Decimal 0, matching every observed row.
+
+        A leg that has netted flat is OMITTED rather than reported at zero,
+        because the live payload contains no zero-quantity rows -- emitting one
+        would be a shape the resolver has never observed and would resolve
+        UNKNOWN (correctly, and uselessly)."""
+        net: dict[str, Decimal] = {}
+        for order in self._orders.values():
+            if order.status != "FILLED":
+                continue
+            for leg in order.intent.legs:
+                symbol = leg_symbol(order.intent, leg)
+                action = str(leg.action)
+                # Opening buys and closing buys both ADD; opening sells and
+                # closing sells both SUBTRACT. The action's open/close half
+                # says why, never how much or which way.
+                sign = Decimal("1") if action.startswith("buy_") else Decimal("-1")
+                net[symbol] = net.get(symbol, Decimal("0")) + sign * Decimal(leg.qty)
+        return [
+            SimPosition(
+                symbol=symbol,
+                instrument_type="Equity Option",
+                quantity=abs(signed),
+                quantity_direction="Long" if signed > 0 else "Short",
+                restricted_quantity=Decimal("0"),
+                underlying_symbol=symbol[:6].strip(),
+            )
+            for symbol, signed in sorted(net.items())
+            if signed != 0
+        ]
 
     async def fills_since(self, cursor):
         return [{"order_id": o.order_id, "price": str(o.fill_price)} for o in self._orders.values()
