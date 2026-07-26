@@ -40,6 +40,11 @@ Feature: TC-ENT-11
     Then a close acts on 1, never 2, and no surplus Buy-to-Open occurs
     And a cancelled-after-partial order still reports its filled legs
 
+  Scenario: Git state operations are single-step on a real-money tree (v2.03, NFR-10)
+    Then no documented procedure chains a state-changing git step onto an unverified prior step
+    And recovery procedures move files aside rather than deleting them
+    # Process rule; enforced by review and by the documented procedures, not by runtime code.
+
   Scenario: Liveness predicates fail toward present, never absent (v1.92, NFR-09)
     Given a broker order status the predicate does not recognise
     Then it resolves UNKNOWN and is logged loudly, never treated as gone
