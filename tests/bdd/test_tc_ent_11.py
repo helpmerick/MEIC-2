@@ -147,10 +147,14 @@ def _():
     hits = {p.name for p in BACKEND.rglob("*.py")
             if "TERMINAL_NO_POSITION" in p.read_text(encoding="utf-8")}
     # terminal_state PRODUCES the states; exit_guard CONSUMES them at the wire;
-    # close_entry CONSUMES the ExitWouldOpen refusal (ORD-12a's no-op branch).
-    # Nothing else may even mention the state -- a fourth file naming it is a
-    # new inference path until reviewed.
-    assert hits <= {"terminal_state.py", "exit_guard.py", "close_entry.py"}, hits
+    # close_entry CONSUMES the ExitWouldOpen refusal (ORD-12a's no-op branch);
+    # terminal_sweep is the resolver's RATIFIED CALLER (ENT-11(1)'s "every
+    # path calls the resolver" made literal -- it settles journal-finished
+    # entries on the resolver's verdict and contains no inference of its own;
+    # reviewed and admitted 2026-07-27, marathon day-1 catch). Anything else
+    # naming the state is a new inference path until reviewed here.
+    assert hits <= {"terminal_state.py", "exit_guard.py", "close_entry.py",
+                    "terminal_sweep.py"}, hits
 
 
 # --- UNKNOWN is first-class ---------------------------------------------------

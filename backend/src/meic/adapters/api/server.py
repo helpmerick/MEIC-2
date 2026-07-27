@@ -3492,6 +3492,24 @@ def live_app():
         # two callers (this loop and the order-event push consumer) that now
         # share that lock.
         try:
+            # ENT-11(1) terminal sweep (2026-07-27, marathon day-1 catch): the
+            # resolver's periodic caller. Settles entries the JOURNAL already
+            # shows finished (or expired) once the broker confirms flat on
+            # every leg -- ends the silent-armed-floor and expired-phantom
+            # class. ~60s cadence is right: it is reconcile-family work, not
+            # exit evaluation (TPF-03a: one owner per concern).
+            from datetime import date as _date
+
+            from meic.application.terminal_state import TerminalStateResolver
+            from meic.application.terminal_sweep import sweep_terminals
+
+            await sweep_terminals(
+                comp.events, TerminalStateResolver(comp.broker, alerts=alerts),
+                today=_date.today(), alerts=alerts,
+                at=comp.clock.now().isoformat())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("health tick: terminal sweep failed: %r", exc)
+        try:
             # EOD-03 (2026-07-11 wiring): the day-end order-audit sweep —
             # at/after the CALENDAR session close (13:00 on half days), once
             # per day, journal-gated. Runs BEFORE the settlement/reconcile
