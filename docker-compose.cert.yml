@@ -1,0 +1,43 @@
+# MEIC bot — CERT sandbox panel: THE PAPER-MARATHON RIG.
+#
+#   docker compose -f docker-compose.cert.yml up -d --build   # run
+#   docker compose -f docker-compose.cert.yml logs -f         # watch
+#   docker compose -f docker-compose.cert.yml down            # stop
+#
+# WHY THIS AND NOT paper_app: paper_app is the synthetic DEMO (compressed fake
+# day, invented quotes) — it cannot prove a floor against real marks. This is
+# the FULL live wiring (live_app) pointed at the tastytrade CERT sandbox:
+# real chain selection, real DXLink quotes, real order lifecycle, the ORD-12
+# guard against real positions() reads — and zero money. Same image as the
+# live panel, so what the marathon proves is byte-identical to what prod runs.
+#
+# MEIC_LIVE_IS_TEST=true (set here, overriding .env) selects the TT_CERT_*
+# credentials; the production opt-in is irrelevant on this container.
+#
+# SEPARATE volume: the cert journal must NEVER mix with the prod journal in
+# meic-live-data. Port 8020 so it runs BESIDE the live panel on 8010.
+
+services:
+  meic-cert:
+    build:
+      context: .
+      dockerfile: Dockerfile.live
+    image: meic-bot-live:latest
+    container_name: meic-panel-cert
+    env_file:
+      - .env
+    environment:
+      MEIC_LIVE_IS_TEST: "true"     # CERT, regardless of what .env says
+    ports:
+      - "127.0.0.1:8020:8000"       # NFR-06: localhost only
+    volumes:
+      - meic-cert-data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  meic-cert-data:
