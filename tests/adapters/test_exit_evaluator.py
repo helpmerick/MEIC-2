@@ -446,9 +446,16 @@ def test_nfr04_evaluate_exits_once_fires_off_a_live_hub_mark():
     assert commands.closed == [("e1", "take_profit")]   # 2nd confirmation fires, off the LIVE marks
 
 
-def test_nfr04_evaluate_exits_once_empty_hub_is_byte_identical_to_pre_wiring():
-    """STRICTLY NO WORSE proof, mirroring
-    `test_floor_fires_after_confirmation_evals_via_close_as` exactly."""
+def test_tpf03f_empty_hub_now_fails_closed_on_the_exit_path():
+    """SUPERSEDED PIN, updated to the ratified rule it predates. This used to
+    prove "empty hub is byte-identical to pre-wiring" -- snapshot fallback for
+    every leg. TPF-03f (v1.94) REJECTED that for the exit path: a hub that is
+    wired but has no fresh mark for a SHORT leg means the entry is
+    UNEVALUABLE (fail-closed on the leg that dominates cost-to-close), never
+    a silent evaluation against a minute-old snapshot price. So with a live
+    hub and no marks, NOTHING fires -- and per TPF-03d the condition is
+    surfaced rather than silent. The no-hub-at-all path (paper) keeps the
+    snapshot behaviour, pinned in test_tpf_03f_asymmetric_freshness.py."""
     events = [CondorFilled(entry_id="e1", net_credit=D("3.60"), legs=_legs())]
     put_marks = {D("7535"): Mark(bid=D("3.00"), ask=D("3.10")), D("7510"): Mark(bid=D("0.02"), ask=D("0.03"))}
     call_marks = {D("7540"): Mark(bid=D("0.05"), ask=D("0.06")), D("7565"): Mark(bid=D("0.01"), ask=D("0.02"))}
@@ -459,6 +466,7 @@ def test_nfr04_evaluate_exits_once_empty_hub_is_byte_identical_to_pre_wiring():
     hub = _FakeHub({})
 
     asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_NOW)))
-    assert commands.closed == []
     asyncio.run(_evaluate_exits_once(comp, snap, monitor, commands, hub=hub, clock=_FakeClock(_later(_NOW))))
-    assert commands.closed == [("e1", "take_profit")]
+    assert commands.closed == [], (
+        "a wired hub with no fresh short mark must be UNEVALUABLE, not evaluated "
+        "against the snapshot (TPF-03f)")

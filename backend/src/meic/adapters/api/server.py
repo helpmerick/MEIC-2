@@ -379,6 +379,20 @@ def _exit_eval_interval_ms(env: dict[str, str]) -> int:
     return raw if 100 <= raw <= 5000 else 250
 
 
+def _exit_long_leg_max_age_ms(env: dict[str, str]) -> int:
+    """TPF-03f `exit_long_leg_max_age_ms` (doc 06: 3000-120000, default 30000)
+    -- the LONG leg's extended freshness budget on the exit path. Short legs
+    use `max_quote_age_ms`, fail-closed; a far-OTM 0DTE long routinely goes
+    quiet and moves profit% very little, so it MAY be older -- but a stale
+    long is always taken at its CONSERVATIVE value, so staleness can never
+    inflate computed profit (error direction: fire EARLY, never late)."""
+    try:
+        raw = int(env.get("MEIC_EXIT_LONG_LEG_MAX_AGE_MS", "30000"))
+    except ValueError:
+        return 30000
+    return raw if 3000 <= raw <= 120000 else 30000
+
+
 def _exit_unevaluable_alert_s(env: dict[str, str]) -> int:
     """TPF-03d / NFR-08a `exit_unevaluable_alert_s` (doc 06: range 5-600,
     default 60) — how long an armed exit may be unevaluable before an RSK-06
@@ -1261,6 +1275,84 @@ def _open_leg_symbols(events, snapshot) -> set[str]:
     return symbols
 
 
+class _ExitFreshness:
+    """TPF-03f per-pass carrier: the long-leg budget in, the audit trail out.
+
+    `stale_long_used` makes the approximation AUDITABLE (the rule requires
+    every evaluation that used a stale long mark be recorded); `reason` is
+    the TPF-03d surfacing text when a leg makes the entry unevaluable."""
+
+    def __init__(self, long_max_age_ms: int) -> None:
+        self.long_max_age_ms = long_max_age_ms
+        self.stale_long_used: list[str] = []
+        self.reason: str | None = None
+
+
+def _resolve_exit_leg_mid(occ_symbol, side, role, snapshot, strike, *,
+                          hub, now, max_quote_age_ms, freshness):
+    """TPF-03f: the EXIT path's mark resolution -- asymmetric, conservative-only.
+
+    A faster loop is only as live as its marks: `_resolve_leg_mid` falls back
+    to the REST snapshot (refreshed on the 60 s health tick), so a leg that
+    has not ticked recently could be evaluated against a minute-old price --
+    which makes the 250 ms cadence partly illusory. The ruling (v1.94,
+    Options A and B rejected):
+
+      * SHORT legs (they dominate cost-to-close): a fresh hub tick within
+        `max_quote_age_ms` or the entry is UNEVALUABLE -- never a silent
+        snapshot fallback. Fail-closed, surfaced per TPF-03d.
+      * LONG legs: a hub mark up to `exit_long_leg_max_age_ms` MAY be used,
+        but a stale one is taken at its CONSERVATIVE value -- min(hub,
+        snapshot) -- so staleness can NEVER inflate computed profit; the
+        error direction is always toward firing EARLY. Every such use is
+        recorded. A long older than the extended budget is UNEVALUABLE.
+      * A long with NO hub mark at all (never ticked since subscription -- a
+        quiet far-OTM wing) falls back to the snapshot, RECORDED: the outer
+        DAT-02 snapshot-staleness gate bounds its age, and a long is quiet
+        precisely when it is not moving; in the fast move where a floor
+        matters, the long ticks.
+
+    Only the exit evaluator calls this; the card/enricher paths keep
+    `_resolve_leg_mid` byte-identical (TPF-03f governs FAST evaluation)."""
+    side_chain = snapshot.put_side if side == "PUT" else snapshot.call_side
+    snapshot_mid = _leg_mid(side_chain, strike)
+    q = None
+    if hub is not None and now is not None:
+        streamer = _streamer_symbol(snapshot, occ_symbol, side)
+        if streamer:
+            q = hub.mark(streamer)
+    if hub is None or now is None:
+        # No live-mark wiring at all (paper without a hub, pre-NFR-04 caller):
+        # the snapshot IS the mark source and DAT-02's stale gate governs, as
+        # it always has. TPF-03f constrains the FAST path's freshness claims.
+        return snapshot_mid
+
+    if role == "short":
+        if q is not None and not q.is_stale(now, max_quote_age_ms):
+            return q.mid
+        freshness.reason = (f"short leg {occ_symbol} has no live mark within "
+                            f"{max_quote_age_ms}ms (TPF-03f: fail-closed on the leg "
+                            "that dominates cost-to-close)")
+        return None
+
+    # long leg
+    if q is not None:
+        if not q.is_stale(now, max_quote_age_ms):
+            return q.mid
+        if not q.is_stale(now, freshness.long_max_age_ms):
+            # CONSERVATIVE: the LOWER long mid -> higher cost-to-close -> lower
+            # profit -> the floor fires EARLY, never late. Recorded.
+            freshness.stale_long_used.append(str(occ_symbol))
+            candidates = [m for m in (q.mid, snapshot_mid) if m is not None]
+            return min(candidates) if candidates else None
+        freshness.reason = (f"long leg {occ_symbol} last ticked beyond the extended "
+                            f"{freshness.long_max_age_ms}ms budget (TPF-03f)")
+        return None
+    # quiet long -- never ticked: snapshot, recorded as such.
+    freshness.stale_long_used.append(f"{occ_symbol} (snapshot)")
+    return snapshot_mid
+
+
 def _resolve_leg_mid(occ_symbol: str | None, side: str, snapshot, strike: Decimal, *,
                      hub, now, max_quote_age_ms: int):
     """NFR-04 (2026-07-13): live-first mid resolution for one leg. `QuoteHub`
@@ -1406,7 +1498,8 @@ def _profit_pct_enricher(comp, snaps, hub=None, *, clock=None, max_quote_age_ms:
 
 
 def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000,
-                     stamps: dict[str, tuple] | None = None) -> dict[str, Decimal] | None:
+                     stamps: dict[str, tuple] | None = None,
+                     exit_freshness: "_ExitFreshness | None" = None) -> dict[str, Decimal] | None:
     """The current cost-to-close (short mid − long mid) for each still-OPEN
     side of entry `e` — the per-share input `domain.tpf.entry_profit_pct`/
     `entry_profit_amount` needs for their "unrealized P&L of open sides at
@@ -1460,12 +1553,28 @@ def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int =
         short_leg, long_leg = by_side[side].get("short"), by_side[side].get("long")
         if short_leg is None or long_leg is None:
             return None
-        short_mid, short_at = _resolve_leg_mid(
-            short_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(short_leg.symbol)),
-            hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
-        long_mid, long_at = _resolve_leg_mid(
-            long_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(long_leg.symbol)),
-            hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+        if exit_freshness is not None:
+            # TPF-03f: the EXIT path's asymmetric freshness. Card/enricher
+            # callers (exit_freshness=None) keep the pre-existing resolution
+            # byte-identical.
+            short_mid = _resolve_exit_leg_mid(
+                short_leg.symbol, side, "short", snapshot,
+                Decimal(_strike_from_symbol(short_leg.symbol)),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms,
+                freshness=exit_freshness)
+            long_mid = _resolve_exit_leg_mid(
+                long_leg.symbol, side, "long", snapshot,
+                Decimal(_strike_from_symbol(long_leg.symbol)),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms,
+                freshness=exit_freshness)
+            short_at = long_at = None
+        else:
+            short_mid, short_at = _resolve_leg_mid(
+                short_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(short_leg.symbol)),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+            long_mid, long_at = _resolve_leg_mid(
+                long_leg.symbol, side, snapshot, Decimal(_strike_from_symbol(long_leg.symbol)),
+                hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
         if short_mid is None or long_mid is None:
             return None
         out[side] = short_mid - long_mid
@@ -1474,7 +1583,8 @@ def _open_side_costs(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int =
     return out
 
 
-def _entry_profit_pct_now(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000):
+def _entry_profit_pct_now(e, snapshot, *, hub=None, now=None, max_quote_age_ms: int = 3000,
+                          exit_freshness: "_ExitFreshness | None" = None):
     """The shared TPF-01/TPT-01 evaluator, fed live marks — None (stale/
     unmarked/no-credit-yet) means "unknown", never a guess.
 
@@ -1488,7 +1598,8 @@ def _entry_profit_pct_now(e, snapshot, *, hub=None, now=None, max_quote_age_ms: 
 
     if snapshot is None or snapshot.stale:
         return None
-    open_costs = _open_side_costs(e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+    open_costs = _open_side_costs(e, snapshot, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms,
+                                  exit_freshness=exit_freshness)
     if open_costs is None:
         return None
     return entry_profit_pct(net_credit=e.net_credit, fees=e.fees, stop_fills=e.stop_fills,
@@ -1665,9 +1776,20 @@ async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, 
     # for the entry's underlying -> stale -> pause, never another chain.
     snap_e = _snap_for(snapshot, getattr(e, "underlying", "SPX"))
     stale = snap_e is None or snap_e.stale
+    # TPF-03f: the exit evaluator resolves marks under the ASYMMETRIC
+    # freshness rule -- shorts fail-closed at max_quote_age_ms, longs get the
+    # extended budget at their CONSERVATIVE value, every stale-long use
+    # recorded on the composition so the approximation stays auditable.
+    freshness = _ExitFreshness(getattr(comp, "exit_long_leg_max_age_ms", None)
+                               or _exit_long_leg_max_age_ms({}))
     profit_pct = None if stale else _entry_profit_pct_now(
-        e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms)
+        e, snap_e, hub=hub, now=now, max_quote_age_ms=max_quote_age_ms,
+        exit_freshness=freshness)
     entry_stale = stale or profit_pct is None
+    if freshness.stale_long_used:
+        comp.stale_long_marks_used = getattr(comp, "stale_long_marks_used", 0) + len(
+            freshness.stale_long_used)
+        comp.last_stale_long_mark = (entry_id, freshness.stale_long_used[-1])
 
     # TPF-03d: an armed exit that cannot be evaluated is SURFACED. An
     # unmarkable leg makes profit_pct None, which reads downstream as "no
@@ -1680,8 +1802,9 @@ async def _evaluate_one_entry(comp, entry_id, e, floors, targets, exit_monitor, 
         unevaluable_reason = ("the evaluation clock is not advancing -- no continuous "
                               "breach can accumulate, so nothing can ever confirm")
     elif entry_stale:
-        unevaluable_reason = ("the entry cannot be fully marked (stale snapshot, or an "
-                              "open side with no usable mark)")
+        unevaluable_reason = freshness.reason or (
+            "the entry cannot be fully marked (stale snapshot, or an "
+            "open side with no usable mark)")
     else:
         unevaluable_reason = ""
     surfaced = _exit_evaluability(comp).observe(
@@ -3185,6 +3308,7 @@ def live_app():
     # limiter built on first failure uses the OPERATOR's value, not the
     # import-time default.
     comp.exit_unevaluable_alert_s = _exit_unevaluable_alert_s(env)
+    comp.exit_long_leg_max_age_ms = _exit_long_leg_max_age_ms(env)  # TPF-03f
 
     commands = PanelCommands(comp, manual_entry=live["manual"],
                              preflight_checks=live["preflight_checks"],

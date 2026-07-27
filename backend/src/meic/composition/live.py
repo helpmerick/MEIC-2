@@ -31,6 +31,7 @@ from meic.application.run_trading_day import RunTradingDay
 from meic.application.working_entries import WorkingEntryOrders
 from meic.composition.close_assembly import DEFAULT_CLOSE_PRICE, assemble_close_inputs
 from meic.config.fee_model import FeeModel
+from meic.domain.ownership import OwnershipLedger
 from meic.domain.stop_policy import StopBasis
 from meic.domain.ticks import TickTable
 
@@ -106,7 +107,13 @@ class LiveComposition:
                                        close_entry=self._auto_flatten_entry)
         self.recover = RecoverLong(self.broker, self.clock, self.events, self.ticks,
                                    fee_model=self.fee_model)
+        # OWN-03a: ONE ledger, rebuilt from the journal so a restart
+        # restores provable ownership (REC-07) -- apply_fill finally has
+        # production call sites. Shared with CloseEntry so OWN-04's exit
+        # cap reads the same evidence the journal holds.
+        self.ledger = OwnershipLedger.from_events(self.events)
         self.close = CloseEntry(self.broker, self.events, alerts=self.alerts,  # NFR-08
+                                ledger=self.ledger,  # OWN-03a/OWN-04
                                 fee_model=self.fee_model, clock=self.clock)
         self.day = RunTradingDay(self.clock, self.state, self.execute, self.events,
                                  on_filled=self._on_filled)
@@ -201,6 +208,11 @@ class LiveComposition:
         return [ShortLeg(l.side, mids[l.side], Decimal("0.50"), symbol=l.symbol) for l in shorts]
 
     async def _on_filled(self, entry_id: str, condor, stop=None, fill_credit=None) -> None:
+        # OWN-03a: the fill is journaled by the ladder before this callback
+        # fires, so re-deriving here teaches the SHARED ledger the new legs
+        # (in place -- CloseEntry captured this object, NFR-11).
+        self.ledger.refresh_from_events(self.events)
+
         # RSK-04: record what this entry can lose, so later entries see the headroom.
         self.worst_case[entry_id] = ExecuteEntryAttempt.worst_case(condor)
         await self.protect.protect(

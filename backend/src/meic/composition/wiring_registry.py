@@ -154,6 +154,42 @@ REGISTRY: tuple[WiringEntry, ...] = (
                               and getattr(state, "exit_eval_error", None) is None),
     ),
     WiringEntry(
+        rule_ids=("OWN-03a",),
+        component="the shared OwnershipLedger (journal-derived, REC-07-restored)",
+        proof="comp.ledger is a real OwnershipLedger derived from the journal "
+              "(construction); AND comp.close._ledger is THAT SAME object -- the "
+              "identity proof is load-bearing (NFR-07a/NFR-11): apply_fill's "
+              "defect was never a missing class but ZERO production call sites, "
+              "so every own leg classified FOREIGN, and a CloseEntry holding a "
+              "different (empty) ledger would resurrect it invisibly. Pinned by "
+              "the OWN-03a assertions in tests/application/test_own03a_ledger.py.",
+        constructed=lambda state: type(getattr(
+            getattr(state, "composition", None), "ledger", None)).__name__ == "OwnershipLedger",
+        ticked=lambda state: (
+            lambda comp: comp is not None
+            and getattr(getattr(comp, "close", None), "_ledger", None) is getattr(comp, "ledger", None)
+            and comp.ledger is not None
+        )(getattr(state, "composition", None)),
+    ),
+    WiringEntry(
+        rule_ids=("TPF-03f",),
+        component="asymmetric exit-mark freshness (_resolve_exit_leg_mid)",
+        proof="comp.exit_long_leg_max_age_ms is bound from the operator's dial "
+              "(construction-time binding, NFR-11 -- an import-time default here "
+              "silently ignored the config, the limiter's own defect); AND the "
+              "exit evaluator's freshness path is reachable: _resolve_exit_leg_mid "
+              "exists and _evaluate_one_entry constructs an _ExitFreshness per "
+              "pass. Behaviour pinned by "
+              "tests/adapters/test_tpf_03f_asymmetric_freshness.py (fail-closed "
+              "short, conservative stale long, over-budget unevaluable).",
+        constructed=lambda state: isinstance(getattr(
+            getattr(state, "composition", None), "exit_long_leg_max_age_ms", None), int),
+        ticked=lambda state: (
+            lambda srv: hasattr(srv, "_resolve_exit_leg_mid")
+            and "_ExitFreshness(" in __import__("inspect").getsource(srv._evaluate_one_entry)
+        )(__import__("meic.adapters.api.server", fromlist=["x"])),
+    ),
+    WiringEntry(
         rule_ids=("NFR-08",),
         component="AlertRelay (the late-binding alert sink)",
         proof="app.state.composition.alerts is a real AlertRelay (construction); "
@@ -778,6 +814,16 @@ KNOWN_FALSE_POSITIVE_RULE_IDS: frozenset[str] = frozenset({
     # above, which matches its own defining line.
     "NFR-07a",
     "NFR-12",
+    # NFR-09 is a PREDICATE-SHAPE rule (deny-lists for liveness; unobserved
+    # means unassumed in both directions), not a runtime component. Its
+    # implementations ARE registered components: the STP-04a deny-list in
+    # working_orders, the ENT-11(9) fill-derivation boundary, and the
+    # resolver's UNKNOWN discipline. The audit it mandated (v1.93: positions /
+    # fills_since / find_matching_order) is COMPLETE as of 2026-07-27:
+    # positions() captured and pinned, fills_since corrected per the v2.00
+    # dispositions, find_matching_order audited clean (matches on our own
+    # stamped client id at its single seconds-after-submit call site).
+    "NFR-09",
 })
 
 

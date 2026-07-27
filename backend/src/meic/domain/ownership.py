@@ -39,6 +39,53 @@ class OwnershipLedger:
         fills say otherwise (the safe direction)."""
         return cls(_owned={str(k): int(v) for k, v in (snapshot or {}).items()})
 
+    @classmethod
+    def from_events(cls, events) -> "OwnershipLedger":
+        """OWN-03a: PROVABLE ownership, rebuilt from the journal (REC-07).
+
+        The defect this closes: `apply_fill` had ZERO production call sites,
+        so every ledger was empty and every own leg classified FOREIGN -- the
+        exact desync that made an external operator's bot quarantine NINE of
+        its own legs. Ownership is derived from ORD-10's journaled evidence
+        (the CondorFilled legs the BROKER reported), never asserted ad hoc and
+        never auto-adopted from broker positions (OWN-03's line).
+
+        Derivation, per leg of each entry the journal shows still open:
+          * entry closed (close_initiator set) -> nothing owned;
+          * side expired or closed -> neither leg of that side;
+          * side STOPPED -> the short was bought back; the LONG may or may not
+            have been LEX-recovered, and `recoveries` is a SUM, not per-side,
+            so which long was sold is NOT derivable -- the stopped side
+            therefore contributes NOTHING. That deliberately UNDERSTATES:
+            `cap_exit_qty`'s zero falls through to the caller's requested
+            quantity and ORD-12's resolver (broker positions) is the real
+            gate, so understating is contained while OVERSTATING would let a
+            cap fail to bite. Unobserved means unassumed in the SAFE
+            direction (NFR-09).
+        """
+        from meic.domain.projection import fold
+
+        ledger = cls()
+        for entry in fold(events).entries.values():
+            if entry.close_initiator is not None:
+                continue
+            gone = set(entry.sides_stopped) | set(entry.sides_closed) | set(entry.sides_expired)
+            for leg in entry.legs:
+                if leg.side in gone:
+                    continue
+                ledger.apply_fill(leg.symbol, leg.qty if leg.role == "long" else -leg.qty)
+        return ledger
+
+    def refresh_from_events(self, events) -> None:
+        """In-place re-derivation after a new fill. IN PLACE is the point
+        (NFR-11): CloseEntry captured THIS object at construction, so a
+        rebind on the composition would leave it holding a stale ledger --
+        the alert-sink defect all over again. O(events) per call, and fills
+        are at most a dozen a day."""
+        rebuilt = OwnershipLedger.from_events(events)
+        self._owned.clear()
+        self._owned.update(rebuilt._owned)
+
     def apply_fill(self, symbol: str, signed_qty: int) -> None:
         """Record a fill on the bot's OWN order (OWN-01). Operator/manual
         trades never call this — they never enter the ledger."""
