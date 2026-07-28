@@ -1,0 +1,559 @@
+{
+  "recorded_at": "2026-07-27T14:37:48.008631+00:00",
+  "what": "ENT-11(9)(d) capture (1): FILLED orders from the CERT marathon 2026-07-27 -- entry condors + the PUT stop fills. Read-only GET.",
+  "environment": "CERT sandbox, account 5WZ67393",
+  "observation": [
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Limit",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:22.874000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07330000",
+          "action": "Sell to Close",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73167",
+              "quantity": "1",
+              "fill_price": "2.55",
+              "filled_at": "2026-07-27 14:36:22.537000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": "0.7",
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": null,
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:22.310000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:22.869000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "lex:2026-07-27#4:PUT",
+      "id": 1251901
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Live",
+      "cancellable": true,
+      "editable": true,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:20.913000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07470000",
+          "action": "Buy to Close",
+          "quantity": 1,
+          "remaining_quantity": "1",
+          "fills": []
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "8.5",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:20.311000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": null,
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "stop:2026-07-27#4:CALL",
+      "id": 1251900
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:20.188000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07380000",
+          "action": "Buy to Close",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73164",
+              "quantity": "1",
+              "fill_price": "10.4",
+              "filled_at": "2026-07-27 14:36:19.950000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "8.5",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:19.194000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:20.180000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "stop:2026-07-27#4:PUT",
+      "id": 1251899
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Limit",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:16.754000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07330000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73159",
+              "quantity": "1",
+              "fill_price": "2.55",
+              "filled_at": "2026-07-27 14:36:16.583000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07380000",
+          "action": "Sell to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73160",
+              "quantity": "1",
+              "fill_price": "10.4",
+              "filled_at": "2026-07-27 14:36:16.584000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07470000",
+          "action": "Sell to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73161",
+              "quantity": "1",
+              "fill_price": "1.45",
+              "filled_at": "2026-07-27 14:36:16.585000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07520000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73162",
+              "quantity": "1",
+              "fill_price": "0.3",
+              "filled_at": "2026-07-27 14:36:16.586000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": "4.7",
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": null,
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:16.099000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:16.748000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "entry:2026-07-27#4",
+      "id": 1251898
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Limit",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:07.980000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07330000",
+          "action": "Sell to Close",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73151",
+              "quantity": "1",
+              "fill_price": "2.3",
+              "filled_at": "2026-07-27 14:36:07.754000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": "0.7",
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": null,
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:07.409000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:07.973000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "lex:2026-07-27#3:PUT",
+      "id": 1251895
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Live",
+      "cancellable": true,
+      "editable": true,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:06.864000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07470000",
+          "action": "Buy to Close",
+          "quantity": 1,
+          "remaining_quantity": "1",
+          "fills": []
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "8.0",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:06.455000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": null,
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "stop:2026-07-27#3:CALL",
+      "id": 1251894
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Stop",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:05.262000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07380000",
+          "action": "Buy to Close",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73148",
+              "quantity": "1",
+              "fill_price": "9.7",
+              "filled_at": "2026-07-27 14:36:04.892000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": null,
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": "8.0",
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:36:04.214000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:05.250000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "stop:2026-07-27#3:PUT",
+      "id": 1251893
+    },
+    {
+      "account_number": "5WZ67393",
+      "time_in_force": "Day",
+      "order_type": "Limit",
+      "underlying_symbol": "SPX",
+      "underlying_instrument_type": "Equity",
+      "status": "Filled",
+      "cancellable": false,
+      "editable": false,
+      "edited": false,
+      "updated_at": "2026-07-27 14:36:01.349000+00:00",
+      "legs": [
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07330000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73143",
+              "quantity": "1",
+              "fill_price": "2.55",
+              "filled_at": "2026-07-27 14:36:01.080000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727P07380000",
+          "action": "Sell to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73144",
+              "quantity": "1",
+              "fill_price": "9.9",
+              "filled_at": "2026-07-27 14:36:01.081000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07470000",
+          "action": "Sell to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73145",
+              "quantity": "1",
+              "fill_price": "1.45",
+              "filled_at": "2026-07-27 14:36:01.082000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        },
+        {
+          "instrument_type": "Equity Option",
+          "symbol": "SPXW  260727C07520000",
+          "action": "Buy to Open",
+          "quantity": 1,
+          "remaining_quantity": "0",
+          "fills": [
+            {
+              "fill_id": "73146",
+              "quantity": "1",
+              "fill_price": "0.3",
+              "filled_at": "2026-07-27 14:36:01.082000+00:00",
+              "destination_venue": "MARKET_SIMULATOR_A",
+              "ext_group_fill_id": null,
+              "ext_exec_id": null
+            }
+          ]
+        }
+      ],
+      "size": "1",
+      "price": "4.7",
+      "gtc_date": null,
+      "value": null,
+      "stop_trigger": null,
+      "contingent_status": null,
+      "confirmation_status": null,
+      "cancelled_at": null,
+      "cancel_user_id": null,
+      "cancel_username": null,
+      "replacing_order_id": null,
+      "replaces_order_id": null,
+      "in_flight_at": null,
+      "live_at": null,
+      "received_at": "2026-07-27 14:35:59.568000+00:00",
+      "reject_reason": null,
+      "user_id": null,
+      "username": null,
+      "terminal_at": "2026-07-27 14:36:01.343000+00:00",
+      "complex_order_id": null,
+      "complex_order_tag": null,
+      "preflight_id": null,
+      "order_rule": null,
+      "source": "tastyware/tastytrade:v13.0.0",
+      "external_identifier": "entry:2026-07-27#3",
+      "id": 1251890
+    }
+  ]
+}
